@@ -50,7 +50,7 @@ class CyclicCaGenerator : Generator {
         val numStates = (params["states"] as? Number)?.toInt() ?: 8
         val gridSize = (params["gridSize"] as? Number)?.toInt() ?: 150
         val threshold = (params["threshold"] as? Number)?.toInt() ?: 1
-        val stepsPerSecond = (params["stepsPerSecond"] as? Number)?.toFloat() ?: 15f
+        val stepsPerSecond = (params["stepsPerFrame"] as? Number)?.toFloat() ?: 2f
 
         val w = bitmap.width
         val h = bitmap.height

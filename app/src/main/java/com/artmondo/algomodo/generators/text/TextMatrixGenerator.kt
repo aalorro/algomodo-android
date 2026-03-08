@@ -13,6 +13,7 @@ import com.artmondo.algomodo.generators.Parameter
 import com.artmondo.algomodo.generators.Quality
 import com.artmondo.algomodo.rendering.SvgPath
 import kotlin.math.floor
+import kotlin.math.sin
 
 /**
  * Digital rain (Matrix effect) generator.
@@ -67,47 +68,72 @@ class TextMatrixGenerator : Generator {
         val w = bitmap.width.toFloat()
         val h = bitmap.height.toFloat()
         val columns = (params["columns"] as? Number)?.toInt() ?: 40
-        val speed = (params["speed"] as? Number)?.toFloat() ?: 5f
+        val speed = (params["speed"] as? Number)?.toFloat() ?: 1f
+        val dropSpeed = (params["dropSpeed"] as? Number)?.toFloat() ?: 5f
+        val trailLength = (params["trailLength"] as? Number)?.toInt() ?: 15
         val charSetName = (params["charSet"] as? String) ?: "katakana"
         val brightness = (params["brightness"] as? Number)?.toFloat() ?: 0.8f
+        val customText = (params["customText"] as? String) ?: ""
 
         val rng = SeededRNG(seed)
-        val paletteColors = palette.colorInts()
 
         canvas.drawColor(Color.BLACK)
 
-        val charPool = when (charSetName) {
-            "katakana" -> (0x30A0..0x30FF).map { it.toChar().toString() }
-            "digits" -> (0..9).map { it.toString() }
-            "latin" -> ('A'..'Z').map { it.toString() } + ('a'..'z').map { it.toString() }
-            "mixed" -> (0x30A0..0x30CF).map { it.toChar().toString() } +
-                    ('A'..'Z').map { it.toString() } + (0..9).map { it.toString() }
-            else -> (0x30A0..0x30FF).map { it.toChar().toString() }
+        // Build character pool: custom text takes priority
+        val charPool = if (customText.isNotEmpty()) {
+            customText.toList().map { it.toString() }
+        } else {
+            when (charSetName) {
+                "katakana" -> (0x30A0..0x30FF).map { it.toChar().toString() }
+                "digits" -> (0..9).map { it.toString() }
+                "latin" -> ('A'..'Z').map { it.toString() } + ('a'..'z').map { it.toString() }
+                "mixed" -> (0x30A0..0x30CF).map { it.toChar().toString() } +
+                        ('A'..'Z').map { it.toString() } + (0..9).map { it.toString() }
+                "binary" -> listOf("0", "1")
+                else -> (0x30A0..0x30FF).map { it.toChar().toString() }
+            }
         }
 
         val colWidth = w / columns
         val fontSize = colWidth * 0.9f
         val rowHeight = fontSize * 1.2f
         val rows = (h / rowHeight).toInt() + 2
-        val trailLength = rows / 2
+        val isHighQuality = quality != Quality.DRAFT
 
-        val paint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+        val paint = Paint().apply {
+            isAntiAlias = isHighQuality
             typeface = Typeface.MONOSPACE
             textSize = fontSize
             textAlign = Paint.Align.CENTER
         }
 
-        // Each column has a random offset and speed variation
+        // Glow paint for bloom effect
+        val glowPaint = Paint().apply {
+            isAntiAlias = isHighQuality
+            typeface = Typeface.MONOSPACE
+            textSize = fontSize * 1.4f
+            textAlign = Paint.Align.CENTER
+        }
+
         for (col in 0 until columns) {
             val colX = col * colWidth + colWidth / 2f
             val colOffset = rng.range(0f, rows.toFloat())
-            val colSpeed = speed * rng.range(0.5f, 1.5f)
-            val colColor = paletteColors[col % paletteColors.size]
+            // dropSpeed controls per-column fall speed, speed is global multiplier
+            val colSpeedVariation = rng.range(0.6f, 1.4f)
+            val colFallSpeed = dropSpeed * colSpeedVariation * speed
+
+            // Smooth column coloring via lerpColor
+            val colT = col.toFloat() / columns.coerceAtLeast(1)
+            val colColor = palette.lerpColor(colT)
+
+            // Subtle column sway
+            val swayAmount = colWidth * 0.15f
+            val swayX = sin(time * speed * 0.5f + col * 0.7f) * swayAmount
 
             // Head position
-            val headRow = (colOffset + time * colSpeed) % (rows + trailLength)
+            val headRow = (colOffset + time * colFallSpeed) % (rows + trailLength)
 
-            // Random character assignment per cell (seeded per column)
+            // Seeded RNG per column for character selection
             val colRng = SeededRNG(seed + col * 137)
 
             for (row in 0 until rows) {
@@ -120,17 +146,45 @@ class TextMatrixGenerator : Generator {
                 val alpha = (fadeFactor * fadeFactor * brightness * 255).toInt().coerceIn(0, 255)
                 if (alpha < 5) continue
 
-                // Head character is brighter / white
+                // Character flicker: time-based deterministic character changes
+                val flickerHash = ((row * 31 + col * 17 + (time * 4f).toInt() * 7) and 0x7FFFFFFF)
+                val charIdx = if (distFromHead < 3f) {
+                    // Near-head characters flicker more
+                    flickerHash % charPool.size
+                } else {
+                    colRng.integer(0, charPool.size - 1)
+                }
+                val ch = charPool[charIdx % charPool.size]
+
+                val drawX = colX + swayX
+
                 if (distFromHead < 1f) {
+                    // Head character: extra bright with glow/bloom
+                    if (isHighQuality) {
+                        // Glow pass — larger, faint character behind
+                        glowPaint.color = colColor
+                        glowPaint.alpha = (brightness * 80).toInt()
+                        canvas.drawText(ch, drawX, y, glowPaint)
+                    }
                     paint.color = Color.WHITE
                     paint.alpha = (brightness * 255).toInt()
-                } else {
+                    canvas.drawText(ch, drawX, y, paint)
+                } else if (distFromHead < 3f) {
+                    // Near-head: glow effect for the brightest trail characters
+                    if (isHighQuality) {
+                        glowPaint.color = colColor
+                        glowPaint.alpha = (fadeFactor * brightness * 40).toInt().coerceIn(0, 80)
+                        canvas.drawText(ch, drawX, y, glowPaint)
+                    }
                     paint.color = colColor
                     paint.alpha = alpha
+                    canvas.drawText(ch, drawX, y, paint)
+                } else {
+                    // Trail body
+                    paint.color = colColor
+                    paint.alpha = alpha
+                    canvas.drawText(ch, drawX, y, paint)
                 }
-
-                val ch = charPool[colRng.integer(0, charPool.size - 1)]
-                canvas.drawText(ch, colX, y, paint)
             }
         }
     }
