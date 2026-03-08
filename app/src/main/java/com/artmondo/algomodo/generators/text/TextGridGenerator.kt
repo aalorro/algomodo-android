@@ -6,6 +6,7 @@ import android.graphics.Color
 import android.graphics.Paint
 import android.graphics.Typeface
 import com.artmondo.algomodo.core.rng.SeededRNG
+import com.artmondo.algomodo.core.rng.SimplexNoise
 import com.artmondo.algomodo.data.palettes.Palette
 import com.artmondo.algomodo.generators.Generator
 import com.artmondo.algomodo.generators.ParamGroup
@@ -66,61 +67,116 @@ class TextGridGenerator : Generator {
     ) {
         val w = bitmap.width.toFloat()
         val h = bitmap.height.toFloat()
-        val text = (params["customText"] as? String)?.ifEmpty { "0123456789" } ?: "0123456789"
+        val customText = (params["customText"] as? String) ?: ""
+        val charSetName = (params["charSet"] as? String) ?: "digits"
         val cellSize = (params["gridSize"] as? Number)?.toFloat() ?: 20f
-        val style = "monospace"
+        val noiseScale = (params["noiseScale"] as? Number)?.toFloat() ?: 3f
+        val sizeVariation = (params["sizeVariation"] as? Number)?.toFloat() ?: 0f
+        val colorMode = (params["colorMode"] as? String) ?: "palette-position"
         val speed = (params["speed"] as? Number)?.toFloat() ?: 0.5f
-        val charShift = if (speed > 0f && time > 0f) (time * speed * 3f).toInt() else 0
+        val timeOff = time * speed
 
-        if (text.isEmpty()) return
+        // Build character pool from charSet or customText
+        val charPool: String = if (customText.isNotEmpty()) {
+            customText
+        } else {
+            when (charSetName) {
+                "alphabet" -> "ABCDEFGHIJKLMNOPQRSTUVWXYZ"
+                "digits" -> "0123456789"
+                "katakana" -> (0x30A0..0x30FF).map { it.toChar() }.joinToString("")
+                "symbols" -> "!@#\$%^&*()+-=<>?/[]{}|~"
+                "braille" -> (0x2800..0x28FF).map { it.toChar() }.joinToString("")
+                else -> "0123456789"
+            }
+        }
+        if (charPool.isEmpty()) return
 
+        val noise = SimplexNoise(seed)
         val rng = SeededRNG(seed)
-        val paletteColors = palette.colorInts()
 
         canvas.drawColor(Color.BLACK)
-        val paint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+        val paint = Paint().apply {
+            isAntiAlias = quality != Quality.DRAFT
             typeface = Typeface.MONOSPACE
             textAlign = Paint.Align.CENTER
         }
 
         val cols = (w / cellSize).toInt()
         val rows = (h / cellSize).toInt()
-        var idx = 0
+        val totalCells = (cols * rows).toFloat().coerceAtLeast(1f)
 
         for (row in 0 until rows) {
             for (col in 0 until cols) {
-                val charIdx = (idx + charShift) % text.length
-                val ch = text[charIdx].toString()
-
+                val idx = row * cols + col
                 val cx = col * cellSize + cellSize / 2f
                 val cy = row * cellSize + cellSize / 2f
 
-                paint.color = paletteColors[idx % paletteColors.size]
+                // Normalized grid coordinates
+                val nx = col.toFloat() / cols.coerceAtLeast(1)
+                val ny = row.toFloat() / rows.coerceAtLeast(1)
 
-                when (style) {
-                    "variable" -> {
-                        val sizeFactor = rng.range(0.5f, 1.5f)
-                        paint.textSize = cellSize * 0.8f * sizeFactor
-                        paint.alpha = (150 + sizeFactor * 70).toInt().coerceAtMost(255)
-                        canvas.drawText(ch, cx, cy + paint.textSize / 3f, paint)
+                // Noise value for this cell (animated)
+                val nv = noise.noise2D(
+                    nx * noiseScale + timeOff * 0.3f,
+                    ny * noiseScale
+                ) // [-1, 1]
+                val nv01 = (nv + 1f) * 0.5f // [0, 1]
+
+                // Character selection driven by noise for spatial coherence
+                val charIdx = ((nv01 * charPool.length * 2f).toInt() + idx) % charPool.length
+                val ch = charPool[charIdx.coerceIn(0, charPool.length - 1)].toString()
+
+                // Color based on colorMode
+                val color = when (colorMode) {
+                    "palette-position" -> {
+                        // Diagonal gradient via lerpColor
+                        val diagT = (nx + ny) * 0.5f
+                        palette.lerpColor(diagT)
                     }
-                    "rotated" -> {
-                        paint.textSize = cellSize * 0.8f
-                        paint.alpha = 220
-                        val rotation = rng.range(-90f, 90f)
-                        canvas.save()
-                        canvas.translate(cx, cy)
-                        canvas.rotate(rotation)
-                        canvas.drawText(ch, 0f, paint.textSize / 3f, paint)
-                        canvas.restore()
+                    "palette-noise" -> {
+                        // Noise-mapped via lerpColor
+                        palette.lerpColor(nv01)
                     }
-                    else -> { // monospace
-                        paint.textSize = cellSize * 0.8f
-                        paint.alpha = 220
-                        canvas.drawText(ch, cx, cy + paint.textSize / 3f, paint)
+                    "monochrome" -> {
+                        palette.colorAt(0)
                     }
+                    else -> palette.lerpColor((nx + ny) * 0.5f)
                 }
-                idx++
+                paint.color = color
+
+                // Size variation driven by noise
+                val baseFontSize = cellSize * 0.8f
+                val sizeFactor = if (sizeVariation > 0f) {
+                    val sizeNoise = noise.noise2D(
+                        nx * noiseScale * 1.5f + 100f,
+                        ny * noiseScale * 1.5f + 100f
+                    )
+                    1f + sizeNoise * sizeVariation * 0.5f
+                } else {
+                    1f
+                }
+                paint.textSize = baseFontSize * sizeFactor.coerceIn(0.3f, 2f)
+
+                // Alpha: noise-driven density (denser in high-noise areas)
+                val baseAlpha = 140 + (nv01 * 115f).toInt()
+                paint.alpha = baseAlpha.coerceIn(40, 255)
+
+                // Rotation when sizeVariation is high (>0.7)
+                if (sizeVariation > 0.7f) {
+                    val rotAmount = (sizeVariation - 0.7f) / 0.3f // 0..1
+                    val rotNoise = noise.noise2D(
+                        nx * noiseScale + 200f,
+                        ny * noiseScale + 200f
+                    )
+                    val rotation = rotNoise * 45f * rotAmount
+                    canvas.save()
+                    canvas.translate(cx, cy)
+                    canvas.rotate(rotation)
+                    canvas.drawText(ch, 0f, paint.textSize / 3f, paint)
+                    canvas.restore()
+                } else {
+                    canvas.drawText(ch, cx, cy + paint.textSize / 3f, paint)
+                }
             }
         }
     }
