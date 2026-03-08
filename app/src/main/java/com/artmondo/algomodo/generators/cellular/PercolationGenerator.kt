@@ -23,7 +23,7 @@ class PercolationGenerator : Generator {
     override val parameterSchema = listOf(
         Parameter.NumberParam("Grid Size", "gridSize", ParamGroup.COMPOSITION, null, 32f, 256f, 16f, 128f),
         Parameter.SelectParam("Mode", "percolationMode", ParamGroup.COMPOSITION, "site: each cell independently open with probability p | invasion: fractal BFS flooding from seeds in resistance order — creates branching drainage networks", listOf("site", "invasion"), "site"),
-        Parameter.NumberParam("Occupancy p", "occupancyP", ParamGroup.COMPOSITION, "Open probability / swept fraction — critical threshold p_c ≈ 0.593 for square lattice; invasion mode opens exactly p*N cells", 0f, 1f, 0.01f, 0.593f),
+        Parameter.NumberParam("Occupancy p", "occupancyP", ParamGroup.COMPOSITION, "Open probability / swept fraction — critical threshold p_c ≈ 0.593 for square lattice; invasion mode opens exactly p*N cells", 0.05f, 1f, 0.01f, 0.593f),
         Parameter.NumberParam("Invasion Seeds", "invasionSeeds", ParamGroup.COMPOSITION, "Number of seed points from which invasion floods outward (invasion mode only)", 1f, 12f, 1f, 4f),
         Parameter.NumberParam("Noise Mix", "noiseMix", ParamGroup.TEXTURE, "0 = purely random site values → standard fractal percolation | 1 = fully correlated noise → geologic / organic blob shapes", 0f, 1f, 0.05f, 0.3f),
         Parameter.NumberParam("Noise Scale", "noiseScale", ParamGroup.TEXTURE, "Spatial frequency of correlated noise — lower = large geologic blobs, higher = fine-grained texture", 1f, 20f, 1f, 6f),

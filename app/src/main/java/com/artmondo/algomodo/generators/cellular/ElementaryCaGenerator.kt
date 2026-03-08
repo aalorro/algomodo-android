@@ -22,7 +22,7 @@ class ElementaryCaGenerator : Generator {
 
     override val parameterSchema = listOf(
         Parameter.NumberParam("Grid Width", "gridSize", ParamGroup.COMPOSITION, "Cells per row; height = same number of generations displayed", 64f, 512f, 64f, 256f),
-        Parameter.NumberParam("Rule A (0-255)", "rule", ParamGroup.COMPOSITION, "Primary Wolfram rule — notable: 30 (chaos/RNG), 90 (Sierpinski), 110 (Turing-complete), 184 (traffic flow). In 5-cell mode only bits 0-5 matter (rules 0-63).", 0f, 255f, 1f, 30f),
+        Parameter.NumberParam("Rule A (1-255)", "rule", ParamGroup.COMPOSITION, "Primary Wolfram rule — notable: 30 (chaos/RNG), 90 (Sierpinski), 110 (Turing-complete), 184 (traffic flow). In 5-cell mode only bits 0-5 matter (rules 1-63).", 1f, 255f, 1f, 30f),
         Parameter.NumberParam("Rule B (0-255)", "ruleB", ParamGroup.COMPOSITION, "Secondary rule for blend mode — each generation is the bitwise combination of Rule A and Rule B outputs", 0f, 255f, 1f, 90f),
         Parameter.SelectParam("Blend Mode", "blendMode", ParamGroup.COMPOSITION, "none: only Rule A | xor: XOR of Rule A and B — creates complex interference/moire patterns | or: OR | and: AND", listOf("none", "xor", "or", "and"), "none"),
         Parameter.SelectParam("Neighbourhood", "neighborWidth", ParamGroup.GEOMETRY, "3-cell: standard Wolfram (left, centre, right) → 8 patterns, 256 rules | 5-cell totalistic: sum of 5 cells, 6 counts → 64 rules; produces denser, more complex patterns", listOf("3-cell", "5-cell"), "3-cell"),
