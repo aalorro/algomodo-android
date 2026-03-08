@@ -75,3 +75,4 @@ Jetpack Compose with Material 3. Pager-based tab navigation. Key composables in 
 - All source under `app/src/main/java/com/artmondo/algomodo/`
 - Portrait-only orientation (`MainActivity`)
 - Image input generators use camera/gallery via intent filters
+- **Changelog**: `CHANGELOG.md` tracks version history. The in-app changelog dialog (`ui/dialogs/ChangelogDialog.kt`) should be kept in sync with `CHANGELOG.md` when adding new versions.
