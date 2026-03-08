@@ -226,6 +226,17 @@ class MainViewModel @Inject constructor(
         _state.update { it.copy(isAnimating = animating) }
     }
 
+    /**
+     * Randomize a NumberParam to a safe range — avoids the bottom 15% of
+     * the param range to prevent degenerate/blank output (zero density,
+     * zero amplitude, zero count, etc.).
+     */
+    private fun safeRandomStep(param: Parameter.NumberParam, rng: SeededRNG): Float {
+        val steps = ((param.max - param.min) / param.step).toInt()
+        val minStep = (steps * 0.15f).toInt().coerceIn(1, steps)
+        return param.min + rng.integer(minStep, steps) * param.step
+    }
+
     fun randomize() {
         pushHistory()
         val s = _state.value
@@ -240,8 +251,7 @@ class MainViewModel @Inject constructor(
             if (param.key in s.lockedParams) continue
             when (param) {
                 is Parameter.NumberParam -> {
-                    val steps = ((param.max - param.min) / param.step).toInt()
-                    newParams[param.key] = param.min + rng.integer(0, steps) * param.step
+                    newParams[param.key] = safeRandomStep(param, rng)
                 }
                 is Parameter.BooleanParam -> {
                     newParams[param.key] = rng.boolean()
@@ -271,8 +281,7 @@ class MainViewModel @Inject constructor(
         for (param in gen.parameterSchema) {
             when (param) {
                 is Parameter.NumberParam -> {
-                    val steps = ((param.max - param.min) / param.step).toInt()
-                    newParams[param.key] = param.min + rng.integer(0, steps) * param.step
+                    newParams[param.key] = safeRandomStep(param, rng)
                 }
                 is Parameter.BooleanParam -> newParams[param.key] = rng.boolean()
                 is Parameter.SelectParam -> newParams[param.key] = rng.pick(param.options)

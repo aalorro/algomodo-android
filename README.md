@@ -7,6 +7,7 @@ Create stunning algorithmic art using pure mathematics — noise functions, cell
 ## Features
 
 - **93 generators** across 10 families (animation, cellular automata, fractals, geometry, graphs, image processing, noise, plotter, text, Voronoi)
+- **Over 7.6 million unique parameter configurations** — before accounting for seeds, which multiply the space into the trillions
 - **Deterministic rendering** — same seed and parameters always produce the same output
 - **Animation support** — play, export as GIF or MP4
 - **Image processing** — load photos from gallery/camera and apply generative effects
