@@ -28,7 +28,7 @@ class ForestFireGenerator : Generator {
 
     override val parameterSchema = listOf(
         Parameter.NumberParam("Grid Size", "gridSize", ParamGroup.COMPOSITION, null, 32f, 256f, 16f, 128f),
-        Parameter.NumberParam("Initial Tree Density", "initialDensity", ParamGroup.COMPOSITION, null, 0f, 1f, 0.05f, 0.7f),
+        Parameter.NumberParam("Initial Tree Density", "initialDensity", ParamGroup.COMPOSITION, null, 0.1f, 1f, 0.05f, 0.7f),
         Parameter.NumberParam("Growth Rate (p)", "growthProb", ParamGroup.TEXTURE, "Probability an empty cell grows a tree each step", 0.001f, 0.05f, 0.001f, 0.01f),
         Parameter.NumberParam("Lightning Rate (f)", "lightningProb", ParamGroup.TEXTURE, "Probability a tree spontaneously ignites each step", 0.0001f, 0.003f, 0.0001f, 0.0005f),
         Parameter.NumberParam("Steps / Frame", "stepsPerFrame", ParamGroup.FLOW_MOTION, null, 1f, 10f, 1f, 3f),
@@ -54,6 +54,7 @@ class ForestFireGenerator : Generator {
         time: Float
     ) {
         val gridSize = (params["gridSize"] as? Number)?.toInt() ?: 128
+        val initialDensity = (params["initialDensity"] as? Number)?.toFloat() ?: 0.7f
         val pGrow = (params["growthProb"] as? Number)?.toFloat() ?: 0.01f
         val pBurn = (params["lightningProb"] as? Number)?.toFloat() ?: 0.0005f
         val stepsPerFrame = (params["stepsPerFrame"] as? Number)?.toFloat() ?: 3f
@@ -66,7 +67,7 @@ class ForestFireGenerator : Generator {
         // Initialize from seed: start with a partially forested grid
         val rng = SeededRNG(seed)
         var grid = IntArray(totalCells) {
-            if (rng.random() < 0.5f) TREE else EMPTY
+            if (rng.random() < initialDensity) TREE else EMPTY
         }
 
         // Evolve
