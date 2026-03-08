@@ -22,6 +22,7 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.*
 import kotlinx.coroutines.launch
 import kotlinx.serialization.json.*
+import java.security.SecureRandom
 import java.util.UUID
 import javax.inject.Inject
 
@@ -75,6 +76,12 @@ class MainViewModel @Inject constructor(
 
     private val _canRedo = MutableStateFlow(false)
     val canRedo: StateFlow<Boolean> = _canRedo.asStateFlow()
+
+    // Cryptographic RNG for high-entropy randomization
+    private val secureRandom = SecureRandom()
+
+    // Track recent generators to avoid consecutive repeats in surpriseMe()
+    private val recentGeneratorIds = ArrayDeque<String>(8)
 
     init {
         viewModelScope.launch {
@@ -241,9 +248,9 @@ class MainViewModel @Inject constructor(
         pushHistory()
         val s = _state.value
         val gen = s.generator ?: return
-        val rng = SeededRNG((Math.random() * 999999).toInt())
+        val rng = SeededRNG(secureRandom.nextInt())
 
-        val newSeed = if (s.seedLocked) s.seed else rng.integer(0, 999999)
+        val newSeed = if (s.seedLocked) s.seed else secureRandom.nextInt(1_000_000)
         val newPalette = if ("palette" in s.lockedParams) s.palette else CuratedPalettes.all[rng.integer(0, CuratedPalettes.all.size - 1)]
 
         val newParams = s.params.toMutableMap()
@@ -272,9 +279,20 @@ class MainViewModel @Inject constructor(
 
     fun surpriseMe() {
         pushHistory()
-        val rng = SeededRNG((Math.random() * 999999).toInt())
-        val gen = GeneratorRegistry.randomNonImageGenerator() ?: return
-        val newSeed = rng.integer(0, 999999)
+        val rng = SeededRNG(secureRandom.nextInt())
+
+        // Pick a generator that wasn't used recently
+        val candidates = GeneratorRegistry.nonImageGenerators()
+        if (candidates.isEmpty()) return
+        val filtered = candidates.filter { it.id !in recentGeneratorIds }
+        val pool = filtered.ifEmpty { candidates }
+        val gen = pool[secureRandom.nextInt(pool.size)]
+
+        // Track history (keep last 6 to avoid repeats across ~6 clicks)
+        recentGeneratorIds.addLast(gen.id)
+        while (recentGeneratorIds.size > 6) recentGeneratorIds.removeFirst()
+
+        val newSeed = secureRandom.nextInt(1_000_000)
         val newPalette = CuratedPalettes.all[rng.integer(0, CuratedPalettes.all.size - 1)]
 
         val newParams = mutableMapOf<String, Any>()
