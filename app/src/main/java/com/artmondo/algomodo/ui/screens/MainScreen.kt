@@ -111,7 +111,7 @@ fun MainScreen(
 
     LaunchedEffect(state.activeTab) {
         if (pagerState.currentPage != state.activeTab) {
-            pagerState.animateScrollToPage(state.activeTab)
+            pagerState.scrollToPage(state.activeTab)
         }
     }
 
@@ -310,16 +310,16 @@ fun MainScreen(
             selectedTabIndex = pagerState.currentPage,
             containerColor = MaterialTheme.colorScheme.surface
         ) {
-            Tab(selected = pagerState.currentPage == 0, onClick = { scope.launch { pagerState.animateScrollToPage(0) } }) {
+            Tab(selected = pagerState.currentPage == 0, onClick = { scope.launch { pagerState.scrollToPage(0) } }) {
                 Text("Generators", modifier = Modifier.padding(vertical = 10.dp), fontSize = 12.sp)
             }
-            Tab(selected = pagerState.currentPage == 1, onClick = { scope.launch { pagerState.animateScrollToPage(1) } }) {
+            Tab(selected = pagerState.currentPage == 1, onClick = { scope.launch { pagerState.scrollToPage(1) } }) {
                 Text("Params", modifier = Modifier.padding(vertical = 10.dp), fontSize = 12.sp)
             }
-            Tab(selected = pagerState.currentPage == 2, onClick = { scope.launch { pagerState.animateScrollToPage(2) } }) {
+            Tab(selected = pagerState.currentPage == 2, onClick = { scope.launch { pagerState.scrollToPage(2) } }) {
                 Text("Export", modifier = Modifier.padding(vertical = 10.dp), fontSize = 12.sp)
             }
-            Tab(selected = pagerState.currentPage == 3, onClick = { scope.launch { pagerState.animateScrollToPage(3) } }) {
+            Tab(selected = pagerState.currentPage == 3, onClick = { scope.launch { pagerState.scrollToPage(3) } }) {
                 Text("Settings", modifier = Modifier.padding(vertical = 10.dp), fontSize = 12.sp)
             }
         }
@@ -327,6 +327,8 @@ fun MainScreen(
         // Tab content (takes remaining space)
         HorizontalPager(
             state = pagerState,
+            beyondViewportPageCount = 0,
+            userScrollEnabled = false,
             modifier = Modifier
                 .fillMaxWidth()
                 .weight(1f)
