@@ -86,7 +86,10 @@ private fun StaticCanvas(
     modifier: Modifier = Modifier
 ) {
     var renderedBitmap by remember { mutableStateOf<Bitmap?>(null) }
-    var cachedSize by remember { mutableStateOf(0) }
+
+    DisposableEffect(Unit) {
+        onDispose { renderedBitmap?.recycle() }
+    }
 
     LaunchedEffect(generator.id, params, seed, palette, quality, postFX, renderTrigger) {
         withContext(Dispatchers.Default) {
@@ -95,14 +98,10 @@ private fun StaticCanvas(
                 Quality.BALANCED -> 540
                 Quality.ULTRA -> 810
             }
-            val bitmap = if (renderedBitmap != null && cachedSize == size) {
-                renderedBitmap!!
-            } else {
-                renderedBitmap?.recycle()
-                Bitmap.createBitmap(size, size, Bitmap.Config.ARGB_8888).also {
-                    cachedSize = size
-                }
-            }
+            // Always create a fresh bitmap so the currently-displayed one
+            // isn't mutated mid-frame (avoids blank flashes and ensures
+            // Compose detects the new reference as a state change).
+            val bitmap = Bitmap.createBitmap(size, size, Bitmap.Config.ARGB_8888)
             val canvas = Canvas(bitmap)
             canvas.drawColor(android.graphics.Color.BLACK)
             try {
@@ -120,6 +119,7 @@ private fun StaticCanvas(
                 }
             } catch (e: Exception) {
                 android.util.Log.e("AlgoCanvas", "Render failed for ${generator.id}", e)
+                canvas.drawColor(android.graphics.Color.BLACK)
                 val errPaint = android.graphics.Paint().apply {
                     color = android.graphics.Color.RED
                     strokeWidth = 4f
@@ -128,7 +128,9 @@ private fun StaticCanvas(
                 canvas.drawLine(0f, 0f, size.toFloat(), size.toFloat(), errPaint)
                 canvas.drawLine(size.toFloat(), 0f, 0f, size.toFloat(), errPaint)
             }
+            val old = renderedBitmap
             renderedBitmap = bitmap
+            old?.recycle()
         }
     }
 
