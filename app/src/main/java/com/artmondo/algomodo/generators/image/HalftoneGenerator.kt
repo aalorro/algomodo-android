@@ -83,7 +83,7 @@ class HalftoneGenerator : Generator {
             return
         }
 
-        val scaled = Bitmap.createScaledBitmap(source, w.toInt(), h.toInt(), true)
+        val scaled = if (source.width == w.toInt() && source.height == h.toInt()) source else Bitmap.createScaledBitmap(source, w.toInt(), h.toInt(), true)
 
         canvas.drawColor(Color.WHITE)
         val paint = Paint(Paint.ANTI_ALIAS_FLAG).apply {

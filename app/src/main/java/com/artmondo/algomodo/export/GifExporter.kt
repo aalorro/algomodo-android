@@ -32,41 +32,57 @@ object GifExporter {
     ): Uri? {
         val totalFrames = durationSeconds * fps
         val frameDelay = 1000 / fps
+        val pixelCount = resolution * resolution
 
-        val frames = mutableListOf<Bitmap>()
+        // Reuse a single Bitmap + Canvas across all frames
+        val bitmap = Bitmap.createBitmap(resolution, resolution, Bitmap.Config.ARGB_8888)
+        val canvas = Canvas(bitmap)
+        val reusablePixels = IntArray(pixelCount)
 
-        // Render frames
-        for (i in 0 until totalFrames) {
-            val time = i.toFloat() / fps
-            val bitmap = Bitmap.createBitmap(resolution, resolution, Bitmap.Config.ARGB_8888)
-            val canvas = Canvas(bitmap)
-            generator.renderCanvas(canvas, bitmap, params, seed, palette, quality, time)
-            frames.add(bitmap)
-            onProgress(i.toFloat() / totalFrames * 0.7f)
-        }
+        // For boomerang we need to store pixel data of middle frames
+        val boomerangFrames: MutableList<IntArray>? =
+            if (boomerang && totalFrames > 2) mutableListOf() else null
 
-        // If boomerang, append reversed frames (excluding first and last)
-        if (boomerang && frames.size > 2) {
-            for (i in frames.size - 2 downTo 1) {
-                frames.add(frames[i].copy(frames[i].config!!, false))
-            }
-        }
-
-        // Encode GIF
         val baos = ByteArrayOutputStream()
         val encoder = AnimatedGifEncoder()
         encoder.start(baos)
         encoder.setRepeat(if (boomerang || endless) 0 else -1)
         encoder.setDelay(frameDelay)
 
-        for ((idx, frame) in frames.withIndex()) {
-            encoder.addFrame(frame)
-            onProgress(0.7f + (idx.toFloat() / frames.size) * 0.3f)
+        val totalOutputFrames = if (boomerang && totalFrames > 2)
+            totalFrames + (totalFrames - 2) else totalFrames
+
+        // Render and encode forward frames
+        for (i in 0 until totalFrames) {
+            val time = i.toFloat() / fps
+            canvas.drawColor(android.graphics.Color.BLACK)
+            generator.renderCanvas(canvas, bitmap, params, seed, palette, quality, time)
+            bitmap.getPixels(reusablePixels, 0, resolution, 0, 0, resolution, resolution)
+
+            // Store pixel data for boomerang (excluding first and last frame)
+            if (boomerangFrames != null && i > 0 && i < totalFrames - 1) {
+                boomerangFrames.add(reusablePixels.copyOf())
+            }
+
+            encoder.addFrame(bitmap, reusablePixels)
+            onProgress(i.toFloat() / totalOutputFrames * 0.9f)
         }
+
+        // Encode reversed boomerang frames from stored pixel data
+        if (boomerangFrames != null) {
+            for (i in boomerangFrames.size - 1 downTo 0) {
+                val px = boomerangFrames[i]
+                bitmap.setPixels(px, 0, resolution, 0, 0, resolution, resolution)
+                encoder.addFrame(bitmap, px)
+                val progress = (totalFrames + (boomerangFrames.size - 1 - i)).toFloat()
+                onProgress(progress / totalOutputFrames * 0.9f)
+            }
+        }
+
         encoder.finish()
+        bitmap.recycle()
 
-        frames.forEach { it.recycle() }
-
+        onProgress(0.95f)
         val data = baos.toByteArray()
         return saveGif(context, data, fileName)
     }
@@ -132,6 +148,10 @@ class AnimatedGifEncoder {
     }
 
     fun addFrame(im: Bitmap): Boolean {
+        return addFrame(im, null)
+    }
+
+    fun addFrame(im: Bitmap, existingPixels: IntArray?): Boolean {
         if (!started) return false
         try {
             if (!sizeSet) {
@@ -139,7 +159,7 @@ class AnimatedGifEncoder {
                 height = im.height
                 sizeSet = true
             }
-            val pixels = extractPixels(im)
+            val pixels = existingPixels ?: extractPixels(im)
             quantizePixels(pixels)
             if (firstFrame) {
                 writeLSD()

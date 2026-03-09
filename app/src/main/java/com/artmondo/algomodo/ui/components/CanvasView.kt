@@ -87,6 +87,10 @@ private fun StaticCanvas(
 ) {
     var renderedBitmap by remember { mutableStateOf<Bitmap?>(null) }
 
+    DisposableEffect(Unit) {
+        onDispose { renderedBitmap?.recycle() }
+    }
+
     LaunchedEffect(generator.id, params, seed, palette, quality, postFX, renderTrigger) {
         withContext(Dispatchers.Default) {
             val size = when (quality) {
@@ -94,6 +98,9 @@ private fun StaticCanvas(
                 Quality.BALANCED -> 540
                 Quality.ULTRA -> 810
             }
+            // Always create a fresh bitmap so the currently-displayed one
+            // isn't mutated mid-frame (avoids blank flashes and ensures
+            // Compose detects the new reference as a state change).
             val bitmap = Bitmap.createBitmap(size, size, Bitmap.Config.ARGB_8888)
             val canvas = Canvas(bitmap)
             canvas.drawColor(android.graphics.Color.BLACK)
@@ -101,9 +108,18 @@ private fun StaticCanvas(
                 val staticTime = if (generator.supportsAnimation) 2.0f else 0f
                 generator.renderCanvas(canvas, bitmap, params, seed, palette, quality, staticTime)
                 PostFXProcessor.apply(bitmap, postFX)
+
+                // Safety net: if output is nearly all-black, re-render at time=0
+                // to catch generators with scroll/animation offsets that push
+                // content off canvas at time=2.0
+                if (generator.supportsAnimation && isBitmapBlank(bitmap, size)) {
+                    canvas.drawColor(android.graphics.Color.BLACK)
+                    generator.renderCanvas(canvas, bitmap, params, seed, palette, quality, 0f)
+                    PostFXProcessor.apply(bitmap, postFX)
+                }
             } catch (e: Exception) {
                 android.util.Log.e("AlgoCanvas", "Render failed for ${generator.id}", e)
-                // Draw red X on error so user sees something went wrong
+                canvas.drawColor(android.graphics.Color.BLACK)
                 val errPaint = android.graphics.Paint().apply {
                     color = android.graphics.Color.RED
                     strokeWidth = 4f
@@ -112,8 +128,9 @@ private fun StaticCanvas(
                 canvas.drawLine(0f, 0f, size.toFloat(), size.toFloat(), errPaint)
                 canvas.drawLine(size.toFloat(), 0f, 0f, size.toFloat(), errPaint)
             }
-            renderedBitmap?.recycle()
+            val old = renderedBitmap
             renderedBitmap = bitmap
+            old?.recycle()
         }
     }
 
@@ -279,4 +296,25 @@ private fun AnimationCanvas(
         modifier = modifier
             .aspectRatio(1f)
     )
+}
+
+/** Spot-check whether a bitmap is nearly all-black by sampling pixels. */
+private fun isBitmapBlank(bitmap: Bitmap, size: Int): Boolean {
+    val step = (size / 8).coerceAtLeast(1)
+    var totalBrightness = 0L
+    var samples = 0
+    for (y in step until size step step) {
+        for (x in step until size step step) {
+            val px = bitmap.getPixel(x, y)
+            val r = (px shr 16) and 0xFF
+            val g = (px shr 8) and 0xFF
+            val b = px and 0xFF
+            totalBrightness += r + g + b
+            samples++
+        }
+    }
+    if (samples == 0) return true
+    // Average brightness per sample across R+G+B (max 765)
+    // Threshold: if average < 3 (~0.4% brightness), consider blank
+    return (totalBrightness / samples) < 3
 }
