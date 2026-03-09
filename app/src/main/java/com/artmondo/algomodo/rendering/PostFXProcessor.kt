@@ -1,9 +1,6 @@
 package com.artmondo.algomodo.rendering
 
 import android.graphics.Bitmap
-import android.graphics.Color
-import kotlin.math.sqrt
-import kotlin.random.Random
 
 data class PostFXSettings(
     val grain: Float = 0f,
@@ -31,35 +28,40 @@ object PostFXProcessor {
     }
 
     private fun applyGrain(pixels: IntArray, amount: Float, width: Int, height: Int) {
-        // Fast LCG RNG for grain noise
+        val noiseScale = amount * 255f * 2f
         var lcg = 12345L
         for (i in pixels.indices) {
             lcg = (lcg * 1103515245L + 12345L) and 0x7FFFFFFFL
-            val noise = ((lcg.toFloat() / 0x7FFFFFFFL) - 0.5f) * amount * 255f * 2f
+            val noise = ((lcg.toFloat() / 0x7FFFFFFFL) - 0.5f) * noiseScale
             val c = pixels[i]
-            val r = (Color.red(c) + noise).toInt().coerceIn(0, 255)
-            val g = (Color.green(c) + noise).toInt().coerceIn(0, 255)
-            val b = (Color.blue(c) + noise).toInt().coerceIn(0, 255)
-            pixels[i] = Color.argb(Color.alpha(c), r, g, b)
+            val a = c ushr 24
+            val r = (((c shr 16) and 0xFF) + noise).toInt().coerceIn(0, 255)
+            val g = (((c shr 8) and 0xFF) + noise).toInt().coerceIn(0, 255)
+            val b = ((c and 0xFF) + noise).toInt().coerceIn(0, 255)
+            pixels[i] = (a shl 24) or (r shl 16) or (g shl 8) or b
         }
     }
 
     private fun applyVignette(pixels: IntArray, amount: Float, width: Int, height: Int) {
         val cx = width / 2f
         val cy = height / 2f
-        val maxDist = sqrt(cx * cx + cy * cy)
+        val invCx = 1f / cx
+        val invCy = 1f / cy
+        val halfAmount = amount * 0.5f
         for (y in 0 until height) {
+            val dy = (y - cy) * invCy
+            val dy2 = dy * dy
             for (x in 0 until width) {
-                val dx = (x - cx) / cx
-                val dy = (y - cy) / cy
-                val dist = sqrt(dx * dx + dy * dy)
-                val factor = 1f - (dist * dist * amount * 0.5f).coerceIn(0f, 1f)
+                val dx = (x - cx) * invCx
+                val distSq = dx * dx + dy2
+                val factor = 1f - (distSq * halfAmount).coerceIn(0f, 1f)
                 val i = y * width + x
                 val c = pixels[i]
-                val r = (Color.red(c) * factor).toInt().coerceIn(0, 255)
-                val g = (Color.green(c) * factor).toInt().coerceIn(0, 255)
-                val b = (Color.blue(c) * factor).toInt().coerceIn(0, 255)
-                pixels[i] = Color.argb(Color.alpha(c), r, g, b)
+                val a = c ushr 24
+                val r = (((c shr 16) and 0xFF) * factor).toInt().coerceIn(0, 255)
+                val g = (((c shr 8) and 0xFF) * factor).toInt().coerceIn(0, 255)
+                val b = ((c and 0xFF) * factor).toInt().coerceIn(0, 255)
+                pixels[i] = (a shl 24) or (r shl 16) or (g shl 8) or b
             }
         }
     }
@@ -69,10 +71,11 @@ object PostFXProcessor {
         val step = 255f / (levels - 1)
         for (i in pixels.indices) {
             val c = pixels[i]
-            val r = (Math.round(Color.red(c) / step) * step).toInt().coerceIn(0, 255)
-            val g = (Math.round(Color.green(c) / step) * step).toInt().coerceIn(0, 255)
-            val b = (Math.round(Color.blue(c) / step) * step).toInt().coerceIn(0, 255)
-            pixels[i] = Color.argb(Color.alpha(c), r, g, b)
+            val a = c ushr 24
+            val r = (Math.round(((c shr 16) and 0xFF) / step) * step).toInt().coerceIn(0, 255)
+            val g = (Math.round(((c shr 8) and 0xFF) / step) * step).toInt().coerceIn(0, 255)
+            val b = (Math.round((c and 0xFF) / step) * step).toInt().coerceIn(0, 255)
+            pixels[i] = (a shl 24) or (r shl 16) or (g shl 8) or b
         }
     }
 
@@ -81,10 +84,11 @@ object PostFXProcessor {
         val mask = (0xFF shl (8 - bits)) and 0xFF
         for (i in pixels.indices) {
             val c = pixels[i]
-            val r = Color.red(c) and mask
-            val g = Color.green(c) and mask
-            val b = Color.blue(c) and mask
-            pixels[i] = Color.argb(Color.alpha(c), r, g, b)
+            val a = c ushr 24
+            val r = (c shr 16) and mask
+            val g = (c shr 8) and mask
+            val b = c and mask
+            pixels[i] = (a shl 24) or (r shl 16) or (g shl 8) or b
         }
     }
 }

@@ -86,6 +86,7 @@ private fun StaticCanvas(
     modifier: Modifier = Modifier
 ) {
     var renderedBitmap by remember { mutableStateOf<Bitmap?>(null) }
+    var cachedSize by remember { mutableStateOf(0) }
 
     LaunchedEffect(generator.id, params, seed, palette, quality, postFX, renderTrigger) {
         withContext(Dispatchers.Default) {
@@ -94,7 +95,14 @@ private fun StaticCanvas(
                 Quality.BALANCED -> 540
                 Quality.ULTRA -> 810
             }
-            val bitmap = Bitmap.createBitmap(size, size, Bitmap.Config.ARGB_8888)
+            val bitmap = if (renderedBitmap != null && cachedSize == size) {
+                renderedBitmap!!
+            } else {
+                renderedBitmap?.recycle()
+                Bitmap.createBitmap(size, size, Bitmap.Config.ARGB_8888).also {
+                    cachedSize = size
+                }
+            }
             val canvas = Canvas(bitmap)
             canvas.drawColor(android.graphics.Color.BLACK)
             try {
@@ -112,7 +120,6 @@ private fun StaticCanvas(
                 }
             } catch (e: Exception) {
                 android.util.Log.e("AlgoCanvas", "Render failed for ${generator.id}", e)
-                // Draw red X on error so user sees something went wrong
                 val errPaint = android.graphics.Paint().apply {
                     color = android.graphics.Color.RED
                     strokeWidth = 4f
@@ -121,7 +128,6 @@ private fun StaticCanvas(
                 canvas.drawLine(0f, 0f, size.toFloat(), size.toFloat(), errPaint)
                 canvas.drawLine(size.toFloat(), 0f, 0f, size.toFloat(), errPaint)
             }
-            renderedBitmap?.recycle()
             renderedBitmap = bitmap
         }
     }

@@ -81,7 +81,7 @@ class PixelSortGenerator : Generator {
         }
 
         val rng = SeededRNG(seed)
-        val scaled = Bitmap.createScaledBitmap(source, w, h, true)
+        val scaled = if (source.width == w && source.height == h) source else Bitmap.createScaledBitmap(source, w, h, true)
         val pixels = IntArray(w * h)
         scaled.getPixels(pixels, 0, w, 0, 0, w, h)
 
@@ -168,24 +168,33 @@ class PixelSortGenerator : Generator {
     }
 
     private fun sortSpan(arr: IntArray, sortBy: String) {
+        val n = arr.size
+        val keys = FloatArray(n)
         val hsv = FloatArray(3)
-        val comparator = Comparator<Int> { a, b ->
-            val ka = when (sortBy) {
-                "hue" -> { Color.colorToHSV(a, hsv); hsv[0] }
-                "saturation" -> { Color.colorToHSV(a, hsv); hsv[1] }
-                else -> 0.299f * Color.red(a) + 0.587f * Color.green(a) + 0.114f * Color.blue(a)
+        for (i in 0 until n) {
+            val c = arr[i]
+            keys[i] = when (sortBy) {
+                "hue" -> { Color.colorToHSV(c, hsv); hsv[0] }
+                "saturation" -> { Color.colorToHSV(c, hsv); hsv[1] }
+                "red" -> ((c shr 16) and 0xFF).toFloat()
+                "green" -> ((c shr 8) and 0xFF).toFloat()
+                "blue" -> (c and 0xFF).toFloat()
+                else -> 0.299f * ((c shr 16) and 0xFF) + 0.587f * ((c shr 8) and 0xFF) + 0.114f * (c and 0xFF)
             }
-            val kb = when (sortBy) {
-                "hue" -> { Color.colorToHSV(b, hsv); hsv[0] }
-                "saturation" -> { Color.colorToHSV(b, hsv); hsv[1] }
-                else -> 0.299f * Color.red(b) + 0.587f * Color.green(b) + 0.114f * Color.blue(b)
-            }
-            ka.compareTo(kb)
         }
-
-        val boxed = arr.toTypedArray()
-        boxed.sortWith(comparator)
-        for (i in arr.indices) arr[i] = boxed[i]
+        // Insertion sort — spans are typically short
+        for (i in 1 until n) {
+            val key = keys[i]
+            val pixel = arr[i]
+            var j = i - 1
+            while (j >= 0 && keys[j] > key) {
+                keys[j + 1] = keys[j]
+                arr[j + 1] = arr[j]
+                j--
+            }
+            keys[j + 1] = key
+            arr[j + 1] = pixel
+        }
     }
 
     private fun drawPlaceholder(canvas: Canvas, bitmap: Bitmap) {
