@@ -18,6 +18,15 @@ fun ChangelogDialog(onDismiss: () -> Unit) {
         text = {
             Text(
                 text = """
+v1.2.0 (Android)
+New Features:
+- Added in-app Report Bug dialog (Info menu → Report Bug) with name, email, and description fields, submitted via Formspree
+
+Improvements:
+- Enhanced GIF export performance with optimized color quantization and LZW encoding
+- Smoother tab transitions using scrollToPage
+- Improved bitmap handling in StaticCanvas to avoid blank flashes and ensure proper recycling
+
 v1.1.0 (Android)
 Generator Improvements:
 - Rewrote 5 fractal generators: Mandelbrot (smooth coloring, interior detection), Julia (orbit traps, smooth iteration), Newton (multi-equation solver), IFS Barnsley (all 9 presets, flame/height/density coloring), Recursive Subdivision (true quad splits, noise coloring)
