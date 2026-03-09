@@ -62,6 +62,7 @@ fun MainScreen(
     var showPrivacy by remember { mutableStateOf(false) }
     var showDonation by remember { mutableStateOf(false) }
     var showUseCases by remember { mutableStateOf(false) }
+    var showReportBug by remember { mutableStateOf(false) }
     var showOriginalImage by remember { mutableStateOf(false) }
 
     // Image picker
@@ -217,6 +218,11 @@ fun MainScreen(
                             text = { Text("Privacy") },
                             leadingIcon = { Icon(Icons.Filled.PrivacyTip, contentDescription = null, modifier = Modifier.size(18.dp)) },
                             onClick = { showInfoMenu = false; showPrivacy = true }
+                        )
+                        DropdownMenuItem(
+                            text = { Text("Report Bug") },
+                            leadingIcon = { Icon(Icons.Filled.BugReport, contentDescription = null, modifier = Modifier.size(18.dp)) },
+                            onClick = { showInfoMenu = false; showReportBug = true }
                         )
                     }
                 }
@@ -444,6 +450,7 @@ fun MainScreen(
     if (showPrivacy) PrivacyDialog { showPrivacy = false }
     if (showDonation) DonationDialog { showDonation = false }
     if (showUseCases) UseCasesDialog { showUseCases = false }
+    if (showReportBug) ReportBugDialog { showReportBug = false }
 
     // Show share sheet after export
     exportState.lastExportUri?.let { uri ->
