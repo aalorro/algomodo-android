@@ -12,6 +12,7 @@ import com.artmondo.algomodo.data.palettes.Palette
 import com.artmondo.algomodo.generators.Generator
 import com.artmondo.algomodo.generators.Quality
 import java.io.*
+import java.util.Arrays
 
 object GifExporter {
 
@@ -119,7 +120,14 @@ object GifExporter {
 }
 
 /**
- * Animated GIF encoder with proper LZW compression and color quantization.
+ * Animated GIF encoder optimized for multi-frame animation export.
+ *
+ * Key optimizations vs naive HashMap-based approach:
+ * - IntArray(32768) for color frequency counting (direct indexing, no hashing/boxing)
+ * - IntArray(32768) for color→palette cache (persists across frames)
+ * - Global palette built once from first frame, reused for all frames
+ * - IntArray-based open-addressing hash table for LZW (no HashMap boxing)
+ * - All buffers pre-allocated and reused across frames (zero GC pressure)
  */
 class AnimatedGifEncoder {
     private var width = 0
@@ -130,8 +138,40 @@ class AnimatedGifEncoder {
     private var out: OutputStream? = null
     private var firstFrame = true
     private var sizeSet = false
-    private var colorTab: ByteArray? = null
+
+    // --- Quantization buffers (pre-allocated, reused across frames) ---
+
+    // Frequency count for each 15-bit color (5 bits per R/G/B channel)
+    private val colorFreq = IntArray(32768)
+
+    // Maps 15-bit color → palette index; -1 = not yet mapped.
+    // Persists across frames since the palette is global.
+    private val colorToIndex = IntArray(32768)
+
+    // The 256-color palette as 15-bit color values
+    private val paletteColors = IntArray(256)
+    private var paletteSize = 0
+
+    // GIF RGB palette bytes (256 entries × 3 bytes)
+    private val colorTab = ByteArray(768)
+
+    // Per-pixel palette indices for current frame
     private var indexedPixels: ByteArray? = null
+
+    // Temporary buffer for sorting colors by frequency
+    private val sortBuf = LongArray(32768)
+
+    // Whether the global palette has been computed
+    private var paletteBuilt = false
+
+    // --- LZW encoder buffers (pre-allocated, reused across frames) ---
+    private val lzwKeys = IntArray(LZW_HASH_SIZE)
+    private val lzwVals = IntArray(LZW_HASH_SIZE)
+    private val lzwBlock = ByteArray(255)
+
+    companion object {
+        private const val LZW_HASH_SIZE = 5003
+    }
 
     fun setDelay(ms: Int) { delay = ms / 10 }
     fun setRepeat(iter: Int) { repeat = iter }
@@ -144,12 +184,14 @@ class AnimatedGifEncoder {
             return false
         }
         started = true
+        firstFrame = true
+        sizeSet = false
+        paletteBuilt = false
+        colorToIndex.fill(-1)
         return true
     }
 
-    fun addFrame(im: Bitmap): Boolean {
-        return addFrame(im, null)
-    }
+    fun addFrame(im: Bitmap): Boolean = addFrame(im, null)
 
     fun addFrame(im: Bitmap, existingPixels: IntArray?): Boolean {
         if (!started) return false
@@ -160,7 +202,14 @@ class AnimatedGifEncoder {
                 sizeSet = true
             }
             val pixels = existingPixels ?: extractPixels(im)
-            quantizePixels(pixels)
+
+            // Build palette once from first frame, reuse for all subsequent frames
+            if (!paletteBuilt) {
+                buildPalette(pixels)
+                paletteBuilt = true
+            }
+            mapPixelsToPalette(pixels)
+
             if (firstFrame) {
                 writeLSD()
                 writePalette()
@@ -168,8 +217,7 @@ class AnimatedGifEncoder {
             }
             writeGraphicCtrlExt()
             writeImageDesc()
-            if (!firstFrame) writePalette()
-            writePixels()
+            writePixelsLZW()
             firstFrame = false
         } catch (e: IOException) {
             return false
@@ -195,72 +243,207 @@ class AnimatedGifEncoder {
         return pix
     }
 
-    private fun quantizePixels(pixels: IntArray) {
-        val nPix = pixels.size
-
-        // Count color frequencies using 15-bit quantization (5 bits per channel)
-        val colorFreq = HashMap<Int, Int>(minOf(nPix, 32768))
+    /**
+     * Build the 256-color palette from pixel data using frequency analysis.
+     * Called once for the first frame. Uses IntArray for O(1) frequency counting.
+     */
+    private fun buildPalette(pixels: IntArray) {
+        // Count frequencies using direct array indexing (no hashing or boxing)
+        colorFreq.fill(0)
         for (c in pixels) {
-            val r = ((c shr 16) and 0xFF) shr 3
-            val g = ((c shr 8) and 0xFF) shr 3
-            val b = (c and 0xFF) shr 3
-            val key = (r shl 10) or (g shl 5) or b
-            colorFreq[key] = (colorFreq[key] ?: 0) + 1
+            val key = (((c ushr 19) and 0x1F) shl 10) or
+                      (((c ushr 11) and 0x1F) shl 5) or
+                       ((c ushr 3) and 0x1F)
+            colorFreq[key]++
         }
 
-        // Pick top 256 most frequent colors
-        val topColors = colorFreq.entries
-            .sortedByDescending { it.value }
-            .take(256)
-            .map { it.key }
-
-        // Build GIF color table (expand 5-bit back to 8-bit)
-        colorTab = ByteArray(256 * 3)
-        for ((idx, color) in topColors.withIndex()) {
-            val r = ((color shr 10) and 0x1F) * 255 / 31
-            val g = ((color shr 5) and 0x1F) * 255 / 31
-            val b = (color and 0x1F) * 255 / 31
-            colorTab!![idx * 3] = r.toByte()
-            colorTab!![idx * 3 + 1] = g.toByte()
-            colorTab!![idx * 3 + 2] = b.toByte()
+        // Collect non-zero entries as packed (freq, colorKey) longs for sorting
+        var nonZeroCount = 0
+        for (i in 0 until 32768) {
+            if (colorFreq[i] > 0) {
+                sortBuf[nonZeroCount] = (colorFreq[i].toLong() shl 32) or i.toLong()
+                nonZeroCount++
+            }
         }
 
-        // Build reverse lookup for quantized colors that are in the palette
-        val colorToIndex = HashMap<Int, Int>(topColors.size * 2)
-        for ((idx, color) in topColors.withIndex()) {
-            colorToIndex[color] = idx
+        // Sort ascending by frequency; top-256 are at the end
+        Arrays.sort(sortBuf, 0, nonZeroCount)
+
+        paletteSize = minOf(nonZeroCount, 256)
+        for (k in 0 until paletteSize) {
+            paletteColors[k] = (sortBuf[nonZeroCount - 1 - k] and 0xFFFFL).toInt()
         }
 
-        // Map each pixel to nearest palette index
-        indexedPixels = ByteArray(nPix)
+        // Build GIF RGB color table (expand 5-bit channels back to 8-bit)
+        for (i in 0 until paletteSize) {
+            val color = paletteColors[i]
+            colorTab[i * 3]     = (((color shr 10) and 0x1F) * 255 / 31).toByte()
+            colorTab[i * 3 + 1] = (((color shr 5) and 0x1F) * 255 / 31).toByte()
+            colorTab[i * 3 + 2] = ((color and 0x1F) * 255 / 31).toByte()
+        }
+        // Zero remaining palette entries
+        for (i in paletteSize * 3 until 768) colorTab[i] = 0
+
+        // Seed color→index cache with exact palette matches
+        colorToIndex.fill(-1)
+        for (i in 0 until paletteSize) {
+            colorToIndex[paletteColors[i]] = i
+        }
+    }
+
+    /**
+     * Map each pixel to its nearest palette index.
+     * Uses IntArray cache for O(1) lookups on repeated 15-bit colors.
+     * Cache persists across frames since the palette is global.
+     */
+    private fun mapPixelsToPalette(pixels: IntArray) {
+        val nPix = pixels.size
+        if (indexedPixels == null || indexedPixels!!.size != nPix) {
+            indexedPixels = ByteArray(nPix)
+        }
+        val ip = indexedPixels!!
+        val pc = paletteColors
+        val ps = paletteSize
+        val cache = colorToIndex
+
         for (i in pixels.indices) {
             val c = pixels[i]
-            val r = ((c shr 16) and 0xFF) shr 3
-            val g = ((c shr 8) and 0xFF) shr 3
-            val b = (c and 0xFF) shr 3
+            val r = (c ushr 19) and 0x1F
+            val g = (c ushr 11) and 0x1F
+            val b = (c ushr 3) and 0x1F
             val key = (r shl 10) or (g shl 5) or b
 
-            val cached = colorToIndex[key]
-            if (cached != null) {
-                indexedPixels!![i] = cached.toByte()
+            val cached = cache[key]
+            if (cached >= 0) {
+                ip[i] = cached.toByte()
             } else {
-                // Find nearest color in palette
+                // Nearest-color search through palette
                 var bestIdx = 0
                 var bestDist = Int.MAX_VALUE
-                for ((pIdx, pColor) in topColors.withIndex()) {
+                for (pIdx in 0 until ps) {
+                    val pColor = pc[pIdx]
                     val pr = (pColor shr 10) and 0x1F
                     val pg = (pColor shr 5) and 0x1F
                     val pb = pColor and 0x1F
-                    val dist = (r - pr) * (r - pr) + (g - pg) * (g - pg) + (b - pb) * (b - pb)
+                    val dr = r - pr
+                    val dg = g - pg
+                    val db = b - pb
+                    val dist = dr * dr + dg * dg + db * db
                     if (dist < bestDist) {
                         bestDist = dist
                         bestIdx = pIdx
                     }
                 }
-                colorToIndex[key] = bestIdx
-                indexedPixels!![i] = bestIdx.toByte()
+                cache[key] = bestIdx
+                ip[i] = bestIdx.toByte()
             }
         }
+    }
+
+    /**
+     * LZW-compress indexed pixels and write to output stream.
+     * Uses pre-allocated IntArray open-addressing hash table instead of HashMap.
+     */
+    private fun writePixelsLZW() {
+        val os = out ?: return
+        val pixels = indexedPixels ?: return
+        val minCodeSize = 8
+        os.write(minCodeSize)
+
+        val clearCode = 1 shl minCodeSize   // 256
+        val eoiCode = clearCode + 1         // 257
+        val maxTableSize = 4096
+
+        var codeSize = minCodeSize + 1
+        var nextCode = eoiCode + 1
+
+        // Reset LZW hash table
+        lzwVals.fill(-1)
+
+        var bitBuffer = 0
+        var bitCount = 0
+        var blockIdx = 0
+        val block = lzwBlock
+
+        fun flushBlock() {
+            if (blockIdx > 0) {
+                os.write(blockIdx)
+                os.write(block, 0, blockIdx)
+                blockIdx = 0
+            }
+        }
+
+        fun emitCode(code: Int) {
+            bitBuffer = bitBuffer or (code shl bitCount)
+            bitCount += codeSize
+            while (bitCount >= 8) {
+                block[blockIdx++] = (bitBuffer and 0xFF).toByte()
+                bitBuffer = bitBuffer ushr 8
+                bitCount -= 8
+                if (blockIdx >= 254) flushBlock()
+            }
+        }
+
+        fun resetTable() {
+            lzwVals.fill(-1)
+            nextCode = eoiCode + 1
+            codeSize = minCodeSize + 1
+        }
+
+        emitCode(clearCode)
+
+        if (pixels.isEmpty()) {
+            emitCode(eoiCode)
+            if (bitCount > 0) block[blockIdx++] = (bitBuffer and 0xFF).toByte()
+            flushBlock()
+            os.write(0)
+            return
+        }
+
+        var prefix = pixels[0].toInt() and 0xFF
+
+        for (i in 1 until pixels.size) {
+            val suffix = pixels[i].toInt() and 0xFF
+            val key = (prefix shl 8) or suffix
+
+            // Open-addressing hash lookup
+            var h = key % LZW_HASH_SIZE
+            var found = false
+            while (true) {
+                val v = lzwVals[h]
+                if (v == -1) break        // empty slot
+                if (lzwKeys[h] == key) {  // match
+                    prefix = v
+                    found = true
+                    break
+                }
+                h++
+                if (h >= LZW_HASH_SIZE) h = 0
+            }
+
+            if (!found) {
+                emitCode(prefix)
+                if (nextCode < maxTableSize) {
+                    // h still points to the empty slot from lookup
+                    lzwKeys[h] = key
+                    lzwVals[h] = nextCode
+                    if (nextCode >= (1 shl codeSize) && codeSize < 12) {
+                        codeSize++
+                    }
+                    nextCode++
+                } else {
+                    emitCode(clearCode)
+                    resetTable()
+                }
+                prefix = suffix
+            }
+        }
+
+        emitCode(prefix)
+        emitCode(eoiCode)
+        if (bitCount > 0) block[blockIdx++] = (bitBuffer and 0xFF).toByte()
+        flushBlock()
+        os.write(0) // block terminator
     }
 
     private fun writeString(s: String) {
@@ -276,10 +459,7 @@ class AnimatedGifEncoder {
     }
 
     private fun writePalette() {
-        out?.write(colorTab!!, 0, colorTab!!.size)
-        // Pad to 256 entries if needed
-        val pad = 256 * 3 - colorTab!!.size
-        for (i in 0 until pad) out?.write(0)
+        out?.write(colorTab, 0, 768)
     }
 
     private fun writeNetscapeExt() {
@@ -309,128 +489,11 @@ class AnimatedGifEncoder {
         writeShort(0)    // top
         writeShort(width)
         writeShort(height)
-        if (firstFrame) {
-            out?.write(0) // no local color table (use global)
-        } else {
-            out?.write(0x87) // local color table flag=1, size=7 (256 colors)
-        }
-    }
-
-    private fun writePixels() {
-        LZWEncoder(indexedPixels!!, 8).encode(out!!)
+        out?.write(0)    // no local color table — use global
     }
 
     private fun writeShort(value: Int) {
         out?.write(value and 0xFF)
         out?.write((value shr 8) and 0xFF)
-    }
-}
-
-/**
- * Proper LZW encoder for GIF image data.
- */
-class LZWEncoder(
-    private val pixels: ByteArray,
-    private val colorDepth: Int
-) {
-    fun encode(os: OutputStream) {
-        val minCodeSize = maxOf(2, colorDepth)
-        os.write(minCodeSize) // write LZW minimum code size
-
-        val clearCode = 1 shl minCodeSize
-        val eoiCode = clearCode + 1
-        val maxTableSize = 4096
-
-        var codeSize = minCodeSize + 1
-        var nextCode = eoiCode + 1
-
-        // String table: maps (prefix_code, suffix_byte) -> new_code
-        // Key = (prefix << 8) | suffix — safe because suffix is 0-255
-        // and prefix < 4096, so max key = (4095 << 8)|255 = 1,048,575
-        var table = HashMap<Int, Int>(5003)
-
-        // Bit packing into sub-blocks
-        var bitBuffer = 0
-        var bitCount = 0
-        val block = ByteArray(255)
-        var blockIdx = 0
-
-        fun flushBlock() {
-            if (blockIdx > 0) {
-                os.write(blockIdx)
-                os.write(block, 0, blockIdx)
-                blockIdx = 0
-            }
-        }
-
-        fun emitCode(code: Int) {
-            bitBuffer = bitBuffer or (code shl bitCount)
-            bitCount += codeSize
-            while (bitCount >= 8) {
-                block[blockIdx++] = (bitBuffer and 0xFF).toByte()
-                bitBuffer = bitBuffer ushr 8
-                bitCount -= 8
-                if (blockIdx >= 254) flushBlock()
-            }
-        }
-
-        fun resetTable() {
-            table.clear()
-            nextCode = eoiCode + 1
-            codeSize = minCodeSize + 1
-        }
-
-        // Begin with clear code
-        emitCode(clearCode)
-
-        if (pixels.isEmpty()) {
-            emitCode(eoiCode)
-            if (bitCount > 0) {
-                block[blockIdx++] = (bitBuffer and 0xFF).toByte()
-            }
-            flushBlock()
-            os.write(0)
-            return
-        }
-
-        var prefix = pixels[0].toInt() and 0xFF
-
-        for (i in 1 until pixels.size) {
-            val suffix = pixels[i].toInt() and 0xFF
-            val key = (prefix shl 8) or suffix
-
-            val existing = table[key]
-            if (existing != null) {
-                prefix = existing
-            } else {
-                emitCode(prefix)
-
-                if (nextCode < maxTableSize) {
-                    table[key] = nextCode
-                    // Check if we need to increase code size AFTER adding
-                    if (nextCode >= (1 shl codeSize) && codeSize < 12) {
-                        codeSize++
-                    }
-                    nextCode++
-                } else {
-                    // Table full — emit clear code and reset
-                    emitCode(clearCode)
-                    resetTable()
-                }
-
-                prefix = suffix
-            }
-        }
-
-        // Emit the final prefix code
-        emitCode(prefix)
-        emitCode(eoiCode)
-
-        // Flush remaining bits
-        if (bitCount > 0) {
-            block[blockIdx++] = (bitBuffer and 0xFF).toByte()
-        }
-        flushBlock()
-        os.write(0) // block terminator
     }
 }
