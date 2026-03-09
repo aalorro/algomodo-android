@@ -87,7 +87,7 @@ class LinoCutGenerator : Generator {
         val inkColor = paletteColors[0]
         val paperColor = paletteColors[paletteColors.size - 1]
 
-        val scaled = Bitmap.createScaledBitmap(source, w, h, true)
+        val scaled = if (source.width == w && source.height == h) source else Bitmap.createScaledBitmap(source, w, h, true)
         val srcPixels = IntArray(w * h)
         scaled.getPixels(srcPixels, 0, w, 0, 0, w, h)
 

@@ -88,7 +88,7 @@ class FeedbackLoopGenerator : Generator {
             Quality.ULTRA -> 60
         }
 
-        val scaled = Bitmap.createScaledBitmap(source, w, h, true)
+        val scaled = if (source.width == w && source.height == h) source else Bitmap.createScaledBitmap(source, w, h, true)
 
         // Work with a mutable copy
         val current = scaled.copy(Bitmap.Config.ARGB_8888, true)

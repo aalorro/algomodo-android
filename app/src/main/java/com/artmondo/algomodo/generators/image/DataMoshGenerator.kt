@@ -77,7 +77,7 @@ class DataMoshGenerator : Generator {
         val speed = (params["speed"] as? Number)?.toFloat() ?: 0.5f
         val animSeed = if (speed > 0f && time > 0f) seed + (time * speed * 10f).toInt() else seed
         val rng = SeededRNG(animSeed)
-        val scaled = Bitmap.createScaledBitmap(source, w, h, true)
+        val scaled = if (source.width == w && source.height == h) source else Bitmap.createScaledBitmap(source, w, h, true)
         val pixels = IntArray(w * h)
         scaled.getPixels(pixels, 0, w, 0, 0, w, h)
 

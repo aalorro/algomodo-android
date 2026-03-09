@@ -96,7 +96,7 @@ class AsciiArtGenerator : Generator {
         }
 
         // Scale source to match output dimensions
-        val scaled = Bitmap.createScaledBitmap(source, w, h, true)
+        val scaled = if (source.width == w && source.height == h) source else Bitmap.createScaledBitmap(source, w, h, true)
 
         val cols = w / cellSize
         val rows = h / cellSize
