@@ -72,9 +72,16 @@ class AlgoApp : Application() {
         GeneratorRegistry.register(MstWebGenerator())
         GeneratorRegistry.register(SpirographGenerator())
 
-        // Graphs (4)
+        // Graphs (11)
+        GeneratorRegistry.register(GraphAnisotropicGenerator())
+        GeneratorRegistry.register(GraphConstrainedDelaunayGenerator())
         GeneratorRegistry.register(GraphEcosystemsGenerator())
+        GeneratorRegistry.register(GraphEulerTrailsGenerator())
+        GeneratorRegistry.register(GraphGabrielGraphGenerator())
+        GeneratorRegistry.register(GraphGeodesicGenerator())
+        GeneratorRegistry.register(GraphKNearestNeighborGenerator())
         GeneratorRegistry.register(GraphLowPolyGenerator())
+        GeneratorRegistry.register(GraphPlanarGenerator())
         GeneratorRegistry.register(GraphSteinerNetworksGenerator())
         GeneratorRegistry.register(GraphTessellationsGenerator())
 

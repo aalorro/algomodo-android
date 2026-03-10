@@ -24,7 +24,7 @@ fun InstructionsDialog(onDismiss: () -> Unit) {
                 verticalArrangement = Arrangement.spacedBy(12.dp)
             ) {
                 HelpSection("What is Algomodo?") {
-                    "Algomodo generates art using pure mathematics. It has 93 generators across 10 families: noise, fractals, cellular automata, geometry, Voronoi, graphs, plotter, text, image processing, and animation. All processing runs 100% locally on your device."
+                    "Algomodo generates art using pure mathematics. It has 104 generators across 10 families: noise, fractals, cellular automata, geometry, Voronoi, graphs, plotter, text, image processing, and animation. All processing runs 100% locally on your device."
                 }
                 HelpSection("What is a Seed?") {
                     "A seed is a number that determines the randomness of your art. The same seed + same parameters = exact same output every time. Tap the lock icon to preserve your seed across random operations."
@@ -35,7 +35,7 @@ fun InstructionsDialog(onDismiss: () -> Unit) {
                     "RELOAD: Re-renders with the exact same settings. Useful after PostFX changes."
                 }
                 HelpSection("The Four Tabs") {
-                    "Generators: Browse 10 families, select from 93 generators.\n\n" +
+                    "Generators: Browse 10 families, select from 104 generators.\n\n" +
                     "Params: Adjust parameters for the current generator. Lock any parameter to preserve it during randomization.\n\n" +
                     "Export: Save as PNG, JPG, SVG, GIF, or MP4. Export/import recipes.\n\n" +
                     "Settings: Theme, quality, FPS, Post-processing effects."
@@ -68,6 +68,14 @@ fun InstructionsDialog(onDismiss: () -> Unit) {
                 }
                 HelpSection("Generator Parameters") {
                     "Every parameter in the Params tab actively controls the output. Lock any parameter to preserve it during randomization. Parameters are grouped by category: Geometry, Composition, Color, Texture, and Flow/Motion."
+                }
+                HelpSection("Touch Gestures") {
+                    "Enable in Settings > Touch Interaction.\n\n" +
+                    "Tap: Expand canvas to full screen width. Tap again to restore.\n\n" +
+                    "Swipe Right: Randomize parameters and seed.\n\n" +
+                    "Swipe Left: Undo / return to previous render.\n\n" +
+                    "Swipe Up: Trigger Surprise Me (new generator + params).\n\n" +
+                    "Swipe Down: Undo / return to previous render."
                 }
                 HelpSection("Tips") {
                     "- Quick-save renders at 1080x1080\n" +
