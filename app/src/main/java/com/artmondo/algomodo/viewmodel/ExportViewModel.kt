@@ -31,6 +31,7 @@ data class ExportUiState(
     val gifResolution: Int = 600,
     val gifBoomerang: Boolean = false,
     val gifEndless: Boolean = false,
+    val videoDuration: Int = 15,
     val lastExportUri: Uri? = null,
     val error: String? = null
 )
@@ -59,6 +60,10 @@ class ExportViewModel @Inject constructor() : ViewModel() {
 
     fun setGifEndless(endless: Boolean) {
         _state.update { it.copy(gifEndless = endless, gifBoomerang = if (endless) false else it.gifBoomerang) }
+    }
+
+    fun setVideoDuration(duration: Int) {
+        _state.update { it.copy(videoDuration = duration.coerceIn(1, 60)) }
     }
 
     fun quickSave(
@@ -234,7 +239,7 @@ class ExportViewModel @Inject constructor() : ViewModel() {
                     width = resolution,
                     height = resolution,
                     fps = fps,
-                    durationSeconds = s.gifDuration,
+                    durationSeconds = s.videoDuration,
                     fileName = "algomodo_${System.currentTimeMillis()}",
                     onProgress = { p ->
                         _state.update { it.copy(exportProgress = p) }

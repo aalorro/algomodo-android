@@ -50,7 +50,9 @@ fun InstructionsDialog(onDismiss: () -> Unit) {
                     "Tap the play button to animate. Most generators support animation — fractals morph smoothly, geometry generators spin/bloom/morph, and cellular automata evolve their state over time. L-System animation shows progressive growth. Adjust FPS in Settings."
                 }
                 HelpSection("GIF & Video Export") {
-                    "While animating, export as GIF (3s/5s/8s, 600/800/1000px) or MP4. GIF supports boomerang (ping-pong) and endless loop modes."
+                    "While animating, the Export tab shows animation options. Resolution (600/800/1000px) is shared between GIF and MP4.\n\n" +
+                    "GIF: Duration up to 8 seconds (3s/5s/8s). Supports boomerang (ping-pong) and endless loop modes.\n\n" +
+                    "MP4: Duration up to 60 seconds (5s/15s/30s or custom). Great for longer animations and social media sharing."
                 }
                 HelpSection("Undo & Redo") {
                     "Up to 50 steps. Undo/redo buttons on the canvas bar. Each parameter change, seed change, generator change, and randomization creates a history entry."

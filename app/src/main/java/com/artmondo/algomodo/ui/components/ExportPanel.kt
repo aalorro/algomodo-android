@@ -9,6 +9,7 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.text.TextRange
 import androidx.compose.ui.text.input.TextFieldValue
+import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.unit.dp
 import com.artmondo.algomodo.viewmodel.ExportUiState
 import java.text.SimpleDateFormat
@@ -33,6 +34,7 @@ fun ExportPanel(
     onGifResolutionChange: (Int) -> Unit,
     onGifBoomerangChange: (Boolean) -> Unit,
     onGifEndlessChange: (Boolean) -> Unit,
+    onVideoDurationChange: (Int) -> Unit,
     generatorStyleName: String = "",
     modifier: Modifier = Modifier
 ) {
@@ -47,7 +49,8 @@ fun ExportPanel(
         if (exportState.isExporting) {
             LinearProgressIndicator(
                 progress = { exportState.exportProgress },
-                modifier = Modifier.fillMaxWidth()
+                modifier = Modifier.fillMaxWidth(),
+                color = Color(0xFF39FF14)
             )
             Text("Exporting...", style = MaterialTheme.typography.bodySmall)
             return
@@ -82,16 +85,37 @@ fun ExportPanel(
         }
 
         // Animation section
-        if (isAnimating) {
-            HorizontalDivider()
+        HorizontalDivider()
+        if (!isAnimating) {
+            Text(
+                "Start animation (play button) to access GIF & MP4 export options.",
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.error
+            )
+        } else {
             Text(
                 "Animation",
                 style = MaterialTheme.typography.labelMedium,
                 color = MaterialTheme.colorScheme.primary
             )
 
+            // Shared resolution
+            Row(
+                horizontalArrangement = Arrangement.spacedBy(8.dp),
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                Text("Size:", style = MaterialTheme.typography.bodySmall, modifier = Modifier.width(70.dp))
+                listOf(600, 800, 1000).forEach { res ->
+                    FilterChip(
+                        selected = exportState.gifResolution == res,
+                        onClick = { onGifResolutionChange(res) },
+                        label = { Text("${res}px") }
+                    )
+                }
+            }
+
             // GIF options
-            Text("GIF Options", style = MaterialTheme.typography.bodySmall)
+            Text("GIF", style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.secondary)
 
             Row(
                 horizontalArrangement = Arrangement.spacedBy(8.dp),
@@ -106,20 +130,7 @@ fun ExportPanel(
                     )
                 }
             }
-
-            Row(
-                horizontalArrangement = Arrangement.spacedBy(8.dp),
-                verticalAlignment = Alignment.CenterVertically
-            ) {
-                Text("Size:", style = MaterialTheme.typography.bodySmall, modifier = Modifier.width(70.dp))
-                listOf(600, 800, 1000).forEach { res ->
-                    FilterChip(
-                        selected = exportState.gifResolution == res,
-                        onClick = { onGifResolutionChange(res) },
-                        label = { Text("${res}px") }
-                    )
-                }
-            }
+            Text("GIF duration only (max 8s)", style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
 
             Row(
                 horizontalArrangement = Arrangement.spacedBy(16.dp),
@@ -141,13 +152,73 @@ fun ExportPanel(
                 }
             }
 
-            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                Button(onClick = onExportGif, modifier = Modifier.weight(1f)) {
-                    Text("Export GIF")
+            Button(onClick = onExportGif, modifier = Modifier.fillMaxWidth()) {
+                Text("Export GIF")
+            }
+
+            HorizontalDivider()
+
+            // MP4 options
+            Text("MP4", style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.secondary)
+
+            var showCustomDuration by remember { mutableStateOf(false) }
+            val isCustom = exportState.videoDuration !in listOf(5, 15, 30)
+
+            Row(
+                horizontalArrangement = Arrangement.spacedBy(8.dp),
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                Text("Duration:", style = MaterialTheme.typography.bodySmall, modifier = Modifier.width(70.dp))
+                listOf(5, 15, 30).forEach { dur ->
+                    FilterChip(
+                        selected = exportState.videoDuration == dur && !showCustomDuration,
+                        onClick = {
+                            showCustomDuration = false
+                            onVideoDurationChange(dur)
+                        },
+                        label = { Text("${dur}s") }
+                    )
                 }
-                Button(onClick = onExportVideo, modifier = Modifier.weight(1f)) {
-                    Text("Export MP4")
+                FilterChip(
+                    selected = showCustomDuration || isCustom,
+                    onClick = { showCustomDuration = true },
+                    label = { Text(if (isCustom && !showCustomDuration) "${exportState.videoDuration}s" else "Custom") }
+                )
+            }
+            Text("MP4 duration only (max 60s)", style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+
+            if (showCustomDuration) {
+                var customText by remember {
+                    mutableStateOf(TextFieldValue(
+                        if (isCustom) exportState.videoDuration.toString() else "",
+                        selection = TextRange(0, if (isCustom) exportState.videoDuration.toString().length else 0)
+                    ))
                 }
+                Row(
+                    horizontalArrangement = Arrangement.spacedBy(8.dp),
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Spacer(Modifier.width(70.dp))
+                    OutlinedTextField(
+                        value = customText,
+                        onValueChange = { newVal ->
+                            val filtered = newVal.copy(text = newVal.text.filter { it.isDigit() }.take(2))
+                            customText = filtered
+                        },
+                        label = { Text("1-60s") },
+                        singleLine = true,
+                        modifier = Modifier.width(90.dp)
+                    )
+                    TextButton(onClick = {
+                        val secs = customText.text.toIntOrNull()?.coerceIn(1, 60) ?: 15
+                        onVideoDurationChange(secs)
+                        showCustomDuration = false
+                    }) { Text("Set") }
+                }
+            }
+
+            Button(onClick = onExportVideo, modifier = Modifier.fillMaxWidth()) {
+                Text("Export MP4")
             }
         }
 
