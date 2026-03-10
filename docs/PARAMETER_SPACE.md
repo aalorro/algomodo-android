@@ -15,7 +15,7 @@ Total number of distinct visual outcomes possible across all generators, given t
 
 ## Grand Total
 
-### 9,437,160 distinct parameter configurations
+### 9,524,200 distinct parameter configurations
 
 ---
 
@@ -23,15 +23,15 @@ Total number of distinct visual outcomes possible across all generators, given t
 
 | Family | Generators | Outcomes | Share |
 |--------|-----------|----------|-------|
-| Plotter | 14 | 6,931,200 | 73.45% |
-| Graphs | 11 | 1,770,240 | 18.76% |
-| Voronoi | 11 | 295,040 | 3.13% |
-| Noise | 7 | 268,800 | 2.85% |
+| Plotter | 14 | 6,931,200 | 72.78% |
+| Graphs | 11 | 1,770,240 | 18.59% |
+| Voronoi | 11 | 295,040 | 3.10% |
+| Noise | 7 | 268,800 | 2.82% |
 | Image | 14 | 64,480 | 0.68% |
-| Animation | 8 | 38,400 | 0.41% |
+| Animation | 8 | 38,400 | 0.40% |
 | Geometry | 10 | 23,520 | 0.25% |
 | Fractals | 10 | 18,800 | 0.20% |
-| Text | 5 | 14,560 | 0.15% |
+| Text | 8 | 101,600 | 1.07% |
 | Cellular | 14 | 12,120 | 0.13% |
 
 ---
@@ -57,16 +57,16 @@ Total number of distinct visual outcomes possible across all generators, given t
 
 | Rank | Generator | Family | Outcomes |
 |------|-----------|--------|----------|
-| 95 | fractal-strange-attractor | fractals | 960 |
-| 96 | fractal-burning-ship | fractals | 640 |
-| 97 | cyclic-ca | cellular | 640 |
-| 98 | ising-model | cellular | 480 |
-| 99 | elementary-ca | cellular | 480 |
-| 100 | forest-fire | cellular | 480 |
-| 101 | dla | cellular | 480 |
-| 102 | brians-brain | cellular | 480 |
-| 103 | percolation | cellular | 480 |
-| 104 | game-of-life | cellular | 480 |
+| 98 | fractal-strange-attractor | fractals | 960 |
+| 99 | fractal-burning-ship | fractals | 640 |
+| 100 | cyclic-ca | cellular | 640 |
+| 101 | ising-model | cellular | 480 |
+| 102 | elementary-ca | cellular | 480 |
+| 103 | forest-fire | cellular | 480 |
+| 104 | dla | cellular | 480 |
+| 105 | brians-brain | cellular | 480 |
+| 106 | percolation | cellular | 480 |
+| 107 | game-of-life | cellular | 480 |
 
 ---
 
@@ -202,17 +202,20 @@ Fixed to 1 input image. Image selection is not a variable.
 | hatching | 5×3 | 2^9 | 2 | 1024 × 15 × 10 | 153,600 |
 | plotter-meander-maze | 2×4×3×4×3 | 2^4 | 2×2 | 64 × 288 × 10 | 184,320 |
 
-### Text (5 generators — 14,560 outcomes)
+### Text (8 generators — 101,600 outcomes)
 
 Custom text (TextParam) excluded from all generators.
 
 | Generator | Select | Number | Boolean | Formula | Outcomes |
 |-----------|--------|--------|---------|---------|----------|
-| text-grid | 5×3 | 2^4 | — | 16 × 15 × 10 | 2,400 |
-| text-matrix | 5 | 2^5 | — | 32 × 5 × 10 | 1,600 |
+| text-glyphs | 4×4×4 | 2^5 | 2 | 64 × 64 × 10 | 40,960 |
+| text-procedural-cursive | 3×4×4 | 2^5 | 2 | 64 × 48 × 10 | 30,720 |
+| text-naive-handwriting | 3×4×4 | 2^4 | 2 | 32 × 48 × 10 | 15,360 |
+| text-rewrite | 5×4×3 | 2^3 | — | 8 × 60 × 10 | 4,800 |
 | text-concrete | 4×5 | 2^4 | — | 16 × 20 × 10 | 3,200 |
 | text-poem | 4×4 | 2^4 | — | 16 × 16 × 10 | 2,560 |
-| text-rewrite | 5×4×3 | 2^3 | — | 8 × 60 × 10 | 4,800 |
+| text-grid | 5×3 | 2^4 | — | 16 × 15 × 10 | 2,400 |
+| text-matrix | 5 | 2^5 | — | 32 × 5 × 10 | 1,600 |
 
 ### Voronoi (11 generators — 295,040 outcomes)
 
@@ -243,7 +246,7 @@ outcomes = (product of all SelectParam option counts)
          × 10 palettes
 ```
 
-The grand total is the **sum** across all 104 generators, since each generator is a distinct algorithm producing a fundamentally different class of output. Choosing a generator is itself a branch in the outcome tree.
+The grand total is the **sum** across all 107 generators, since each generator is a distinct algorithm producing a fundamentally different class of output. Choosing a generator is itself a branch in the outcome tree.
 
 ### What is excluded
 
@@ -259,6 +262,6 @@ The grand total is the **sum** across all 104 generators, since each generator i
 
 | If you added... | Multiplier |
 |-----------------|-----------|
-| PostFX (4 effects × ON/OFF) | ×16 → ~151.0M |
+| PostFX (4 effects × ON/OFF) | ×16 → ~152.4M |
 | Seed (assume 2^32 range) | ×4,294,967,296 → ~40.5 quadrillion |
 | Continuous NumberParam range (100 steps) | Astronomically large |

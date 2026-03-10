@@ -24,7 +24,7 @@ fun InstructionsDialog(onDismiss: () -> Unit) {
                 verticalArrangement = Arrangement.spacedBy(12.dp)
             ) {
                 HelpSection("What is Algomodo?") {
-                    "Algomodo generates art using pure mathematics. It has 104 generators across 10 families: noise, fractals, cellular automata, geometry, Voronoi, graphs, plotter, text, image processing, and animation. All processing runs 100% locally on your device."
+                    "Algomodo generates art using pure mathematics. It has 107 generators across 10 families: noise, fractals, cellular automata, geometry, Voronoi, graphs, plotter, text, image processing, and animation. All processing runs 100% locally on your device."
                 }
                 HelpSection("What is a Seed?") {
                     "A seed is a number that determines the randomness of your art. The same seed + same parameters = exact same output every time. Tap the lock icon to preserve your seed across random operations."
@@ -35,7 +35,7 @@ fun InstructionsDialog(onDismiss: () -> Unit) {
                     "RELOAD: Re-renders with the exact same settings. Useful after PostFX changes."
                 }
                 HelpSection("The Four Tabs") {
-                    "Generators: Browse 10 families, select from 104 generators.\n\n" +
+                    "Generators: Browse 10 families, select from 107 generators.\n\n" +
                     "Params: Adjust parameters for the current generator. Lock any parameter to preserve it during randomization.\n\n" +
                     "Export: Save as PNG, JPG, SVG, GIF, or MP4. Export/import recipes.\n\n" +
                     "Settings: Theme, quality, FPS, Post-processing effects."
@@ -44,7 +44,7 @@ fun InstructionsDialog(onDismiss: () -> Unit) {
                     "Image generators (14 total) require a source image. Tap 'Load Image' to pick from your gallery. Use 'Show Original' to toggle between the source image and processed output. Tap 'Clear Image' to remove it. The image is held in memory only — never saved or uploaded."
                 }
                 HelpSection("Text Generators") {
-                    "Text generators accept custom text input. Use the pipe character | to create line breaks in Poem Layout."
+                    "Text generators accept custom text input. Use the pipe character | to create line breaks in Poem Layout. Glyphs creates procedural abstract symbols, Naive Handwriting renders childlike hand-drawn letters, and Procedural Cursive generates connected flowing script."
                 }
                 HelpSection("Animation") {
                     "Tap the play button to animate. Most generators support animation — fractals morph smoothly, geometry generators spin/bloom/morph, and cellular automata evolve their state over time. L-System animation shows progressive growth. Adjust FPS in Settings."

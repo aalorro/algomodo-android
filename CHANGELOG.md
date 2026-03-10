@@ -2,6 +2,15 @@
 
 All notable changes to Algomodo will be documented in this file.
 
+## [1.3.1] - Android
+
+### New Generators (3)
+- Added 3 new text generators: Glyphs (procedural abstract symbols), Naive Handwriting (childlike hand-drawn letters), Procedural Cursive (connected flowing script)
+- Total generators: 107 across 10 families (up from 104)
+
+### Improvements
+- Parameter space expanded to over 9.5 million unique configurations (up from 9.4M)
+
 ## [1.3.0] - Android
 
 ### New Generators (12)
