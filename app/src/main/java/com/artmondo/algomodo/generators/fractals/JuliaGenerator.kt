@@ -67,6 +67,12 @@ class JuliaGenerator : Generator {
         val bandCount = (params["bandCount"] as? Number)?.toInt() ?: 8
         val speed = (params["speed"] as? Number)?.toFloat() ?: 0.5f
 
+        val scaledMaxIter = when (quality) {
+            Quality.DRAFT -> (maxIter / 2).coerceAtLeast(16)
+            Quality.BALANCED -> maxIter
+            Quality.ULTRA -> (maxIter * 1.5f).toInt()
+        }
+
         // Animate c parameter: orbit around the base c value using lissajous path
         val orbitRadius = 0.12
         val cr = baseCx + orbitRadius * sin(time.toDouble() * speed * 0.4)
@@ -79,51 +85,64 @@ class JuliaGenerator : Generator {
         val pixels = IntArray(w * h)
         val ln2 = ln(2.0)
 
-        for (py in 0 until h) {
-            for (px in 0 until w) {
-                var zr = (px.toDouble() / w - 0.5) * rangeX
-                var zi = (py.toDouble() / h - 0.5) * rangeY
+        // Precompute palette LUT
+        val lutSize = 256
+        val paletteLut = IntArray(lutSize) { palette.lerpColor(it.toFloat() / (lutSize - 1)) }
+        val darkBase = palette.lerpColor(0.5f)
+        val insideColor = Color.rgb(
+            (Color.red(darkBase) * 0.08f).toInt(),
+            (Color.green(darkBase) * 0.08f).toInt(),
+            (Color.blue(darkBase) * 0.08f).toInt()
+        )
+        val bandCountSafe = bandCount.coerceAtLeast(2)
+        val invW = 1.0 / w
+        val invH = 1.0 / h
+        val useBands = colorMode == "bands"
 
-                var iter = 0
-                while (iter < maxIter && zr * zr + zi * zi <= 4.0) {
-                    val tmp = zr * zr - zi * zi + cr
-                    zi = 2.0 * zr * zi + ci
-                    zr = tmp
-                    iter++
-                }
+        // Parallel row processing
+        val cores = Runtime.getRuntime().availableProcessors().coerceIn(2, 8)
+        val threads = Array(cores) { t ->
+            Thread {
+                val y0 = t * h / cores
+                val y1 = (t + 1) * h / cores
+                for (py in y0 until y1) {
+                    val ziBase = (py * invH - 0.5) * rangeY
+                    for (px in 0 until w) {
+                        var zr = (px * invW - 0.5) * rangeX
+                        var zi = ziBase
 
-                val color = if (iter >= maxIter) {
-                    // Inside — darkened palette
-                    val dark = palette.lerpColor(0.5f)
-                    Color.rgb(
-                        (Color.red(dark) * 0.08f).toInt(),
-                        (Color.green(dark) * 0.08f).toInt(),
-                        (Color.blue(dark) * 0.08f).toInt()
-                    )
-                } else {
-                    val mag2 = zr * zr + zi * zi
-                    val logZn = ln(mag2) / 2.0
-                    val nu = ln(logZn / ln2) / ln2
-                    val smoothIter = (iter + 1 - nu).toFloat()
-
-                    when (colorMode) {
-                        "bands" -> {
-                            // Stepped contour bands
-                            val band = (smoothIter * colorCycles / maxIter * bandCount).toInt() % bandCount
-                            val t = band.toFloat() / (bandCount - 1).coerceAtLeast(1)
-                            palette.lerpColor(t)
+                        var iter = 0
+                        while (iter < scaledMaxIter && zr * zr + zi * zi <= 4.0) {
+                            val tmp = zr * zr - zi * zi + cr
+                            zi = 2.0 * zr * zi + ci
+                            zr = tmp
+                            iter++
                         }
-                        else -> {
-                            // Smooth continuous gradient
-                            val t = ((smoothIter / maxIter * colorCycles) % 1.0).toFloat()
-                            palette.lerpColor(t.coerceIn(0f, 1f))
+
+                        val color = if (iter >= scaledMaxIter) {
+                            insideColor
+                        } else {
+                            val mag2 = zr * zr + zi * zi
+                            val logZn = ln(mag2) / 2.0
+                            val nu = ln(logZn / ln2) / ln2
+                            val smoothIter = (iter + 1 - nu).toFloat()
+
+                            if (useBands) {
+                                val band = (smoothIter * colorCycles / scaledMaxIter * bandCountSafe).toInt() % bandCountSafe
+                                val bt = band.toFloat() / (bandCountSafe - 1)
+                                paletteLut[(bt * (lutSize - 1)).toInt().coerceIn(0, lutSize - 1)]
+                            } else {
+                                val rawT = ((smoothIter / scaledMaxIter * colorCycles) % 1.0).toFloat()
+                                paletteLut[(rawT.coerceIn(0f, 1f) * (lutSize - 1)).toInt().coerceIn(0, lutSize - 1)]
+                            }
                         }
+
+                        pixels[py * w + px] = color
                     }
                 }
-
-                pixels[py * w + px] = color
-            }
+            }.also { it.start() }
         }
+        threads.forEach { it.join() }
 
         bitmap.setPixels(pixels, 0, w, 0, 0, w, h)
         canvas.drawBitmap(bitmap, 0f, 0f, null)
