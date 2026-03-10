@@ -51,34 +51,14 @@ class FractalFlamesGenerator : Generator {
         "speed" to 0.5f
     )
 
-    private fun applyVariation(variation: String, x: Double, y: Double): DoubleArray {
-        val r2 = x * x + y * y
-        val r = sqrt(r2)
-        val theta = atan2(y, x)
-        return when (variation) {
-            "sinusoidal" -> doubleArrayOf(sin(x), sin(y))
-            "spherical" -> {
-                val s = 1.0 / (r2 + 1e-10)
-                doubleArrayOf(x * s, y * s)
-            }
-            "swirl" -> {
-                val sr = sin(r2)
-                val cr = cos(r2)
-                doubleArrayOf(x * sr - y * cr, x * cr + y * sr)
-            }
-            "horseshoe" -> {
-                val inv = 1.0 / (r + 1e-10)
-                doubleArrayOf((x - y) * (x + y) * inv, 2.0 * x * y * inv)
-            }
-            "handkerchief" -> {
-                doubleArrayOf(r * sin(theta + r), r * cos(theta - r))
-            }
-            "disc" -> {
-                val f = theta / PI
-                doubleArrayOf(f * sin(PI * r), f * cos(PI * r))
-            }
-            else -> doubleArrayOf(sin(x), sin(y))
-        }
+    // Variation index constants to avoid string comparison in hot loop
+    private companion object {
+        const val VAR_SINUSOIDAL = 0
+        const val VAR_SPHERICAL = 1
+        const val VAR_SWIRL = 2
+        const val VAR_HORSESHOE = 3
+        const val VAR_HANDKERCHIEF = 4
+        const val VAR_DISC = 5
     }
 
     override fun renderCanvas(
@@ -107,27 +87,39 @@ class FractalFlamesGenerator : Generator {
 
         val anim = time * speed * 0.15f
 
-        // Generate seed-deterministic affine transforms
         val rng = SeededRNG(seed)
-        data class FlameTransform(
-            val a: Double, val b: Double, val c: Double, val d: Double,
-            val e: Double, val f: Double, val colorIdx: Float
-        )
+        // Store transforms as flat arrays for cache efficiency
+        val ta = DoubleArray(numTransforms)
+        val tb = DoubleArray(numTransforms)
+        val tc = DoubleArray(numTransforms)
+        val td = DoubleArray(numTransforms)
+        val te = DoubleArray(numTransforms)
+        val tf = DoubleArray(numTransforms)
+        val tColorIdx = FloatArray(numTransforms)
 
-        val transforms = Array(numTransforms) { i ->
+        for (i in 0 until numTransforms) {
             val angle = rng.range(0f, 2f * PI.toFloat()) + anim * (i + 1) * 0.3f
             val scale = rng.range(0.3f, 0.7f)
             val ca = cos(angle.toDouble()) * scale
             val sa = sin(angle.toDouble()) * scale
-            FlameTransform(
-                a = ca, b = -sa, c = sa, d = ca,
-                e = rng.range(-0.5f, 0.5f).toDouble(),
-                f = rng.range(-0.5f, 0.5f).toDouble(),
-                colorIdx = i.toFloat() / (numTransforms - 1).coerceAtLeast(1)
-            )
+            ta[i] = ca; tb[i] = -sa; tc[i] = sa; td[i] = ca
+            te[i] = rng.range(-0.5f, 0.5f).toDouble()
+            tf[i] = rng.range(-0.5f, 0.5f).toDouble()
+            tColorIdx[i] = i.toFloat() / (numTransforms - 1).coerceAtLeast(1)
         }
 
-        // Histogram accumulation
+        // Precompute palette LUT — avoids hex string parsing per iteration
+        val lutSize = 256
+        val lutR = IntArray(lutSize)
+        val lutG = IntArray(lutSize)
+        val lutB = IntArray(lutSize)
+        for (i in 0 until lutSize) {
+            val c = palette.lerpColor(i.toFloat() / (lutSize - 1))
+            lutR[i] = Color.red(c)
+            lutG[i] = Color.green(c)
+            lutB[i] = Color.blue(c)
+        }
+
         val histogram = IntArray(w * h)
         val colorAccR = FloatArray(w * h)
         val colorAccG = FloatArray(w * h)
@@ -141,40 +133,64 @@ class FractalFlamesGenerator : Generator {
         val skip = 20
         val viewScale = 1.5 / zoom
 
+        val varIdx = when (variation) {
+            "sinusoidal" -> VAR_SINUSOIDAL; "spherical" -> VAR_SPHERICAL
+            "swirl" -> VAR_SWIRL; "horseshoe" -> VAR_HORSESHOE
+            "handkerchief" -> VAR_HANDKERCHIEF; "disc" -> VAR_DISC
+            else -> VAR_SINUSOIDAL
+        }
+
         for (i in 0 until scaledIterations) {
-            // Pick a random transform
             val tIdx = iterRng.integer(0, numTransforms - 1)
-            val t = transforms[tIdx]
 
-            // Apply affine
-            val ax = t.a * x + t.b * y + t.e
-            val ay = t.c * x + t.d * y + t.f
+            val ax = ta[tIdx] * x + tb[tIdx] * y + te[tIdx]
+            val ay = tc[tIdx] * x + td[tIdx] * y + tf[tIdx]
 
-            // Apply variation
-            val v = applyVariation(variation, ax, ay)
-            x = v[0]
-            y = v[1]
+            // Inline variation to avoid function call + DoubleArray allocation
+            when (varIdx) {
+                VAR_SINUSOIDAL -> { x = sin(ax); y = sin(ay) }
+                VAR_SPHERICAL -> {
+                    val s = 1.0 / (ax * ax + ay * ay + 1e-10)
+                    x = ax * s; y = ay * s
+                }
+                VAR_SWIRL -> {
+                    val r2 = ax * ax + ay * ay
+                    val sr = sin(r2); val cr = cos(r2)
+                    x = ax * sr - ay * cr; y = ax * cr + ay * sr
+                }
+                VAR_HORSESHOE -> {
+                    val inv = 1.0 / (sqrt(ax * ax + ay * ay) + 1e-10)
+                    x = (ax - ay) * (ax + ay) * inv; y = 2.0 * ax * ay * inv
+                }
+                VAR_HANDKERCHIEF -> {
+                    val r = sqrt(ax * ax + ay * ay)
+                    val theta = atan2(ay, ax)
+                    x = r * sin(theta + r); y = r * cos(theta - r)
+                }
+                VAR_DISC -> {
+                    val r = sqrt(ax * ax + ay * ay)
+                    val f = atan2(ay, ax) / PI
+                    x = f * sin(PI * r); y = f * cos(PI * r)
+                }
+            }
 
-            // Blend color
-            curColor = (curColor + t.colorIdx) * 0.5f
+            curColor = (curColor + tColorIdx[tIdx]) * 0.5f
 
             if (i < skip) continue
 
-            // Map to pixel
             val sx = ((x / viewScale + 0.5) * w).toInt()
             val sy = ((y / viewScale + 0.5) * h).toInt()
 
             if (sx in 0 until w && sy in 0 until h) {
                 val idx = sy * w + sx
                 histogram[idx]++
-                val pc = palette.lerpColor(curColor)
-                colorAccR[idx] += Color.red(pc) / 255f
-                colorAccG[idx] += Color.green(pc) / 255f
-                colorAccB[idx] += Color.blue(pc) / 255f
+                val lutIdx = (curColor * (lutSize - 1)).toInt().coerceIn(0, lutSize - 1)
+                colorAccR[idx] += lutR[lutIdx] / 255f
+                colorAccG[idx] += lutG[lutIdx] / 255f
+                colorAccB[idx] += lutB[lutIdx] / 255f
             }
         }
 
-        // Find max density for log tone mapping
         var maxDensity = 1
         for (d in histogram) {
             if (d > maxDensity) maxDensity = d

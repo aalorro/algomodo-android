@@ -56,6 +56,13 @@ class StrangeAttractorDensityGenerator : Generator {
         "speed" to 0.5f
     )
 
+    private companion object {
+        const val ATT_CLIFFORD = 0
+        const val ATT_DEJONG = 1
+        const val ATT_SVENSSON = 2
+        const val ATT_BEDHEAD = 3
+    }
+
     override fun renderCanvas(
         canvas: Canvas,
         bitmap: Bitmap,
@@ -79,50 +86,58 @@ class StrangeAttractorDensityGenerator : Generator {
             Quality.ULTRA -> iterations * 2
         }
 
-        // Generate attractor parameters from seed
         val rng = SeededRNG(seed)
         val anim = time * speed * 0.1f
 
-        val pa = rng.range(-2.5f, 2.5f) + sin(anim * 0.7f) * 0.15f
-        val pb = rng.range(-2.5f, 2.5f) + cos(anim * 0.9f) * 0.15f
-        val pc = rng.range(-2.5f, 2.5f) + sin(anim * 1.1f) * 0.15f
-        val pd = rng.range(-2.5f, 2.5f) + cos(anim * 1.3f) * 0.15f
+        val a = (rng.range(-2.5f, 2.5f) + sin(anim * 0.7f) * 0.15f).toDouble()
+        val b = (rng.range(-2.5f, 2.5f) + cos(anim * 0.9f) * 0.15f).toDouble()
+        val c = (rng.range(-2.5f, 2.5f) + sin(anim * 1.1f) * 0.15f).toDouble()
+        val d = (rng.range(-2.5f, 2.5f) + cos(anim * 1.3f) * 0.15f).toDouble()
 
-        val a = pa.toDouble()
-        val b = pb.toDouble()
-        val c = pc.toDouble()
-        val d = pd.toDouble()
+        val attIdx = when (attractor) {
+            "clifford" -> ATT_CLIFFORD; "dejong" -> ATT_DEJONG
+            "svensson" -> ATT_SVENSSON; "bedhead" -> ATT_BEDHEAD
+            else -> ATT_CLIFFORD
+        }
 
-        // Iterate the attractor and collect points
+        val bound = 1e6
+        val skip = 100.coerceAtMost(scaledIterations)
+        val trackExtra = colorMode == "velocity" || colorMode == "angle"
+
+        // Single-pass: iterate, compute running bounds, then accumulate histogram
+        // Phase 1: iterate and compute bounds
         var x = 0.1
         var y = 0.1
-        val bound = 1e6
+        var minX = Float.MAX_VALUE; var maxX = -Float.MAX_VALUE
+        var minY = Float.MAX_VALUE; var maxY = -Float.MAX_VALUE
 
-        val pointsX = FloatArray(scaledIterations)
-        val pointsY = FloatArray(scaledIterations)
-        val pointVel = FloatArray(scaledIterations)
-        val pointAngle = FloatArray(scaledIterations)
-        val pointValid = BooleanArray(scaledIterations)
+        // Store only post-warmup points to save memory
+        val numPoints = scaledIterations - skip
+        val pointsX = FloatArray(if (numPoints > 0) numPoints else 0)
+        val pointsY = FloatArray(if (numPoints > 0) numPoints else 0)
+        val pointVel = if (trackExtra) FloatArray(if (numPoints > 0) numPoints else 0) else null
+        val pointAngle = if (trackExtra) FloatArray(if (numPoints > 0) numPoints else 0) else null
+
+        val bSafe = if (attIdx == ATT_BEDHEAD && abs(b) < 0.01) 0.01 else b
 
         for (i in 0 until scaledIterations) {
             val nx: Double
             val ny: Double
 
-            when (attractor) {
-                "clifford" -> {
+            when (attIdx) {
+                ATT_CLIFFORD -> {
                     nx = sin(a * y) + c * cos(a * x)
                     ny = sin(b * x) + d * cos(b * y)
                 }
-                "dejong" -> {
+                ATT_DEJONG -> {
                     nx = sin(a * y) - cos(b * x)
                     ny = sin(c * x) - cos(d * y)
                 }
-                "svensson" -> {
+                ATT_SVENSSON -> {
                     nx = d * sin(a * x) - sin(b * y)
                     ny = c * cos(a * x) + cos(b * y)
                 }
-                "bedhead" -> {
-                    val bSafe = if (abs(b) < 0.01) 0.01 else b
+                ATT_BEDHEAD -> {
                     nx = sin(x * y / bSafe) * y + cos(a * x - y)
                     ny = x + sin(y) / bSafe
                 }
@@ -135,39 +150,37 @@ class StrangeAttractorDensityGenerator : Generator {
             val valid = nx.isFinite() && ny.isFinite() && abs(nx) < bound && abs(ny) < bound
 
             if (valid) {
-                val dx = (nx - x).toFloat()
-                val dy = (ny - y).toFloat()
-                pointVel[i] = sqrt(dx * dx + dy * dy)
-                pointAngle[i] = ((atan2(dy, dx) / PI.toFloat()) + 1f) * 0.5f
+                if (i >= skip) {
+                    val pi = i - skip
+                    val pxf = nx.toFloat()
+                    val pyf = ny.toFloat()
+                    pointsX[pi] = pxf
+                    pointsY[pi] = pyf
+                    if (pxf < minX) minX = pxf
+                    if (pxf > maxX) maxX = pxf
+                    if (pyf < minY) minY = pyf
+                    if (pyf > maxY) maxY = pyf
+
+                    if (trackExtra) {
+                        val dx = (nx - x).toFloat()
+                        val dy = (ny - y).toFloat()
+                        pointVel!![pi] = sqrt(dx * dx + dy * dy)
+                        pointAngle!![pi] = ((atan2(dy, dx) / PI.toFloat()) + 1f) * 0.5f
+                    }
+                }
                 x = nx
                 y = ny
             } else {
-                // Reset to avoid permanent divergence
                 x = 0.1
                 y = 0.1
+                if (i >= skip) {
+                    val pi = i - skip
+                    pointsX[pi] = Float.NaN
+                    pointsY[pi] = Float.NaN
+                }
             }
-
-            pointsX[i] = x.toFloat()
-            pointsY[i] = y.toFloat()
-            pointValid[i] = valid
         }
 
-        // Compute bounds (skip warmup, only valid finite points)
-        val skip = 100.coerceAtMost(scaledIterations)
-        var minX = Float.MAX_VALUE; var maxX = -Float.MAX_VALUE
-        var minY = Float.MAX_VALUE; var maxY = -Float.MAX_VALUE
-        for (i in skip until scaledIterations) {
-            if (!pointValid[i]) continue
-            val px = pointsX[i]
-            val py = pointsY[i]
-            if (!px.isFinite() || !py.isFinite()) continue
-            if (px < minX) minX = px
-            if (px > maxX) maxX = px
-            if (py < minY) minY = py
-            if (py > maxY) maxY = py
-        }
-
-        // If bounds are invalid, nothing to render
         if (!minX.isFinite() || !maxX.isFinite() || minX >= maxX) {
             bitmap.setPixels(IntArray(w * h), 0, w, 0, 0, w, h)
             canvas.drawBitmap(bitmap, 0f, 0f, null)
@@ -177,14 +190,19 @@ class StrangeAttractorDensityGenerator : Generator {
         val rangeX = (maxX - minX).coerceAtLeast(0.001f)
         val rangeY = (maxY - minY).coerceAtLeast(0.001f)
         val margin = 0.05f
+        val scaleX = (1f - 2f * margin) / rangeX * w
+        val scaleY = (1f - 2f * margin) / rangeY * h
+        val offsetX = margin * w - minX * scaleX + minX * (1f / rangeX) * (2f * margin) * w
+        val offsetY = margin * h - minY * scaleY + minY * (1f / rangeY) * (2f * margin) * h
 
-        // Accumulate histogram
+        // Phase 2: accumulate histogram
         val histogram = IntArray(w * h)
-        val colorAcc = FloatArray(w * h) // for velocity/angle coloring
+        val colorAcc = if (trackExtra) FloatArray(w * h) else null
 
-        for (i in skip until scaledIterations) {
-            if (!pointValid[i]) continue
-            val sx = ((pointsX[i] - minX) / rangeX * (1f - 2f * margin) + margin) * w
+        for (i in 0 until numPoints) {
+            val pxf = pointsX[i]
+            if (!pxf.isFinite()) continue
+            val sx = ((pxf - minX) / rangeX * (1f - 2f * margin) + margin) * w
             val sy = (1f - ((pointsY[i] - minY) / rangeY * (1f - 2f * margin) + margin)) * h
             val px = sx.toInt()
             val py = sy.toInt()
@@ -193,19 +211,22 @@ class StrangeAttractorDensityGenerator : Generator {
                 val idx = py * w + px
                 histogram[idx]++
                 when (colorMode) {
-                    "velocity" -> colorAcc[idx] += pointVel[i]
-                    "angle" -> colorAcc[idx] += pointAngle[i]
+                    "velocity" -> colorAcc!![idx] += pointVel!![i]
+                    "angle" -> colorAcc!![idx] += pointAngle!![i]
                 }
             }
         }
 
-        // Render with log-density tone mapping
+        // Phase 3: render with precomputed palette LUT
         var maxDensity = 1
-        for (d in histogram) {
-            if (d > maxDensity) maxDensity = d
+        for (dd in histogram) {
+            if (dd > maxDensity) maxDensity = dd
         }
         val logMax = ln(maxDensity.toFloat() + 1f)
         val invGamma = 1.0 / gamma
+
+        val lutSize = 256
+        val paletteLut = IntArray(lutSize) { palette.lerpColor(it.toFloat() / (lutSize - 1)) }
 
         val pixels = IntArray(w * h)
         for (i in pixels.indices) {
@@ -213,17 +234,13 @@ class StrangeAttractorDensityGenerator : Generator {
                 val alpha = (ln(histogram[i].toFloat() + 1f) / logMax).toDouble().pow(invGamma).toFloat()
 
                 val t = when (colorMode) {
-                    "velocity" -> {
-                        val avgVel = colorAcc[i] / histogram[i]
-                        (avgVel * 2f).coerceIn(0f, 1f)
-                    }
-                    "angle" -> {
-                        (colorAcc[i] / histogram[i]).coerceIn(0f, 1f)
-                    }
-                    else -> alpha // density
+                    "velocity" -> (colorAcc!![i] / histogram[i] * 2f).coerceIn(0f, 1f)
+                    "angle" -> (colorAcc!![i] / histogram[i]).coerceIn(0f, 1f)
+                    else -> alpha
                 }
 
-                val baseColor = palette.lerpColor(t)
+                val lutIdx = (t * (lutSize - 1)).toInt().coerceIn(0, lutSize - 1)
+                val baseColor = paletteLut[lutIdx]
                 val r = (Color.red(baseColor) * alpha).toInt().coerceIn(0, 255)
                 val g = (Color.green(baseColor) * alpha).toInt().coerceIn(0, 255)
                 val b = (Color.blue(baseColor) * alpha).toInt().coerceIn(0, 255)
@@ -239,5 +256,4 @@ class StrangeAttractorDensityGenerator : Generator {
         val iterations = (params["iterations"] as? Number)?.toInt() ?: 500000
         return (iterations / 1000000f).coerceIn(0.1f, 1f)
     }
-
 }

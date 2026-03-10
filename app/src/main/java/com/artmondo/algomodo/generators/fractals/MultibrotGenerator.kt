@@ -3,7 +3,6 @@ package com.artmondo.algomodo.generators.fractals
 import android.graphics.Bitmap
 import android.graphics.Canvas
 import android.graphics.Color
-import com.artmondo.algomodo.core.rng.SeededRNG
 import com.artmondo.algomodo.data.palettes.Palette
 import com.artmondo.algomodo.generators.Generator
 import com.artmondo.algomodo.generators.ParamGroup
@@ -65,6 +64,12 @@ class MultibrotGenerator : Generator {
         val colorCycles = (params["colorCycles"] as? Number)?.toFloat() ?: 3f
         val speed = (params["speed"] as? Number)?.toFloat() ?: 0.5f
 
+        val scaledMaxIter = when (quality) {
+            Quality.DRAFT -> (maxIter / 2).coerceAtLeast(16)
+            Quality.BALANCED -> maxIter
+            Quality.ULTRA -> (maxIter * 1.5f).toInt()
+        }
+
         // Animate power with a gentle oscillation
         val power = basePower + sin(time.toDouble() * speed * 0.3) * 0.3
 
@@ -72,52 +77,88 @@ class MultibrotGenerator : Generator {
         val rangeY = 3.0 / zoom
         val rangeX = rangeY * aspect
 
-        // Escape radius depends on power — must be > 1 for convergence
         val escapeR = 2.0.pow(1.0 / (power - 1)).coerceAtLeast(2.0)
         val escapeR2 = escapeR * escapeR
 
         val pixels = IntArray(w * h)
         val lnPower = ln(power)
 
-        for (py in 0 until h) {
-            for (px in 0 until w) {
-                val cr = centerX + (px.toDouble() / w - 0.5) * rangeX
-                val ci = centerY + (py.toDouble() / h - 0.5) * rangeY
+        // Check if power is close to an integer for fast-path
+        val intPower = power.roundToInt()
+        val useIntegerPath = abs(power - intPower) < 0.01 && intPower >= 2
 
-                var zr = 0.0
-                var zi = 0.0
-                var iter = 0
+        val lutSize = 256
+        val paletteLut = IntArray(lutSize) { palette.lerpColor(it.toFloat() / (lutSize - 1)) }
+        val darkBase = palette.lerpColor(0.0f)
+        val insideColor = Color.rgb(
+            (Color.red(darkBase) * 0.1f).toInt(),
+            (Color.green(darkBase) * 0.1f).toInt(),
+            (Color.blue(darkBase) * 0.1f).toInt()
+        )
 
-                while (iter < maxIter && zr * zr + zi * zi <= escapeR2) {
-                    // z^d in polar form: r^d * (cos(d*theta) + i*sin(d*theta))
-                    val r = sqrt(zr * zr + zi * zi)
-                    val theta = atan2(zi, zr)
-                    val rD = r.pow(power)
-                    val dTheta = power * theta
-                    zr = rD * cos(dTheta) + cr
-                    zi = rD * sin(dTheta) + ci
-                    iter++
+        val timeShift = time * speed * 0.02f
+        val invW = 1.0 / w
+        val invH = 1.0 / h
+
+        val cores = Runtime.getRuntime().availableProcessors().coerceIn(2, 8)
+        val threads = Array(cores) { t ->
+            Thread {
+                val y0 = t * h / cores
+                val y1 = (t + 1) * h / cores
+                for (py in y0 until y1) {
+                    val ciBase = centerY + (py * invH - 0.5) * rangeY
+                    for (px in 0 until w) {
+                        val cr = centerX + (px * invW - 0.5) * rangeX
+                        val ci = ciBase
+
+                        var zr = 0.0
+                        var zi = 0.0
+                        var iter = 0
+
+                        if (useIntegerPath) {
+                            // Fast path: repeated complex multiplication (avoids sqrt, atan2, pow, sin, cos)
+                            while (iter < scaledMaxIter && zr * zr + zi * zi <= escapeR2) {
+                                var pr = zr
+                                var pi = zi
+                                for (k in 1 until intPower) {
+                                    val nr = pr * zr - pi * zi
+                                    val ni = pr * zi + pi * zr
+                                    pr = nr
+                                    pi = ni
+                                }
+                                zr = pr + cr
+                                zi = pi + ci
+                                iter++
+                            }
+                        } else {
+                            // Polar form for fractional powers
+                            while (iter < scaledMaxIter && zr * zr + zi * zi <= escapeR2) {
+                                val r = sqrt(zr * zr + zi * zi)
+                                val theta = atan2(zi, zr)
+                                val rD = r.pow(power)
+                                val dTheta = power * theta
+                                zr = rD * cos(dTheta) + cr
+                                zi = rD * sin(dTheta) + ci
+                                iter++
+                            }
+                        }
+
+                        val color = if (iter >= scaledMaxIter) {
+                            insideColor
+                        } else {
+                            val mag = sqrt(zr * zr + zi * zi)
+                            val smoothIter = iter + 1 - ln(ln(mag)) / lnPower
+                            val rawT = ((smoothIter / scaledMaxIter * colorCycles) % 1.0).toFloat()
+                            val shifted = ((rawT + timeShift) % 1f + 1f) % 1f
+                            paletteLut[(shifted * (lutSize - 1)).toInt().coerceIn(0, lutSize - 1)]
+                        }
+
+                        pixels[py * w + px] = color
+                    }
                 }
-
-                val color = if (iter >= maxIter) {
-                    val dark = palette.lerpColor(0.0f)
-                    Color.rgb(
-                        (Color.red(dark) * 0.1f).toInt(),
-                        (Color.green(dark) * 0.1f).toInt(),
-                        (Color.blue(dark) * 0.1f).toInt()
-                    )
-                } else {
-                    // Smooth coloring for arbitrary power
-                    val mag = sqrt(zr * zr + zi * zi)
-                    val smoothIter = iter + 1 - ln(ln(mag)) / lnPower
-                    val t = ((smoothIter / maxIter * colorCycles) % 1.0).toFloat()
-                    val shifted = ((t + time * speed * 0.02f) % 1f + 1f) % 1f
-                    palette.lerpColor(shifted)
-                }
-
-                pixels[py * w + px] = color
-            }
+            }.also { it.start() }
         }
+        threads.forEach { it.join() }
 
         bitmap.setPixels(pixels, 0, w, 0, 0, w, h)
         canvas.drawBitmap(bitmap, 0f, 0f, null)

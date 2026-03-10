@@ -67,12 +67,16 @@ class OrbitTrapsGenerator : Generator {
         val maxIter = (params["maxIterations"] as? Number)?.toInt() ?: 80
         val speed = (params["speed"] as? Number)?.toFloat() ?: 0.5f
 
-        // Animate trap rotation
+        val scaledMaxIter = when (quality) {
+            Quality.DRAFT -> (maxIter / 2).coerceAtLeast(16)
+            Quality.BALANCED -> maxIter
+            Quality.ULTRA -> (maxIter * 1.5f).toInt()
+        }
+
         val trapAngle = time.toDouble() * speed * 0.2
         val cosT = cos(trapAngle)
         val sinT = sin(trapAngle)
 
-        // Animate Julia c parameter
         val cr = baseCr + sin(time.toDouble() * speed * 0.15) * 0.08
         val ci = baseCi + cos(time.toDouble() * speed * 0.2) * 0.08
 
@@ -81,67 +85,85 @@ class OrbitTrapsGenerator : Generator {
         val rangeX = rangeY * aspect
 
         val pixels = IntArray(w * h)
+        val isJulia = mode == "julia"
+        val invTrapSize = 1.0 / trapSize
 
-        for (py in 0 until h) {
-            for (px in 0 until w) {
-                val x0 = (px.toDouble() / w - 0.5) * rangeX
-                val y0 = (py.toDouble() / h - 0.5) * rangeY
+        // Precompute palette LUT
+        val lutSize = 256
+        val paletteLut = IntArray(lutSize) { palette.lerpColor(it.toFloat() / (lutSize - 1)) }
+        val timeShift = time * speed * 0.01f
+        val invW = 1.0 / w
+        val invH = 1.0 / h
 
-                var zr: Double
-                var zi: Double
-                var cReal: Double
-                var cImag: Double
-
-                if (mode == "julia") {
-                    zr = x0; zi = y0
-                    cReal = cr; cImag = ci
-                } else {
-                    zr = 0.0; zi = 0.0
-                    cReal = x0; cImag = y0
-                }
-
-                var minDist = Double.MAX_VALUE
-                var iter = 0
-
-                while (iter < maxIter && zr * zr + zi * zi <= 64.0) {
-                    // Rotate z for trap test
-                    val rz = zr * cosT - zi * sinT
-                    val iz = zr * sinT + zi * cosT
-
-                    val dist = when (trapShape) {
-                        "point" -> sqrt(rz * rz + iz * iz)
-                        "circle" -> abs(sqrt(rz * rz + iz * iz) - trapSize)
-                        "cross" -> min(abs(rz), abs(iz))
-                        "square" -> min(abs(abs(rz) - trapSize), abs(abs(iz) - trapSize))
-                        else -> sqrt(rz * rz + iz * iz)
-                    }
-
-                    if (dist < minDist) minDist = dist
-
-                    val tmp = zr * zr - zi * zi + cReal
-                    zi = 2.0 * zr * zi + cImag
-                    zr = tmp
-                    iter++
-                }
-
-                // Map minimum distance to color
-                val t = (minDist / trapSize).coerceIn(0.0, 1.0).toFloat()
-                val shifted = ((t + time * speed * 0.01f) % 1f + 1f) % 1f
-                val color = if (iter >= maxIter) {
-                    // Inside set — use trap distance for subtle interior coloring
-                    val dark = palette.lerpColor(shifted)
-                    Color.rgb(
-                        (Color.red(dark) * 0.15f).toInt(),
-                        (Color.green(dark) * 0.15f).toInt(),
-                        (Color.blue(dark) * 0.15f).toInt()
-                    )
-                } else {
-                    palette.lerpColor(shifted)
-                }
-
-                pixels[py * w + px] = color
-            }
+        // Precompute trap shape index to avoid string comparison in inner loop
+        val trapIdx = when (trapShape) {
+            "point" -> 0; "circle" -> 1; "cross" -> 2; "square" -> 3; else -> 0
         }
+
+        val cores = Runtime.getRuntime().availableProcessors().coerceIn(2, 8)
+        val threads = Array(cores) { t ->
+            Thread {
+                val y0 = t * h / cores
+                val y1 = (t + 1) * h / cores
+                for (py in y0 until y1) {
+                    val y0v = (py * invH - 0.5) * rangeY
+                    for (px in 0 until w) {
+                        val x0 = (px * invW - 0.5) * rangeX
+
+                        var zr: Double
+                        var zi: Double
+                        var cReal: Double
+                        var cImag: Double
+
+                        if (isJulia) {
+                            zr = x0; zi = y0v; cReal = cr; cImag = ci
+                        } else {
+                            zr = 0.0; zi = 0.0; cReal = x0; cImag = y0v
+                        }
+
+                        var minDist = Double.MAX_VALUE
+                        var iter = 0
+
+                        while (iter < scaledMaxIter && zr * zr + zi * zi <= 64.0) {
+                            val rz = zr * cosT - zi * sinT
+                            val iz = zr * sinT + zi * cosT
+
+                            val dist = when (trapIdx) {
+                                0 -> sqrt(rz * rz + iz * iz)
+                                1 -> abs(sqrt(rz * rz + iz * iz) - trapSize)
+                                2 -> min(abs(rz), abs(iz))
+                                3 -> min(abs(abs(rz) - trapSize), abs(abs(iz) - trapSize))
+                                else -> sqrt(rz * rz + iz * iz)
+                            }
+
+                            if (dist < minDist) minDist = dist
+
+                            val tmp = zr * zr - zi * zi + cReal
+                            zi = 2.0 * zr * zi + cImag
+                            zr = tmp
+                            iter++
+                        }
+
+                        val rawT = (minDist * invTrapSize).coerceIn(0.0, 1.0).toFloat()
+                        val shifted = ((rawT + timeShift) % 1f + 1f) % 1f
+                        val lutIdx = (shifted * (lutSize - 1)).toInt().coerceIn(0, lutSize - 1)
+                        val color = if (iter >= scaledMaxIter) {
+                            val dark = paletteLut[lutIdx]
+                            Color.rgb(
+                                (Color.red(dark) * 0.15f).toInt(),
+                                (Color.green(dark) * 0.15f).toInt(),
+                                (Color.blue(dark) * 0.15f).toInt()
+                            )
+                        } else {
+                            paletteLut[lutIdx]
+                        }
+
+                        pixels[py * w + px] = color
+                    }
+                }
+            }.also { it.start() }
+        }
+        threads.forEach { it.join() }
 
         bitmap.setPixels(pixels, 0, w, 0, 0, w, h)
         canvas.drawBitmap(bitmap, 0f, 0f, null)
