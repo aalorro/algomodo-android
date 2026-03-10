@@ -8,10 +8,14 @@ import androidx.activity.result.PickVisualMediaRequest
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
+import androidx.compose.foundation.border
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.pager.HorizontalPager
 import androidx.compose.foundation.pager.rememberPagerState
 import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.foundation.text.BasicTextField
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.material.icons.Icons
@@ -21,14 +25,17 @@ import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.SolidColor
 import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.text.TextStyle
 import androidx.compose.ui.unit.DpOffset
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.hilt.navigation.compose.hiltViewModel
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
+import com.artmondo.algomodo.core.registry.GeneratorRegistry
 import com.artmondo.algomodo.ui.components.*
 import com.artmondo.algomodo.ui.dialogs.*
 import com.artmondo.algomodo.viewmodel.ExportViewModel
@@ -269,16 +276,93 @@ fun MainScreen(
             }
         }
 
-        // ===== SEED ROW =====
-        SeedControl(
-            seed = state.seed,
-            isLocked = state.seedLocked,
-            onSeedChange = { viewModel.setSeed(it) },
-            onToggleLock = { viewModel.setSeedLocked(it) },
+        // ===== SEARCH + SEED ROW =====
+        Row(
             modifier = Modifier
                 .fillMaxWidth()
-                .padding(horizontal = 16.dp, vertical = 2.dp)
-        )
+                .padding(horizontal = 16.dp, vertical = 2.dp),
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.spacedBy(8.dp)
+        ) {
+            // Generator search
+            var searchQuery by remember { mutableStateOf("") }
+            var searchExpanded by remember { mutableStateOf(false) }
+            val allGenerators = remember { GeneratorRegistry.allGenerators() }
+            val filteredGenerators = remember(searchQuery) {
+                if (searchQuery.length < 1) emptyList()
+                else allGenerators.filter {
+                    it.styleName.contains(searchQuery, ignoreCase = true) ||
+                    it.family.contains(searchQuery, ignoreCase = true)
+                }.take(8)
+            }
+
+            Box(modifier = Modifier.weight(1f)) {
+                Box(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .height(32.dp)
+                        .border(1.dp, MaterialTheme.colorScheme.onSurfaceVariant, RoundedCornerShape(4.dp))
+                        .padding(horizontal = 6.dp),
+                    contentAlignment = Alignment.CenterStart
+                ) {
+                    if (searchQuery.isEmpty()) {
+                        Text(
+                            "Search generators...",
+                            fontSize = 11.sp,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.5f)
+                        )
+                    }
+                    BasicTextField(
+                        value = searchQuery,
+                        onValueChange = {
+                            searchQuery = it
+                            searchExpanded = it.isNotEmpty()
+                        },
+                        singleLine = true,
+                        textStyle = TextStyle(
+                            fontSize = 12.sp,
+                            color = MaterialTheme.colorScheme.onSurface
+                        ),
+                        cursorBrush = SolidColor(MaterialTheme.colorScheme.primary),
+                        modifier = Modifier.fillMaxWidth()
+                    )
+                }
+                DropdownMenu(
+                    expanded = searchExpanded && filteredGenerators.isNotEmpty(),
+                    onDismissRequest = { searchExpanded = false },
+                    modifier = Modifier.widthIn(max = 250.dp)
+                ) {
+                    filteredGenerators.forEach { generator ->
+                        DropdownMenuItem(
+                            text = {
+                                Column {
+                                    Text(generator.styleName, fontSize = 13.sp)
+                                    Text(
+                                        generator.family,
+                                        fontSize = 10.sp,
+                                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                                    )
+                                }
+                            },
+                            onClick = {
+                                viewModel.selectGenerator(generator)
+                                searchQuery = ""
+                                searchExpanded = false
+                            }
+                        )
+                    }
+                }
+            }
+
+            // Seed control
+            SeedControl(
+                seed = state.seed,
+                isLocked = state.seedLocked,
+                onSeedChange = { viewModel.setSeed(it) },
+                onToggleLock = { viewModel.setSeedLocked(it) },
+                modifier = Modifier.weight(1f)
+            )
+        }
 
         // Source image button (for image family)
         if (state.generator?.family == "image") {
