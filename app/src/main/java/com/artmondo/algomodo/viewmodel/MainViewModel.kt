@@ -325,6 +325,16 @@ class MainViewModel @Inject constructor(
         _state.update { it.copy(renderTrigger = it.renderTrigger + 1) }
     }
 
+    fun clearCanvas() {
+        _state.update {
+            it.copy(
+                generator = null,
+                isAnimating = false,
+                renderTrigger = it.renderTrigger + 1
+            )
+        }
+    }
+
     fun toggleParamLock(key: String) {
         _state.update {
             val newLocked = if (key in it.lockedParams) it.lockedParams - key else it.lockedParams + key
