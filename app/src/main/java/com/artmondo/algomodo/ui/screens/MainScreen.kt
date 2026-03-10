@@ -414,6 +414,7 @@ fun MainScreen(
                         onGifResolutionChange = { exportViewModel.setGifResolution(it) },
                         onGifBoomerangChange = { exportViewModel.setGifBoomerang(it) },
                         onGifEndlessChange = { exportViewModel.setGifEndless(it) },
+                        onVideoDurationChange = { exportViewModel.setVideoDuration(it) },
                         generatorStyleName = state.generator?.styleName ?: ""
                     )
                 }

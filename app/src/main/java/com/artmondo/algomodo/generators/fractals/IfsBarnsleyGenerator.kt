@@ -93,21 +93,16 @@ class IfsBarnsleyGenerator : Generator {
 
         return when (preset) {
             "barnsley" -> listOf(
-                // Stem
                 AffineTransform(0f, 0f, 0f, 0.16f, 0f, 0f, 0.01f),
-                // Main frond — animated sway
                 AffineTransform(
                     0.85f, 0.04f + 0.03f * st, -0.04f + 0.03f * ct, 0.85f,
                     0f, 1.6f, 0.85f
                 ),
-                // Left leaflet
                 AffineTransform(0.2f, -0.26f, 0.23f, 0.22f, 0f, 1.6f, 0.07f),
-                // Right leaflet
                 AffineTransform(-0.15f, 0.28f, 0.26f, 0.24f, 0f, 0.44f, 0.07f)
             )
 
             "sierpinski" -> {
-                // Animated Sierpinski — slight rotation of vertex positions
                 val r = 0.01f * st
                 listOf(
                     AffineTransform(0.5f, r, -r, 0.5f, 0f, 0f, 0.333f),
@@ -117,24 +112,19 @@ class IfsBarnsleyGenerator : Generator {
             }
 
             "maple" -> listOf(
-                // Stem
                 AffineTransform(0.14f, 0.01f, 0f, 0.51f, -0.08f, -1.31f, 0.10f),
-                // Left lobe — animated
                 AffineTransform(
                     0.43f, 0.52f + 0.03f * st, -0.45f, 0.50f,
                     1.49f, -0.75f, 0.35f
                 ),
-                // Right lobe — animated
                 AffineTransform(
                     0.45f, -0.49f - 0.03f * st, 0.47f, 0.47f,
                     -1.62f, -0.74f, 0.35f
                 ),
-                // Top
                 AffineTransform(0.49f, 0f, 0f, 0.51f, 0.02f, 1.62f, 0.20f)
             )
 
             "dragon" -> {
-                // Heighway dragon curve — animated rotation
                 val a1 = PI.toFloat() / 4f + anim * 0.05f
                 val a2 = PI.toFloat() / 4f - anim * 0.05f
                 val s = 1f / sqrt(2f)
@@ -153,21 +143,17 @@ class IfsBarnsleyGenerator : Generator {
             }
 
             "tree" -> listOf(
-                // Trunk
                 AffineTransform(0f, 0f, 0f, 0.5f, 0f, 0f, 0.05f),
-                // Left branch — animated angle
                 AffineTransform(
                     0.42f * ct, -0.42f * st,
                     0.42f * st, 0.42f * ct,
                     0f, 0.2f, 0.40f
                 ),
-                // Right branch — animated angle (opposite)
                 AffineTransform(
                     0.42f * ct, 0.42f * st,
                     -0.42f * st, 0.42f * ct,
                     0f, 0.2f, 0.40f
                 ),
-                // Tip
                 AffineTransform(0.1f, 0f, 0f, 0.1f, 0f, 0.2f, 0.15f)
             )
 
@@ -185,7 +171,6 @@ class IfsBarnsleyGenerator : Generator {
             )
 
             "crystal" -> {
-                // Hexagonal snowflake crystal — 6-fold symmetry + center
                 val scale = 0.333f
                 val radius = 0.667f
                 val transforms = mutableListOf<AffineTransform>()
@@ -199,13 +184,11 @@ class IfsBarnsleyGenerator : Generator {
                         )
                     )
                 }
-                // Center piece
                 transforms.add(AffineTransform(scale, 0f, 0f, scale, 0f, 0f, 1f / 7f))
                 transforms
             }
 
             "koch" -> {
-                // Koch curve — 4 transforms
                 val s3 = sqrt(3f) / 6f
                 listOf(
                     AffineTransform(0.333f, 0f, 0f, 0.333f, 0f, 0f, 0.25f),
@@ -224,7 +207,6 @@ class IfsBarnsleyGenerator : Generator {
             }
 
             "random" -> {
-                // Seed-based random contractive IFS
                 val numT = 3 + rng.integer(0, 3)
                 val transforms = mutableListOf<AffineTransform>()
                 for (k in 0 until numT) {
@@ -271,14 +253,10 @@ class IfsBarnsleyGenerator : Generator {
             Quality.ULTRA -> iterations * 2
         }
 
-        // Animation angle controlled by speed
         val animAngle = time * speed * 0.15f
-
-        // RNG for random preset — use separate instance so transform generation is deterministic
         val transformRng = SeededRNG(seed)
         val transforms = getTransforms(preset, animAngle, transformRng)
 
-        // Build cumulative probability array
         val cumProb = FloatArray(transforms.size)
         cumProb[0] = transforms[0].p
         for (i in 1 until transforms.size) {
@@ -291,12 +269,10 @@ class IfsBarnsleyGenerator : Generator {
 
         val skip = 100.coerceAtMost(scaledIterations)
 
-        // Global rotation from param (degrees to radians)
         val rotRad = rotation * PI.toFloat() / 180f
         val cosR = cos(rotRad)
         val sinR = sin(rotRad)
 
-        // Iterate and collect points
         val pointsX = FloatArray(scaledIterations)
         val pointsY = FloatArray(scaledIterations)
         val pointTransform = IntArray(scaledIterations)
@@ -317,13 +293,12 @@ class IfsBarnsleyGenerator : Generator {
             x = nx
             y = ny
 
-            // Apply global rotation
             pointsX[i] = x * cosR - y * sinR
             pointsY[i] = x * sinR + y * cosR
             pointTransform[i] = tIdx
         }
 
-        // Compute bounds (skip warmup)
+        // Compute bounds
         var minX = Float.MAX_VALUE
         var maxX = -Float.MAX_VALUE
         var minY = Float.MAX_VALUE
@@ -342,12 +317,15 @@ class IfsBarnsleyGenerator : Generator {
         val pixels = IntArray(w * h)
         val paletteColors = palette.colorInts()
         val ptSizeInt = pointSize.roundToInt().coerceAtLeast(1) - 1
+        val singlePixel = ptSizeInt == 0
+
+        // Precompute palette LUT for density and height modes
+        val lutSize = 256
+        val paletteLut = IntArray(lutSize) { palette.lerpColor(it.toFloat() / (lutSize - 1)) }
 
         when (colorMode) {
             "density" -> {
-                // Histogram-based density rendering with log tone-mapping
                 val histogram = IntArray(w * h)
-                val transformHist = IntArray(w * h) // dominant transform per pixel
 
                 for (i in skip until scaledIterations) {
                     val sx = ((pointsX[i] - minX) / rangeX * (1f - 2f * margin) + margin) * w
@@ -355,20 +333,23 @@ class IfsBarnsleyGenerator : Generator {
                     val px = sx.roundToInt()
                     val py = sy.roundToInt()
 
-                    for (dy in -ptSizeInt..ptSizeInt) {
-                        for (dx in -ptSizeInt..ptSizeInt) {
-                            val fx = px + dx
-                            val fy = py + dy
-                            if (fx in 0 until w && fy in 0 until h) {
-                                val idx = fy * w + fx
-                                histogram[idx]++
-                                transformHist[idx] = pointTransform[i]
+                    if (singlePixel) {
+                        if (px in 0 until w && py in 0 until h) {
+                            histogram[py * w + px]++
+                        }
+                    } else {
+                        for (dy in -ptSizeInt..ptSizeInt) {
+                            for (dx in -ptSizeInt..ptSizeInt) {
+                                val fx = px + dx
+                                val fy = py + dy
+                                if (fx in 0 until w && fy in 0 until h) {
+                                    histogram[fy * w + fx]++
+                                }
                             }
                         }
                     }
                 }
 
-                // Find max density
                 var maxDensity = 1
                 for (d in histogram) {
                     if (d > maxDensity) maxDensity = d
@@ -378,29 +359,33 @@ class IfsBarnsleyGenerator : Generator {
                 for (i in pixels.indices) {
                     if (histogram[i] > 0) {
                         val t = (ln(histogram[i].toFloat() + 1f) / logMax).coerceIn(0f, 1f)
-                        pixels[i] = palette.lerpColor(t)
+                        pixels[i] = paletteLut[(t * (lutSize - 1)).toInt().coerceIn(0, lutSize - 1)]
                     }
                 }
             }
 
             "height" -> {
-                // Color by y-position in fractal coordinate space
                 for (i in skip until scaledIterations) {
                     val sx = ((pointsX[i] - minX) / rangeX * (1f - 2f * margin) + margin) * w
                     val sy = (1f - ((pointsY[i] - minY) / rangeY * (1f - 2f * margin) + margin)) * h
                     val px = sx.roundToInt()
                     val py = sy.roundToInt()
 
-                    // Normalized y in fractal space (0 = bottom, 1 = top)
                     val yNorm = ((pointsY[i] - minY) / rangeY).coerceIn(0f, 1f)
-                    val color = palette.lerpColor(yNorm)
+                    val color = paletteLut[(yNorm * (lutSize - 1)).toInt().coerceIn(0, lutSize - 1)]
 
-                    for (dy in -ptSizeInt..ptSizeInt) {
-                        for (dx in -ptSizeInt..ptSizeInt) {
-                            val fx = px + dx
-                            val fy = py + dy
-                            if (fx in 0 until w && fy in 0 until h) {
-                                pixels[fy * w + fx] = color
+                    if (singlePixel) {
+                        if (px in 0 until w && py in 0 until h) {
+                            pixels[py * w + px] = color
+                        }
+                    } else {
+                        for (dy in -ptSizeInt..ptSizeInt) {
+                            for (dx in -ptSizeInt..ptSizeInt) {
+                                val fx = px + dx
+                                val fy = py + dy
+                                if (fx in 0 until w && fy in 0 until h) {
+                                    pixels[fy * w + fx] = color
+                                }
                             }
                         }
                     }
@@ -416,12 +401,18 @@ class IfsBarnsleyGenerator : Generator {
                     val py = sy.roundToInt()
                     val color = paletteColors[pointTransform[i] % paletteColors.size]
 
-                    for (dy in -ptSizeInt..ptSizeInt) {
-                        for (dx in -ptSizeInt..ptSizeInt) {
-                            val fx = px + dx
-                            val fy = py + dy
-                            if (fx in 0 until w && fy in 0 until h) {
-                                pixels[fy * w + fx] = color
+                    if (singlePixel) {
+                        if (px in 0 until w && py in 0 until h) {
+                            pixels[py * w + px] = color
+                        }
+                    } else {
+                        for (dy in -ptSizeInt..ptSizeInt) {
+                            for (dx in -ptSizeInt..ptSizeInt) {
+                                val fx = px + dx
+                                val fy = py + dy
+                                if (fx in 0 until w && fy in 0 until h) {
+                                    pixels[fy * w + fx] = color
+                                }
                             }
                         }
                     }

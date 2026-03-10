@@ -60,12 +60,17 @@ class NewtonGenerator : Generator {
         val baseDamping = (params["damping"] as? Number)?.toDouble() ?: 1.0
         val colorMode = (params["colorMode"] as? String) ?: "blended"
         val speed = (params["speed"] as? Number)?.toFloat() ?: 0.5f
-        val tolSq = 1e-6
 
-        // Animate damping for nova fractal morphing
+        val scaledMaxIter = when (quality) {
+            Quality.DRAFT -> (maxIter / 2).coerceAtLeast(8)
+            Quality.BALANCED -> maxIter
+            Quality.ULTRA -> (maxIter * 1.5f).toInt()
+        }
+
+        val tolSq = 1e-6
         val damping = baseDamping + sin(time.toDouble() * speed * 0.3) * 0.1
 
-        // Compute roots of z^n - 1 (nth roots of unity)
+        // Precompute roots of z^n - 1
         val roots = Array(power) { k ->
             val angle = 2.0 * PI * k / power
             doubleArrayOf(cos(angle), sin(angle))
@@ -75,107 +80,102 @@ class NewtonGenerator : Generator {
         val rangeY = 3.0 / zoom
         val rangeX = rangeY * aspect
 
-        // Gentle view rotation for animation
         val rotAngle = time * speed * 0.08
         val cosR = cos(rotAngle)
         val sinR = sin(rotAngle)
 
         val pixels = IntArray(w * h)
         val paletteColors = palette.colorInts()
+        // Precompute palette LUT for iteration mode
+        val lutSize = 256
+        val paletteLut = IntArray(lutSize) { palette.lerpColor(it.toFloat() / (lutSize - 1)) }
+        val invW = 1.0 / w
+        val invH = 1.0 / h
+        val useIterationMode = colorMode == "iteration"
 
-        for (py in 0 until h) {
-            for (px in 0 until w) {
-                val rawX = (px.toDouble() / w - 0.5) * rangeX
-                val rawY = (py.toDouble() / h - 0.5) * rangeY
-                var zr = rawX * cosR - rawY * sinR
-                var zi = rawX * sinR + rawY * cosR
+        val cores = Runtime.getRuntime().availableProcessors().coerceIn(2, 8)
+        val threads = Array(cores) { t ->
+            Thread {
+                val y0 = t * h / cores
+                val y1 = (t + 1) * h / cores
+                for (py in y0 until y1) {
+                    val rawYBase = (py * invH - 0.5) * rangeY
+                    for (px in 0 until w) {
+                        val rawX = (px * invW - 0.5) * rangeX
+                        val rawY = rawYBase
+                        var zr = rawX * cosR - rawY * sinR
+                        var zi = rawX * sinR + rawY * cosR
 
-                var iter = 0
-                var rootIndex = -1
+                        var iter = 0
+                        var rootIndex = -1
 
-                while (iter < maxIter) {
-                    // Compute z^n and z^(n-1) for f(z) = z^n - 1, f'(z) = n * z^(n-1)
-                    // z^(n-1) by repeated multiplication
-                    var pr = 1.0; var pi = 0.0  // accumulates z^k
-                    for (k in 0 until power - 1) {
-                        val nr = pr * zr - pi * zi
-                        val ni = pr * zi + pi * zr
-                        pr = nr; pi = ni
-                    }
-                    // z^(n-1) = (pr, pi)
-                    // z^n = z^(n-1) * z
-                    val znr = pr * zr - pi * zi
-                    val zni = pr * zi + pi * zr
+                        while (iter < scaledMaxIter) {
+                            // z^(n-1) by repeated multiplication
+                            var pr = 1.0; var pi = 0.0
+                            for (k in 0 until power - 1) {
+                                val nr = pr * zr - pi * zi
+                                val ni = pr * zi + pi * zr
+                                pr = nr; pi = ni
+                            }
+                            val znr = pr * zr - pi * zi
+                            val zni = pr * zi + pi * zr
 
-                    // f(z) = z^n - 1
-                    val fr = znr - 1.0
-                    val fi = zni
+                            val fr = znr - 1.0
+                            val fi = zni
+                            val fpr = power * pr
+                            val fpi = power * pi
 
-                    // f'(z) = n * z^(n-1)
-                    val fpr = power * pr
-                    val fpi = power * pi
+                            val denom = fpr * fpr + fpi * fpi
+                            if (denom < 1e-20) break
 
-                    // f(z) / f'(z) = (fr + fi*i) / (fpr + fpi*i)
-                    val denom = fpr * fpr + fpi * fpi
-                    if (denom < 1e-20) break
+                            val qr = (fr * fpr + fi * fpi) / denom
+                            val qi = (fi * fpr - fr * fpi) / denom
 
-                    val qr = (fr * fpr + fi * fpi) / denom
-                    val qi = (fi * fpr - fr * fpi) / denom
+                            zr -= damping * qr
+                            zi -= damping * qi
 
-                    // z = z - damping * f(z)/f'(z)
-                    zr -= damping * qr
-                    zi -= damping * qi
-
-                    // Check convergence to any root
-                    for (ri in roots.indices) {
-                        val dr = zr - roots[ri][0]
-                        val di = zi - roots[ri][1]
-                        if (dr * dr + di * di < tolSq) {
-                            rootIndex = ri
-                            break
+                            for (ri in roots.indices) {
+                                val dr = zr - roots[ri][0]
+                                val di = zi - roots[ri][1]
+                                if (dr * dr + di * di < tolSq) {
+                                    rootIndex = ri
+                                    break
+                                }
+                            }
+                            if (rootIndex >= 0) break
+                            iter++
                         }
-                    }
-                    if (rootIndex >= 0) break
-                    iter++
-                }
 
-                val color = when {
-                    rootIndex < 0 -> Color.BLACK
-                    else -> {
-                        val baseColor = paletteColors[rootIndex % paletteColors.size]
-                        val iterFrac = iter.toFloat() / maxIter
-
-                        when (colorMode) {
-                            "root" -> {
-                                // Pure root color with subtle shading
-                                val bright = 0.95f - iterFrac * 0.15f
-                                Color.rgb(
-                                    (Color.red(baseColor) * bright).toInt().coerceIn(0, 255),
-                                    (Color.green(baseColor) * bright).toInt().coerceIn(0, 255),
-                                    (Color.blue(baseColor) * bright).toInt().coerceIn(0, 255)
-                                )
-                            }
-                            "iteration" -> {
-                                // Color by iteration count using full palette
-                                val t = (1f - iterFrac).coerceIn(0f, 1f)
-                                palette.lerpColor(t)
-                            }
+                        val color = when {
+                            rootIndex < 0 -> Color.BLACK
                             else -> {
-                                // Blended: root color modulated by convergence speed
-                                val bright = 1f - iterFrac * 0.7f
-                                Color.rgb(
-                                    (Color.red(baseColor) * bright).toInt().coerceIn(0, 255),
-                                    (Color.green(baseColor) * bright).toInt().coerceIn(0, 255),
-                                    (Color.blue(baseColor) * bright).toInt().coerceIn(0, 255)
-                                )
+                                val baseColor = paletteColors[rootIndex % paletteColors.size]
+                                val iterFrac = iter.toFloat() / scaledMaxIter
+
+                                if (useIterationMode) {
+                                    val t = (1f - iterFrac).coerceIn(0f, 1f)
+                                    paletteLut[(t * (lutSize - 1)).toInt().coerceIn(0, lutSize - 1)]
+                                } else {
+                                    val bright = if (colorMode == "root") {
+                                        0.95f - iterFrac * 0.15f
+                                    } else {
+                                        1f - iterFrac * 0.7f
+                                    }
+                                    Color.rgb(
+                                        (Color.red(baseColor) * bright).toInt().coerceIn(0, 255),
+                                        (Color.green(baseColor) * bright).toInt().coerceIn(0, 255),
+                                        (Color.blue(baseColor) * bright).toInt().coerceIn(0, 255)
+                                    )
+                                }
                             }
                         }
+
+                        pixels[py * w + px] = color
                     }
                 }
-
-                pixels[py * w + px] = color
-            }
+            }.also { it.start() }
         }
+        threads.forEach { it.join() }
 
         bitmap.setPixels(pixels, 0, w, 0, 0, w, h)
         canvas.drawBitmap(bitmap, 0f, 0f, null)
