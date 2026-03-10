@@ -23,7 +23,7 @@ object GeneratorRegistry {
     private val familyDescriptions = mapOf(
         "animation" to "Flow fields, particles, plasma, attractors",
         "cellular" to "Cellular automata (Game of Life, Reaction Diffusion, etc.)",
-        "fractals" to "Mandelbrot, Julia, Newton, IFS, Recursive Subdivision",
+        "fractals" to "Mandelbrot, Julia, Newton, IFS, Burning Ship, Multibrot, Orbit Traps, Fractal Flames, Strange Attractors",
         "geometry" to "Islamic patterns, Truchet, L-Systems, Spirograph, etc.",
         "graphs" to "Tessellations, Low-Poly, Ecosystems, Steiner Networks",
         "image" to "Pixel Sort, Halftone, ASCII, Glitch, etc. (require source image)",

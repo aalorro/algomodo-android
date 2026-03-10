@@ -48,12 +48,17 @@ class AlgoApp : Application() {
         GeneratorRegistry.register(SandpileGenerator())
         GeneratorRegistry.register(TuringPatternsGenerator())
 
-        // Fractals (5)
+        // Fractals (10)
+        GeneratorRegistry.register(BurningShipGenerator())
+        GeneratorRegistry.register(FractalFlamesGenerator())
         GeneratorRegistry.register(IfsBarnsleyGenerator())
         GeneratorRegistry.register(JuliaGenerator())
         GeneratorRegistry.register(MandelbrotGenerator())
+        GeneratorRegistry.register(MultibrotGenerator())
         GeneratorRegistry.register(NewtonGenerator())
+        GeneratorRegistry.register(OrbitTrapsGenerator())
         GeneratorRegistry.register(RecursiveSubdivisionGenerator())
+        GeneratorRegistry.register(StrangeAttractorDensityGenerator())
 
         // Geometry (10)
         GeneratorRegistry.register(ChladniGenerator())
