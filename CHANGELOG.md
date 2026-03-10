@@ -2,6 +2,26 @@
 
 All notable changes to Algomodo will be documented in this file.
 
+## [1.3.0] - Android
+
+### New Generators (12)
+- Added 5 new fractal generators: Burning Ship, Fractal Flames, Multibrot, Orbit Traps, Strange Attractor Density
+- Added 7 new graph generators: Geodesic, Constrained Delaunay, Anisotropic, Euler Trails, K-Nearest Neighbor, Gabriel Graph, Planar Graph
+- Total generators: 104 across 10 families (up from 93)
+
+### New Features
+- Canvas touch gestures (enable in Settings > Touch Interaction):
+  - Tap to expand canvas to full screen width, tap again to restore
+  - Swipe right to randomize parameters
+  - Swipe left to undo / return to previous render
+  - Swipe up to trigger Surprise Me
+  - Swipe down to undo / return to previous render
+- Generator search bar for quick filtering by name or family
+- Clear canvas button
+
+### Improvements
+- Parameter space expanded to over 9.4 million unique configurations (up from 7.6M)
+
 ## [1.2.0] - Android
 
 ### New Features

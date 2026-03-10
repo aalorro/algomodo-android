@@ -25,7 +25,7 @@ object GeneratorRegistry {
         "cellular" to "Cellular automata (Game of Life, Reaction Diffusion, etc.)",
         "fractals" to "Mandelbrot, Julia, Newton, IFS, Burning Ship, Multibrot, Orbit Traps, Fractal Flames, Strange Attractors",
         "geometry" to "Islamic patterns, Truchet, L-Systems, Spirograph, etc.",
-        "graphs" to "Tessellations, Low-Poly, Ecosystems, Steiner Networks",
+        "graphs" to "Geodesic, Constrained Delaunay, Anisotropic, Euler Trails, KNN, Gabriel, Planar, Tessellations, Low-Poly, Ecosystems, Steiner Networks",
         "image" to "Pixel Sort, Halftone, ASCII, Glitch, etc. (require source image)",
         "noise" to "Simplex, FBM, Domain Warp, Turbulence, etc.",
         "plotter" to "Pen-plotter styles: stippling, hatching, contours, etc.",

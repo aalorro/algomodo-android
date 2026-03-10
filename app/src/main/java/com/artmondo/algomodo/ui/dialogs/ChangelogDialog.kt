@@ -18,6 +18,20 @@ fun ChangelogDialog(onDismiss: () -> Unit) {
         text = {
             Text(
                 text = """
+v1.3.0 (Android)
+New Generators (12):
+- 5 new fractal generators: Burning Ship, Fractal Flames, Multibrot, Orbit Traps, Strange Attractor Density
+- 7 new graph generators: Geodesic, Constrained Delaunay, Anisotropic, Euler Trails, K-Nearest Neighbor, Gabriel Graph, Planar Graph
+- Total: 104 generators across 10 families
+
+New Features:
+- Canvas touch gestures (Settings > Touch Interaction): tap to expand, swipe right to randomize, swipe left to undo, swipe up for Surprise Me, swipe down to undo
+- Generator search bar for quick filtering
+- Clear canvas button
+
+Improvements:
+- Parameter space expanded to over 9.4 million unique configurations
+
 v1.2.0 (Android)
 New Features:
 - Added in-app Report Bug dialog (Info menu → Report Bug) with name, email, and description fields, submitted via Formspree
