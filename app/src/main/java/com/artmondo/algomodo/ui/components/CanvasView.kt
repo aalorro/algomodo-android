@@ -4,14 +4,25 @@ import android.graphics.Bitmap
 import android.graphics.Canvas
 import android.view.SurfaceHolder
 import android.view.SurfaceView
+import androidx.compose.animation.core.LinearEasing
+import androidx.compose.animation.core.RepeatMode
+import androidx.compose.animation.core.animateFloat
+import androidx.compose.animation.core.infiniteRepeatable
+import androidx.compose.animation.core.rememberInfiniteTransition
+import androidx.compose.animation.core.tween
+import androidx.compose.foundation.Canvas as ComposeCanvas
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.geometry.Offset
+import androidx.compose.ui.geometry.Size
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.Shadow
 import androidx.compose.ui.graphics.asImageBitmap
+import androidx.compose.ui.graphics.drawscope.Fill
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.unit.dp
@@ -86,12 +97,14 @@ private fun StaticCanvas(
     modifier: Modifier = Modifier
 ) {
     var renderedBitmap by remember { mutableStateOf<Bitmap?>(null) }
+    var isRendering by remember { mutableStateOf(false) }
 
     DisposableEffect(Unit) {
         onDispose { renderedBitmap?.recycle() }
     }
 
     LaunchedEffect(generator.id, params, seed, palette, quality, postFX, renderTrigger) {
+        isRendering = true
         withContext(Dispatchers.Default) {
             val size = when (quality) {
                 Quality.DRAFT -> 360
@@ -132,6 +145,7 @@ private fun StaticCanvas(
             renderedBitmap = bitmap
             old?.recycle()
         }
+        isRendering = false
     }
 
     Box(
@@ -145,6 +159,17 @@ private fun StaticCanvas(
                 contentDescription = "Generated art",
                 modifier = Modifier.fillMaxSize(),
                 contentScale = ContentScale.Fit
+            )
+        }
+
+        if (isRendering) {
+            NeonProgressBar(
+                modifier = Modifier
+                    .align(Alignment.BottomCenter)
+                    .padding(bottom = 25.dp)
+                    .fillMaxWidth()
+                    .padding(horizontal = 25.dp)
+                    .height(3.dp)
             )
         }
     }
@@ -296,6 +321,40 @@ private fun AnimationCanvas(
         modifier = modifier
             .aspectRatio(1f)
     )
+}
+
+@Composable
+private fun NeonProgressBar(modifier: Modifier = Modifier) {
+    val neonGreen = Color(0xFF39FF14)
+    val glowGreen = Color(0x6639FF14)
+    val infiniteTransition = rememberInfiniteTransition(label = "neon")
+    val progress by infiniteTransition.animateFloat(
+        initialValue = 0f,
+        targetValue = 1f,
+        animationSpec = infiniteRepeatable(
+            animation = tween(1000, easing = LinearEasing),
+            repeatMode = RepeatMode.Restart
+        ),
+        label = "neonProgress"
+    )
+
+    ComposeCanvas(modifier = modifier) {
+        val barWidth = size.width * 0.35f
+        val x = progress * (size.width + barWidth) - barWidth
+
+        // Glow layer
+        drawRect(
+            color = glowGreen,
+            topLeft = Offset(x - 4f, -2f),
+            size = Size(barWidth + 8f, size.height + 4f)
+        )
+        // Bright bar
+        drawRect(
+            color = neonGreen,
+            topLeft = Offset(x, 0f),
+            size = Size(barWidth, size.height)
+        )
+    }
 }
 
 /** Spot-check whether a bitmap is nearly all-black by sampling pixels. */
