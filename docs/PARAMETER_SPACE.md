@@ -15,7 +15,7 @@ Total number of distinct visual outcomes possible across all generators, given t
 
 ## Grand Total
 
-### 7,665,960 distinct parameter configurations
+### 9,437,160 distinct parameter configurations
 
 ---
 
@@ -23,16 +23,16 @@ Total number of distinct visual outcomes possible across all generators, given t
 
 | Family | Generators | Outcomes | Share |
 |--------|-----------|----------|-------|
-| Plotter | 14 | 6,931,200 | 90.41% |
-| Voronoi | 11 | 295,040 | 3.85% |
-| Noise | 7 | 268,800 | 3.51% |
-| Image | 14 | 64,480 | 0.84% |
-| Animation | 8 | 38,400 | 0.50% |
-| Geometry | 10 | 23,520 | 0.31% |
-| Text | 5 | 14,560 | 0.19% |
-| Cellular | 14 | 12,120 | 0.16% |
-| Graphs | 4 | 8,960 | 0.12% |
-| Fractals | 5 | 8,880 | 0.12% |
+| Plotter | 14 | 6,931,200 | 73.45% |
+| Graphs | 11 | 1,770,240 | 18.76% |
+| Voronoi | 11 | 295,040 | 3.13% |
+| Noise | 7 | 268,800 | 2.85% |
+| Image | 14 | 64,480 | 0.68% |
+| Animation | 8 | 38,400 | 0.41% |
+| Geometry | 10 | 23,520 | 0.25% |
+| Fractals | 10 | 18,800 | 0.20% |
+| Text | 5 | 14,560 | 0.15% |
+| Cellular | 14 | 12,120 | 0.13% |
 
 ---
 
@@ -44,12 +44,12 @@ Total number of distinct visual outcomes possible across all generators, given t
 | 2 | stippling | plotter | 1,228,800 |
 | 3 | plotter-scribble-shading | plotter | 983,040 |
 | 4 | plotter-tsp | plotter | 983,040 |
-| 5 | plotter-meander-maze | plotter | 184,320 |
-| 6 | voronoi-depth | voronoi | 184,320 |
-| 7 | plotter-phyllotaxis | plotter | 153,600 |
-| 8 | hatching | plotter | 153,600 |
-| 9 | plotter-offset-paths | plotter | 138,240 |
-| 10 | plotter-guilloche | plotter | 122,880 |
+| 5 | graph-euler-trails | graphs | 491,520 |
+| 6 | graph-knn | graphs | 409,600 |
+| 7 | graph-constrained-delaunay | graphs | 204,800 |
+| 8 | graph-planar | graphs | 204,800 |
+| 9 | plotter-meander-maze | plotter | 184,320 |
+| 10 | voronoi-depth | voronoi | 184,320 |
 
 ---
 
@@ -57,16 +57,16 @@ Total number of distinct visual outcomes possible across all generators, given t
 
 | Rank | Generator | Family | Outcomes |
 |------|-----------|--------|----------|
-| 83 | ising-model | cellular | 480 |
-| 84 | elementary-ca | cellular | 480 |
-| 85 | forest-fire | cellular | 480 |
-| 86 | dla | cellular | 480 |
-| 87 | brians-brain | cellular | 480 |
-| 88 | percolation | cellular | 480 |
-| 89 | game-of-life | cellular | 480 |
-| 90 | spirograph | geometry | 960 |
-| 91 | moire | geometry | 960 |
-| 92 | plasma-feedback | animation | 960 |
+| 95 | fractal-strange-attractor | fractals | 960 |
+| 96 | fractal-burning-ship | fractals | 640 |
+| 97 | cyclic-ca | cellular | 640 |
+| 98 | ising-model | cellular | 480 |
+| 99 | elementary-ca | cellular | 480 |
+| 100 | forest-fire | cellular | 480 |
+| 101 | dla | cellular | 480 |
+| 102 | brians-brain | cellular | 480 |
+| 103 | percolation | cellular | 480 |
+| 104 | game-of-life | cellular | 480 |
 
 ---
 
@@ -104,7 +104,7 @@ Total number of distinct visual outcomes possible across all generators, given t
 | eden-growth | 3×3 | 2^3 | — | 8 × 9 × 10 | 720 |
 | turing-patterns | 3 | 2^5 | — | 32 × 3 × 10 | 960 |
 
-### Fractals (5 generators — 8,880 outcomes)
+### Fractals (10 generators — 18,800 outcomes)
 
 | Generator | Select | Number | Boolean | Formula | Outcomes |
 |-----------|--------|--------|---------|---------|----------|
@@ -113,6 +113,11 @@ Total number of distinct visual outcomes possible across all generators, given t
 | newton | 4×3 | 2^4 | — | 16 × 12 × 10 | 1,920 |
 | ifs-barnsley | 5×3 | 2^3 | — | 8 × 15 × 10 | 1,200 |
 | recursive-subdivision | 4×3 | 2^3 | 2 | 16 × 12 × 10 | 1,920 |
+| fractal-orbit-traps | 2×4 | 2^6 | — | 64 × 8 × 10 | 5,120 |
+| fractal-flames | 6 | 2^5 | — | 32 × 6 × 10 | 1,920 |
+| fractal-multibrot | — | 2^7 | — | 128 × 1 × 10 | 1,280 |
+| fractal-strange-attractor | 4×3 | 2^3 | — | 8 × 12 × 10 | 960 |
+| fractal-burning-ship | — | 2^6 | — | 64 × 1 × 10 | 640 |
 
 ### Geometry (10 generators — 23,520 outcomes)
 
@@ -129,7 +134,7 @@ Total number of distinct visual outcomes possible across all generators, given t
 | islamic-patterns | 5×3 | 2^3 | 2 | 16 × 15 × 10 | 2,400 |
 | superformula | 3 | 2^8 | — | 256 × 3 × 10 | 7,680 |
 
-### Graphs (4 generators — 8,960 outcomes)
+### Graphs (11 generators — 1,770,240 outcomes)
 
 | Generator | Select | Number | Boolean | Formula | Outcomes |
 |-----------|--------|--------|---------|---------|----------|
@@ -137,6 +142,13 @@ Total number of distinct visual outcomes possible across all generators, given t
 | graph-low-poly | 4 | 2^4 | 2 | 32 × 4 × 10 | 1,280 |
 | graph-steiner-networks | 3 | 2^4 | 2 | 32 × 3 × 10 | 960 |
 | graph-tessellations | 5×3 | 2^4 | 2 | 32 × 15 × 10 | 4,800 |
+| graph-euler-trails | 6×4×4×4 | 2^5 | 2^2 | 128 × 384 × 10 | 491,520 |
+| graph-knn | 5×4×4 | 2^7 | 2^2 | 512 × 80 × 10 | 409,600 |
+| graph-constrained-delaunay | 5×4×4 | 2^6 | 2^2 | 256 × 80 × 10 | 204,800 |
+| graph-planar | 5×4×4 | 2^6 | 2^2 | 256 × 80 × 10 | 204,800 |
+| graph-geodesic | 4×2×4 | 2^7 | 2^2 | 512 × 32 × 10 | 163,840 |
+| graph-gabriel | 4×4×4 | 2^5 | 2^3 | 256 × 64 × 10 | 163,840 |
+| graph-anisotropic | 4×3×4 | 2^6 | 2^2 | 256 × 48 × 10 | 122,880 |
 
 ### Image (14 generators — 64,480 outcomes)
 
@@ -231,7 +243,7 @@ outcomes = (product of all SelectParam option counts)
          × 10 palettes
 ```
 
-The grand total is the **sum** across all 92 generators, since each generator is a distinct algorithm producing a fundamentally different class of output. Choosing a generator is itself a branch in the outcome tree.
+The grand total is the **sum** across all 104 generators, since each generator is a distinct algorithm producing a fundamentally different class of output. Choosing a generator is itself a branch in the outcome tree.
 
 ### What is excluded
 
@@ -247,6 +259,6 @@ The grand total is the **sum** across all 92 generators, since each generator is
 
 | If you added... | Multiplier |
 |-----------------|-----------|
-| PostFX (4 effects × ON/OFF) | ×16 → ~122.7M |
-| Seed (assume 2^32 range) | ×4,294,967,296 → ~32.9 quadrillion |
+| PostFX (4 effects × ON/OFF) | ×16 → ~151.0M |
+| Seed (assume 2^32 range) | ×4,294,967,296 → ~40.5 quadrillion |
 | Continuous NumberParam range (100 steps) | Astronomically large |

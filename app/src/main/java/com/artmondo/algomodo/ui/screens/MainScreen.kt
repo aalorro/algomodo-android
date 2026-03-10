@@ -41,6 +41,10 @@ import com.artmondo.algomodo.ui.dialogs.*
 import com.artmondo.algomodo.viewmodel.ExportViewModel
 import com.artmondo.algomodo.viewmodel.MainViewModel
 import kotlinx.coroutines.launch
+import androidx.compose.foundation.gestures.awaitEachGesture
+import androidx.compose.foundation.gestures.awaitFirstDown
+import androidx.compose.ui.input.pointer.pointerInput
+import kotlin.math.abs
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
@@ -71,6 +75,7 @@ fun MainScreen(
     var showUseCases by remember { mutableStateOf(false) }
     var showReportBug by remember { mutableStateOf(false) }
     var showOriginalImage by remember { mutableStateOf(false) }
+    var isCanvasExpanded by remember { mutableStateOf(false) }
 
     // Image picker
     val imagePickerLauncher = rememberLauncherForActivityResult(
@@ -135,25 +140,54 @@ fun MainScreen(
             .fillMaxSize()
             .background(MaterialTheme.colorScheme.background)
     ) {
-        // ===== TOP SECTION: Canvas + Palette (45% of screen) =====
+        // Canvas gesture modifier
+        val canvasGestureModifier = Modifier.pointerInput(state.interactionEnabled) {
+            if (!state.interactionEnabled) return@pointerInput
+            val swipeThreshold = 50.dp.toPx()
+            awaitEachGesture {
+                val down = awaitFirstDown()
+                val startPos = down.position
+                var lastPos = startPos
+                do {
+                    val event = awaitPointerEvent()
+                    val change = event.changes.firstOrNull { it.id == down.id }
+                    if (change != null) lastPos = change.position
+                } while (change?.pressed == true)
+                val drag = lastPos - startPos
+                val distance = drag.getDistance()
+                if (distance < viewConfiguration.touchSlop * 2) {
+                    isCanvasExpanded = !isCanvasExpanded
+                } else if (distance > swipeThreshold) {
+                    if (abs(drag.x) > abs(drag.y)) {
+                        if (drag.x > 0) viewModel.randomize() else viewModel.undo()
+                    } else {
+                        if (drag.y < 0) viewModel.surpriseMe() else viewModel.undo()
+                    }
+                }
+            }
+        }
+
+        // ===== TOP SECTION: Canvas + Palette =====
         Row(
             modifier = Modifier
                 .fillMaxWidth()
-                .weight(0.9f)
+                .then(if (!isCanvasExpanded) Modifier.weight(0.9f) else Modifier)
         ) {
-            // Canvas (square, height-constrained) with info button overlay
+            // Canvas (square) with info button overlay
             Box(
-                modifier = Modifier
-                    .fillMaxHeight()
+                modifier = (if (isCanvasExpanded) Modifier.fillMaxWidth() else Modifier.fillMaxHeight())
+                    .then(canvasGestureModifier)
             ) {
+                val canvasModifier = if (isCanvasExpanded)
+                    Modifier.fillMaxWidth().aspectRatio(1f)
+                else
+                    Modifier.fillMaxHeight().aspectRatio(1f)
+
                 if (showOriginalImage && state.sourceImage != null) {
                     Image(
                         bitmap = state.sourceImage!!.asImageBitmap(),
                         contentDescription = "Original source image",
-                        modifier = Modifier
-                            .fillMaxHeight()
-                            .aspectRatio(1f)
-                            .background(Color.Black),
+                        modifier = canvasModifier.background(Color.Black),
                         contentScale = ContentScale.Fit
                     )
                 } else {
@@ -168,9 +202,7 @@ fun MainScreen(
                         animationFps = state.animationFps,
                         showFps = state.showFps,
                         renderTrigger = state.renderTrigger,
-                        modifier = Modifier
-                            .fillMaxHeight()
-                            .aspectRatio(1f)
+                        modifier = canvasModifier
                     )
                 }
 
@@ -235,15 +267,17 @@ fun MainScreen(
                 }
             }
 
-            // Vertical palette strip — fills remaining width
-            VerticalPaletteSelector(
-                selectedPalette = state.palette,
-                onSelectPalette = { viewModel.setPalette(it) },
-                modifier = Modifier
-                    .fillMaxHeight()
-                    .weight(1f)
-                    .padding(start = 20.dp)
-            )
+            // Vertical palette strip — hidden when canvas is expanded
+            if (!isCanvasExpanded) {
+                VerticalPaletteSelector(
+                    selectedPalette = state.palette,
+                    onSelectPalette = { viewModel.setPalette(it) },
+                    modifier = Modifier
+                        .fillMaxHeight()
+                        .weight(1f)
+                        .padding(start = 20.dp)
+                )
+            }
         }
 
         // ===== ACTION BUTTONS =====
