@@ -258,6 +258,7 @@ fun MainScreen(
             CanvasButton(Icons.Filled.Redo, "Redo", enabled = canRedo) { viewModel.redo() }
             CanvasButton(Icons.Filled.AutoAwesome, "Surprise") { viewModel.surpriseMe() }
             CanvasButton(Icons.Filled.Refresh, "Reload") { viewModel.reload() }
+            CanvasButton(Icons.Filled.Clear, "Clear") { viewModel.clearCanvas() }
             CanvasButton(Icons.Filled.Save, "Save") {
                 state.generator?.let { gen ->
                     exportViewModel.quickSave(
