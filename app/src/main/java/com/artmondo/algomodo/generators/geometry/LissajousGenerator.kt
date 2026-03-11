@@ -13,9 +13,15 @@ import com.artmondo.algomodo.generators.Quality
 import com.artmondo.algomodo.rendering.SvgBuilder
 import com.artmondo.algomodo.rendering.SvgPath
 import kotlin.math.PI
+import kotlin.math.abs
+import kotlin.math.ceil
 import kotlin.math.cos
 import kotlin.math.exp
+import kotlin.math.floor
+import kotlin.math.ln
+import kotlin.math.max
 import kotlin.math.min
+import kotlin.math.round
 import kotlin.math.sin
 
 class LissajousGenerator : Generator {
@@ -26,98 +32,75 @@ class LissajousGenerator : Generator {
     override val definition =
         "Lissajous figures and harmonograph patterns from parametric sinusoidal equations with optional damping."
     override val algorithmNotes =
-        "Samples the parametric equations x = sin(freqX*t + phase), y = sin(freqY*t) at many " +
-        "points along t in [0, 2*pi*N]. An optional exponential decay factor e^(-decay*t) " +
-        "simulates a damped pendulum (harmonograph). Multiple layers with phase offsets create " +
-        "complex interlocking patterns."
+        "x(t) = sin(fx·t + φ)·e^(−δt), y(t) = sin(fy·t)·e^(−δt). With δ=0 this is the classic " +
+        "closed Lissajous figure — one full period is 2π/gcd(fx,fy). With δ>0 the amplitude decays " +
+        "exponentially, tracing the inward spiral of a harmonograph; the curve is sampled until " +
+        "amplitude reaches ~1% of start. Colour sweeps through the palette making the spiral visible."
     override val supportsVector = true
     override val supportsAnimation = true
 
     override val parameterSchema: List<Parameter> = listOf(
         Parameter.NumberParam(
-            name = "X Frequency",
-            key = "ax",
-            group = ParamGroup.GEOMETRY,
+            name = "X Frequency", key = "ax", group = ParamGroup.GEOMETRY,
             help = "Frequency of the X oscillation \u2014 the ratio ax:ay determines the Lissajous figure shape",
             min = 1f, max = 20f, step = 1f, default = 5f
         ),
         Parameter.NumberParam(
-            name = "Y Frequency",
-            key = "ay",
-            group = ParamGroup.GEOMETRY,
+            name = "Y Frequency", key = "ay", group = ParamGroup.GEOMETRY,
             help = "Frequency of the Y oscillation",
             min = 1f, max = 20f, step = 1f, default = 4f
         ),
         Parameter.NumberParam(
-            name = "Phase",
-            key = "phase",
-            group = ParamGroup.GEOMETRY,
+            name = "Phase", key = "phase", group = ParamGroup.GEOMETRY,
             help = "Phase offset between X and Y \u2014 sweeps through the full family of related curves; \u03c0/2 gives the classic ellipse/Lissajous form",
             min = 0f, max = 6.28f, step = 0.1f, default = 1.57f
         ),
         Parameter.NumberParam(
-            name = "Decay",
-            key = "decay",
-            group = ParamGroup.GEOMETRY,
+            name = "Decay", key = "decay", group = ParamGroup.GEOMETRY,
             help = "Harmonograph damping \u2014 exponential amplitude decay over time. 0 = closed Lissajous figure. >0 = inward-spiraling harmonograph.",
             min = 0f, max = 0.5f, step = 0.01f, default = 0f
         ),
         Parameter.NumberParam(
-            name = "Layers",
-            key = "layers",
-            group = ParamGroup.COMPOSITION,
+            name = "Layers", key = "layers", group = ParamGroup.COMPOSITION,
             help = "Overlapping curves; each successive layer is offset by \u03c0/layers in phase",
             min = 1f, max = 6f, step = 1f, default = 1f
         ),
         Parameter.NumberParam(
-            name = "Samples",
-            key = "samples",
-            group = ParamGroup.COMPOSITION,
+            name = "Samples", key = "samples", group = ParamGroup.COMPOSITION,
             help = "Number of curve samples \u2014 increase for high-frequency ratios or slow decay",
             min = 100f, max = 10000f, step = 100f, default = 5000f
         ),
         Parameter.NumberParam(
-            name = "Line Thickness",
-            key = "thickness",
-            group = ParamGroup.TEXTURE,
-            help = null,
-            min = 0.5f, max = 5f, step = 0.5f, default = 2f
+            name = "Line Thickness", key = "thickness", group = ParamGroup.TEXTURE,
+            help = null, min = 0.5f, max = 5f, step = 0.5f, default = 2f
         ),
         Parameter.NumberParam(
-            name = "Speed",
-            key = "speed",
-            group = ParamGroup.FLOW_MOTION,
+            name = "Speed", key = "speed", group = ParamGroup.FLOW_MOTION,
             help = "Phase sweep speed \u2014 animates the Lissajous shape morphing",
             min = 0.05f, max = 2f, step = 0.05f, default = 0.5f
         )
     )
 
     override fun getDefaultParams(): Map<String, Any> = mapOf(
-        "ax" to 5f,
-        "ay" to 4f,
-        "phase" to 1.57f,
-        "decay" to 0f,
-        "layers" to 1f,
-        "samples" to 5000f,
-        "thickness" to 2f,
-        "speed" to 0.5f
+        "ax" to 5f, "ay" to 4f, "phase" to 1.57f, "decay" to 0f,
+        "layers" to 1f, "samples" to 5000f, "thickness" to 2f, "speed" to 0.5f
     )
 
-    private fun generatePoints(
-        freqX: Float, freqY: Float, phase: Float, decay: Float,
-        cx: Float, cy: Float, amplitude: Float, samples: Int
-    ): List<Pair<Float, Float>> {
-        val points = mutableListOf<Pair<Float, Float>>()
-        val totalT = 2f * PI.toFloat() * 40f
+    /** GCD for computing the natural period of integer-frequency Lissajous curves. */
+    private fun gcd(a: Int, b: Int): Int {
+        var x = abs(a); var y = abs(b)
+        while (y != 0) { val t = y; y = x % y; x = t }
+        return max(1, x)
+    }
 
-        for (i in 0..samples) {
-            val t = totalT * i / samples
-            val damp = exp(-decay * t)
-            val x = cx + amplitude * sin(freqX * t + phase) * damp
-            val y = cy + amplitude * sin(freqY * t) * damp
-            points.add(x to y)
+    /** Compute tMax: one full period for closed curves, or until amplitude < 1% for decay. */
+    private fun computeTMax(fx: Int, fy: Int, decay: Float): Float {
+        val period = (2f * PI.toFloat()) / gcd(fx, fy)
+        return if (decay > 0f) {
+            min(period * 8f, ln(100f) / max(decay, 1e-6f))
+        } else {
+            period
         }
-        return points
     }
 
     override fun renderCanvas(
@@ -131,30 +114,30 @@ class LissajousGenerator : Generator {
     ) {
         val w = bitmap.width.toFloat()
         val h = bitmap.height.toFloat()
-        val freqX = (params["ax"] as? Number)?.toFloat() ?: 5f
-        val freqY = (params["ay"] as? Number)?.toFloat() ?: 4f
+        val fx = max(1, ((params["ax"] as? Number)?.toFloat() ?: 5f).toInt())
+        val fy = max(1, ((params["ay"] as? Number)?.toFloat() ?: 4f).toInt())
         val basePhase = (params["phase"] as? Number)?.toFloat() ?: 1.57f
-        val decay = (params["decay"] as? Number)?.toFloat() ?: 0f
-        val layers = (params["layers"] as? Number)?.toInt() ?: 1
-        val baseSamples = (params["samples"] as? Number)?.toInt() ?: 5000
+        val decay = max(0f, (params["decay"] as? Number)?.toFloat() ?: 0f)
+        val layers = max(1, ((params["layers"] as? Number)?.toFloat() ?: 1f).toInt())
+        val baseSamples = max(100, ((params["samples"] as? Number)?.toFloat() ?: 5000f).toInt())
         val strokeWidth = (params["thickness"] as? Number)?.toFloat() ?: 2f
         val speed = (params["speed"] as? Number)?.toFloat() ?: 0.5f
 
-        // Animate by sweeping phase, controlled by speed
-        val phaseAnim = time * speed * 0.2f
+        val animPhase = basePhase + time * speed
 
         canvas.drawColor(Color.BLACK)
 
         val cx = w / 2f
         val cy = h / 2f
-        val amplitude = min(w, h) * 0.4f
+        val scale = min(w, h) * 0.44f
 
-        // Scale samples by quality
         val samples = when (quality) {
             Quality.DRAFT -> (baseSamples / 2).coerceAtLeast(500)
             Quality.BALANCED -> baseSamples
             Quality.ULTRA -> (baseSamples * 1.5f).toInt()
         }
+
+        val tMax = computeTMax(fx, fy, decay)
 
         val paint = Paint().apply {
             style = Paint.Style.STROKE
@@ -163,37 +146,36 @@ class LissajousGenerator : Generator {
             strokeCap = Paint.Cap.ROUND
         }
 
-        val paletteColors = palette.colorInts()
+        // 80 color segments for smooth palette interpolation (matching web version)
+        val nSeg = 80
 
         for (layer in 0 until layers) {
-            // Each layer offset by pi/layers in phase
-            val layerPhase = basePhase + phaseAnim + layer * PI.toFloat() / layers
+            val ph = animPhase + (layer.toFloat() / layers) * PI.toFloat()
 
-            val points = generatePoints(freqX, freqY, layerPhase, decay, cx, cy, amplitude, samples)
+            for (seg in 0 until nSeg) {
+                // Amplitude at start of segment for decay dimming
+                val t0 = (seg.toFloat() / nSeg) * tMax
+                val amp = exp(-decay * t0)
 
-            // Draw in colored segments
-            val segmentSize = (samples / (paletteColors.size * 8)).coerceAtLeast(10)
-
-            for (i in 0 until points.size - 1 step segmentSize) {
-                val end = (i + segmentSize + 1).coerceAtMost(points.size)
-                val t = i.toFloat() / points.size
-
-                // Color: offset per layer
-                val colorT = ((t + layer.toFloat() / layers) % 1f)
-                paint.color = palette.lerpColor(colorT)
-
-                // Fade alpha for decayed tail
-                if (decay > 0f) {
-                    val alpha = (255 * exp(-decay * (2f * PI.toFloat() * 40f * i / samples))).toInt().coerceIn(30, 255)
-                    paint.alpha = alpha
+                // Color position along curve — slight offset per layer
+                val ct = ((seg.toFloat() / nSeg) + (layer.toFloat() / max(layers, 1)) * 0.35f) % 1f
+                paint.color = palette.lerpColor(ct)
+                paint.alpha = if (decay > 0f) {
+                    (255 * max(0.08f, amp)).toInt().coerceIn(20, 255)
                 } else {
-                    paint.alpha = if (layers > 1) (200 + 55 / layers).coerceAtMost(255) else 255
+                    255
                 }
 
+                val iStart = floor((seg.toFloat() / nSeg) * samples).toInt()
+                val iEnd = ceil(((seg + 1).toFloat() / nSeg) * samples).toInt()
+
                 val path = Path()
-                path.moveTo(points[i].first, points[i].second)
-                for (j in i + 1 until end) {
-                    path.lineTo(points[j].first, points[j].second)
+                for (i in iStart..iEnd) {
+                    val t = (i.toFloat() / samples) * tMax
+                    val env = exp(-decay * t)
+                    val x = cx + sin(fx * t + ph) * scale * env
+                    val y = cy + sin(fy * t) * scale * env
+                    if (i == iStart) path.moveTo(x, y) else path.lineTo(x, y)
                 }
                 canvas.drawPath(path, paint)
             }
@@ -207,40 +189,50 @@ class LissajousGenerator : Generator {
     ): List<SvgPath> {
         val w = 1080f
         val h = 1080f
-        val freqX = (params["ax"] as? Number)?.toFloat() ?: 5f
-        val freqY = (params["ay"] as? Number)?.toFloat() ?: 4f
+        val fx = max(1, ((params["ax"] as? Number)?.toFloat() ?: 5f).toInt())
+        val fy = max(1, ((params["ay"] as? Number)?.toFloat() ?: 4f).toInt())
         val basePhase = (params["phase"] as? Number)?.toFloat() ?: 1.57f
-        val decay = (params["decay"] as? Number)?.toFloat() ?: 0f
-        val layers = (params["layers"] as? Number)?.toInt() ?: 1
-        val baseSamples = (params["samples"] as? Number)?.toInt() ?: 5000
+        val decay = max(0f, (params["decay"] as? Number)?.toFloat() ?: 0f)
+        val layers = max(1, ((params["layers"] as? Number)?.toFloat() ?: 1f).toInt())
+        val baseSamples = max(100, ((params["samples"] as? Number)?.toFloat() ?: 5000f).toInt())
         val strokeWidth = (params["thickness"] as? Number)?.toFloat() ?: 2f
 
         val cx = w / 2f
         val cy = h / 2f
-        val amplitude = min(w, h) * 0.4f
+        val scale = min(w, h) * 0.44f
+        val tMax = computeTMax(fx, fy, decay)
         val paths = mutableListOf<SvgPath>()
 
-        for (layer in 0 until layers) {
-            val layerPhase = basePhase + layer * PI.toFloat() / layers
-            val points = generatePoints(freqX, freqY, layerPhase, decay, cx, cy, amplitude, baseSamples)
-            val paletteColors = palette.colorInts()
-            val segmentSize = (baseSamples / (paletteColors.size * 6)).coerceAtLeast(20)
+        val nSeg = 80
 
-            for (i in 0 until points.size - 1 step segmentSize) {
-                val end = (i + segmentSize + 1).coerceAtMost(points.size)
-                val t = ((i.toFloat() / points.size + layer.toFloat() / layers) % 1f)
-                val color = palette.lerpColor(t)
+        for (layer in 0 until layers) {
+            val ph = basePhase + (layer.toFloat() / layers) * PI.toFloat()
+
+            for (seg in 0 until nSeg) {
+                val ct = ((seg.toFloat() / nSeg) + (layer.toFloat() / max(layers, 1)) * 0.35f) % 1f
+                val color = palette.lerpColor(ct)
                 val hexColor = String.format("#%06X", 0xFFFFFF and color)
 
-                val sb = StringBuilder()
-                sb.append(SvgBuilder.moveTo(points[i].first, points[i].second))
-                for (j in i + 1 until end) {
-                    sb.append(" ").append(SvgBuilder.lineTo(points[j].first, points[j].second))
-                }
-
+                val t0 = (seg.toFloat() / nSeg) * tMax
                 val alpha = if (decay > 0f) {
-                    exp(-decay * (2f * PI.toFloat() * 40f * i / baseSamples)).coerceIn(0.1f, 1f)
+                    exp(-decay * t0).coerceIn(0.08f, 1f)
                 } else 1f
+
+                val iStart = floor((seg.toFloat() / nSeg) * baseSamples).toInt()
+                val iEnd = ceil(((seg + 1).toFloat() / nSeg) * baseSamples).toInt()
+
+                val sb = StringBuilder()
+                for (i in iStart..iEnd) {
+                    val t = (i.toFloat() / baseSamples) * tMax
+                    val env = exp(-decay * t)
+                    val x = cx + sin(fx * t + ph) * scale * env
+                    val y = cy + sin(fy * t) * scale * env
+                    if (i == iStart) {
+                        sb.append(SvgBuilder.moveTo(x, y))
+                    } else {
+                        sb.append(" ").append(SvgBuilder.lineTo(x, y))
+                    }
+                }
 
                 paths.add(SvgPath(d = sb.toString(), stroke = hexColor, strokeWidth = strokeWidth, opacity = alpha))
             }
