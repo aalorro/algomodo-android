@@ -34,6 +34,7 @@ import com.artmondo.algomodo.rendering.PostFXProcessor
 import com.artmondo.algomodo.rendering.PostFXSettings
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
+import java.util.concurrent.atomic.AtomicInteger
 
 @Composable
 fun AlgoCanvas(
@@ -85,6 +86,10 @@ fun AlgoCanvas(
     }
 }
 
+// Single-thread dispatcher so at most one render occupies a thread at a time.
+// Stale queued renders are skipped via the generation counter below.
+private val renderDispatcher = Dispatchers.Default.limitedParallelism(1)
+
 @Composable
 private fun StaticCanvas(
     generator: Generator,
@@ -98,16 +103,22 @@ private fun StaticCanvas(
 ) {
     var renderedBitmap by remember { mutableStateOf<Bitmap?>(null) }
     var isRendering by remember { mutableStateOf(false) }
+    val renderGeneration = remember { AtomicInteger(0) }
 
     DisposableEffect(Unit) {
         onDispose { renderedBitmap?.recycle() }
     }
 
     LaunchedEffect(generator.id, params, seed, palette, quality, postFX, renderTrigger) {
+        val myGeneration = renderGeneration.incrementAndGet()
         isRendering = true
         var newBitmap: Bitmap? = null
         try {
-            withContext(Dispatchers.Default) {
+            withContext(renderDispatcher) {
+                // Skip if a newer render was already requested while we
+                // were queued — avoids piling up stale work.
+                if (renderGeneration.get() != myGeneration) return@withContext
+
                 val size = when (quality) {
                     Quality.DRAFT -> 360
                     Quality.BALANCED -> 540
@@ -144,12 +155,14 @@ private fun StaticCanvas(
             }
             // Back on Main thread — safe to swap bitmap state without
             // racing Compose's draw pass.
-            val old = renderedBitmap
-            renderedBitmap = newBitmap
-            newBitmap = null  // ownership transferred, don't recycle in finally
-            old?.recycle()
+            if (newBitmap != null && renderGeneration.get() == myGeneration) {
+                val old = renderedBitmap
+                renderedBitmap = newBitmap
+                newBitmap = null  // ownership transferred, don't recycle in finally
+                old?.recycle()
+            }
         } finally {
-            // If cancelled before the swap, recycle the orphaned bitmap
+            // If cancelled or stale, recycle the orphaned bitmap
             newBitmap?.recycle()
             isRendering = false
         }
