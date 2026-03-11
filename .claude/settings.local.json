@@ -6,7 +6,9 @@
       "Bash(xargs cat:*)",
       "Bash(adb logcat:*)",
       "Bash(export:*)",
-      "Bash(/c/Users/arman/AppData/Local/Android/Sdk/platform-tools/adb.exe logcat:*)"
+      "Bash(/c/Users/arman/AppData/Local/Android/Sdk/platform-tools/adb.exe logcat:*)",
+      "Bash(\"C:/Users/arman/AppData/Local/Android/Sdk/platform-tools/adb.exe\" logcat:*)",
+      "Bash(ls:*)"
     ]
   }
 }

@@ -18,6 +18,14 @@ fun ChangelogDialog(onDismiss: () -> Unit) {
         text = {
             Text(
                 text = """
+v1.3.1 (Android)
+New Generators (3):
+- 3 new text generators: Glyphs (procedural abstract symbols), Naive Handwriting (childlike hand-drawn letters), Procedural Cursive (connected flowing script)
+- Total: 107 generators across 10 families
+
+Improvements:
+- Parameter space expanded to over 9.5 million unique configurations
+
 v1.3.0 (Android)
 New Generators (12):
 - 5 new fractal generators: Burning Ship, Fractal Flames, Multibrot, Orbit Traps, Strange Attractor Density

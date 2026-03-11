@@ -4,14 +4,25 @@ import android.graphics.Bitmap
 import android.graphics.Canvas
 import android.view.SurfaceHolder
 import android.view.SurfaceView
+import androidx.compose.animation.core.LinearEasing
+import androidx.compose.animation.core.RepeatMode
+import androidx.compose.animation.core.animateFloat
+import androidx.compose.animation.core.infiniteRepeatable
+import androidx.compose.animation.core.rememberInfiniteTransition
+import androidx.compose.animation.core.tween
+import androidx.compose.foundation.Canvas as ComposeCanvas
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.geometry.Offset
+import androidx.compose.ui.geometry.Size
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.Shadow
 import androidx.compose.ui.graphics.asImageBitmap
+import androidx.compose.ui.graphics.drawscope.Fill
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.unit.dp
@@ -23,6 +34,7 @@ import com.artmondo.algomodo.rendering.PostFXProcessor
 import com.artmondo.algomodo.rendering.PostFXSettings
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
+import java.util.concurrent.atomic.AtomicInteger
 
 @Composable
 fun AlgoCanvas(
@@ -74,6 +86,10 @@ fun AlgoCanvas(
     }
 }
 
+// Single-thread dispatcher so at most one render occupies a thread at a time.
+// Stale queued renders are skipped via the generation counter below.
+private val renderDispatcher = Dispatchers.Default.limitedParallelism(1)
+
 @Composable
 private fun StaticCanvas(
     generator: Generator,
@@ -86,51 +102,69 @@ private fun StaticCanvas(
     modifier: Modifier = Modifier
 ) {
     var renderedBitmap by remember { mutableStateOf<Bitmap?>(null) }
+    var isRendering by remember { mutableStateOf(false) }
+    val renderGeneration = remember { AtomicInteger(0) }
 
     DisposableEffect(Unit) {
         onDispose { renderedBitmap?.recycle() }
     }
 
     LaunchedEffect(generator.id, params, seed, palette, quality, postFX, renderTrigger) {
-        withContext(Dispatchers.Default) {
-            val size = when (quality) {
-                Quality.DRAFT -> 360
-                Quality.BALANCED -> 540
-                Quality.ULTRA -> 810
-            }
-            // Always create a fresh bitmap so the currently-displayed one
-            // isn't mutated mid-frame (avoids blank flashes and ensures
-            // Compose detects the new reference as a state change).
-            val bitmap = Bitmap.createBitmap(size, size, Bitmap.Config.ARGB_8888)
-            val canvas = Canvas(bitmap)
-            canvas.drawColor(android.graphics.Color.BLACK)
-            try {
-                val staticTime = if (generator.supportsAnimation) 2.0f else 0f
-                generator.renderCanvas(canvas, bitmap, params, seed, palette, quality, staticTime)
-                PostFXProcessor.apply(bitmap, postFX)
+        val myGeneration = renderGeneration.incrementAndGet()
+        isRendering = true
+        var newBitmap: Bitmap? = null
+        try {
+            withContext(renderDispatcher) {
+                // Skip if a newer render was already requested while we
+                // were queued — avoids piling up stale work.
+                if (renderGeneration.get() != myGeneration) return@withContext
 
-                // Safety net: if output is nearly all-black, re-render at time=0
-                // to catch generators with scroll/animation offsets that push
-                // content off canvas at time=2.0
-                if (generator.supportsAnimation && isBitmapBlank(bitmap, size)) {
-                    canvas.drawColor(android.graphics.Color.BLACK)
-                    generator.renderCanvas(canvas, bitmap, params, seed, palette, quality, 0f)
-                    PostFXProcessor.apply(bitmap, postFX)
+                val size = when (quality) {
+                    Quality.DRAFT -> 360
+                    Quality.BALANCED -> 540
+                    Quality.ULTRA -> 810
                 }
-            } catch (e: Exception) {
-                android.util.Log.e("AlgoCanvas", "Render failed for ${generator.id}", e)
+                val bitmap = Bitmap.createBitmap(size, size, Bitmap.Config.ARGB_8888)
+                newBitmap = bitmap
+                val canvas = Canvas(bitmap)
                 canvas.drawColor(android.graphics.Color.BLACK)
-                val errPaint = android.graphics.Paint().apply {
-                    color = android.graphics.Color.RED
-                    strokeWidth = 4f
-                    style = android.graphics.Paint.Style.STROKE
+                try {
+                    val staticTime = if (generator.supportsAnimation) 2.0f else 0f
+                    generator.renderCanvas(canvas, bitmap, params, seed, palette, quality, staticTime)
+                    PostFXProcessor.apply(bitmap, postFX)
+
+                    // Safety net: if output is nearly all-black, re-render at time=0
+                    // to catch generators with scroll/animation offsets that push
+                    // content off canvas at time=2.0
+                    if (generator.supportsAnimation && isBitmapBlank(bitmap, size)) {
+                        canvas.drawColor(android.graphics.Color.BLACK)
+                        generator.renderCanvas(canvas, bitmap, params, seed, palette, quality, 0f)
+                        PostFXProcessor.apply(bitmap, postFX)
+                    }
+                } catch (e: Exception) {
+                    android.util.Log.e("AlgoCanvas", "Render failed for ${generator.id}", e)
+                    canvas.drawColor(android.graphics.Color.BLACK)
+                    val errPaint = android.graphics.Paint().apply {
+                        color = android.graphics.Color.RED
+                        strokeWidth = 4f
+                        style = android.graphics.Paint.Style.STROKE
+                    }
+                    canvas.drawLine(0f, 0f, size.toFloat(), size.toFloat(), errPaint)
+                    canvas.drawLine(size.toFloat(), 0f, 0f, size.toFloat(), errPaint)
                 }
-                canvas.drawLine(0f, 0f, size.toFloat(), size.toFloat(), errPaint)
-                canvas.drawLine(size.toFloat(), 0f, 0f, size.toFloat(), errPaint)
             }
-            val old = renderedBitmap
-            renderedBitmap = bitmap
-            old?.recycle()
+            // Back on Main thread — safe to swap bitmap state without
+            // racing Compose's draw pass.
+            if (newBitmap != null && renderGeneration.get() == myGeneration) {
+                val old = renderedBitmap
+                renderedBitmap = newBitmap
+                newBitmap = null  // ownership transferred, don't recycle in finally
+                old?.recycle()
+            }
+        } finally {
+            // If cancelled or stale, recycle the orphaned bitmap
+            newBitmap?.recycle()
+            isRendering = false
         }
     }
 
@@ -145,6 +179,17 @@ private fun StaticCanvas(
                 contentDescription = "Generated art",
                 modifier = Modifier.fillMaxSize(),
                 contentScale = ContentScale.Fit
+            )
+        }
+
+        if (isRendering) {
+            NeonProgressBar(
+                modifier = Modifier
+                    .align(Alignment.BottomCenter)
+                    .padding(bottom = 25.dp)
+                    .fillMaxWidth()
+                    .padding(horizontal = 25.dp)
+                    .height(3.dp)
             )
         }
     }
@@ -296,6 +341,40 @@ private fun AnimationCanvas(
         modifier = modifier
             .aspectRatio(1f)
     )
+}
+
+@Composable
+private fun NeonProgressBar(modifier: Modifier = Modifier) {
+    val neonGreen = Color(0xFF39FF14)
+    val glowGreen = Color(0x6639FF14)
+    val infiniteTransition = rememberInfiniteTransition(label = "neon")
+    val progress by infiniteTransition.animateFloat(
+        initialValue = 0f,
+        targetValue = 1f,
+        animationSpec = infiniteRepeatable(
+            animation = tween(1000, easing = LinearEasing),
+            repeatMode = RepeatMode.Restart
+        ),
+        label = "neonProgress"
+    )
+
+    ComposeCanvas(modifier = modifier) {
+        val barWidth = size.width * 0.35f
+        val x = progress * (size.width + barWidth) - barWidth
+
+        // Glow layer
+        drawRect(
+            color = glowGreen,
+            topLeft = Offset(x - 4f, -2f),
+            size = Size(barWidth + 8f, size.height + 4f)
+        )
+        // Bright bar
+        drawRect(
+            color = neonGreen,
+            topLeft = Offset(x, 0f),
+            size = Size(barWidth, size.height)
+        )
+    }
 }
 
 /** Spot-check whether a bitmap is nearly all-black by sampling pixels. */

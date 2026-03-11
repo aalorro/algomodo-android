@@ -29,7 +29,7 @@ object GeneratorRegistry {
         "image" to "Pixel Sort, Halftone, ASCII, Glitch, etc. (require source image)",
         "noise" to "Simplex, FBM, Domain Warp, Turbulence, etc.",
         "plotter" to "Pen-plotter styles: stippling, hatching, contours, etc.",
-        "text" to "Concrete poetry, typographic grid, digital rain, etc.",
+        "text" to "Concrete poetry, typographic grid, digital rain, glyphs, naive handwriting, procedural cursive, etc.",
         "voronoi" to "Voronoi cells, Delaunay, ridges, fractured, etc."
     )
 
