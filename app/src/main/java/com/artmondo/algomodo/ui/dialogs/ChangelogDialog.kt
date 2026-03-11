@@ -18,6 +18,13 @@ fun ChangelogDialog(onDismiss: () -> Unit) {
         text = {
             Text(
                 text = """
+v1.3.3 (Android)
+Improvements:
+- Enhanced Lissajous generator with improved parameter handling
+- Enhanced Plotter Streamlines generator with improved streamline rendering logic
+- Added 4 new color palettes: Rainbow, Contrast, Earth, and Nature (total: 14)
+- Optimized GIF export memory usage by avoiding storage of all boomerang frames in RAM
+
 v1.3.1 (Android)
 New Generators (3):
 - 3 new text generators: Glyphs (procedural abstract symbols), Naive Handwriting (childlike hand-drawn letters), Procedural Cursive (connected flowing script)

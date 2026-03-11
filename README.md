@@ -11,7 +11,7 @@ Create stunning algorithmic art using pure mathematics — noise functions, cell
 - **Deterministic rendering** — same seed and parameters always produce the same output
 - **Animation support** — play, export as GIF or MP4
 - **Image processing** — load photos from gallery/camera and apply generative effects
-- **10 curated color palettes** with gradient interpolation
+- **14 curated color palettes** with gradient interpolation
 - **Post-processing effects** — grain, vignette, dither, posterize
 - **Export** — PNG, JPG, SVG, GIF, MP4
 - **Presets** — save, load, and share configurations
