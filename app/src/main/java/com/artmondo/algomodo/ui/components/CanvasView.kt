@@ -105,47 +105,54 @@ private fun StaticCanvas(
 
     LaunchedEffect(generator.id, params, seed, palette, quality, postFX, renderTrigger) {
         isRendering = true
-        withContext(Dispatchers.Default) {
-            val size = when (quality) {
-                Quality.DRAFT -> 360
-                Quality.BALANCED -> 540
-                Quality.ULTRA -> 810
-            }
-            // Always create a fresh bitmap so the currently-displayed one
-            // isn't mutated mid-frame (avoids blank flashes and ensures
-            // Compose detects the new reference as a state change).
-            val bitmap = Bitmap.createBitmap(size, size, Bitmap.Config.ARGB_8888)
-            val canvas = Canvas(bitmap)
-            canvas.drawColor(android.graphics.Color.BLACK)
-            try {
-                val staticTime = if (generator.supportsAnimation) 2.0f else 0f
-                generator.renderCanvas(canvas, bitmap, params, seed, palette, quality, staticTime)
-                PostFXProcessor.apply(bitmap, postFX)
-
-                // Safety net: if output is nearly all-black, re-render at time=0
-                // to catch generators with scroll/animation offsets that push
-                // content off canvas at time=2.0
-                if (generator.supportsAnimation && isBitmapBlank(bitmap, size)) {
-                    canvas.drawColor(android.graphics.Color.BLACK)
-                    generator.renderCanvas(canvas, bitmap, params, seed, palette, quality, 0f)
-                    PostFXProcessor.apply(bitmap, postFX)
+        var newBitmap: Bitmap? = null
+        try {
+            withContext(Dispatchers.Default) {
+                val size = when (quality) {
+                    Quality.DRAFT -> 360
+                    Quality.BALANCED -> 540
+                    Quality.ULTRA -> 810
                 }
-            } catch (e: Exception) {
-                android.util.Log.e("AlgoCanvas", "Render failed for ${generator.id}", e)
+                val bitmap = Bitmap.createBitmap(size, size, Bitmap.Config.ARGB_8888)
+                newBitmap = bitmap
+                val canvas = Canvas(bitmap)
                 canvas.drawColor(android.graphics.Color.BLACK)
-                val errPaint = android.graphics.Paint().apply {
-                    color = android.graphics.Color.RED
-                    strokeWidth = 4f
-                    style = android.graphics.Paint.Style.STROKE
+                try {
+                    val staticTime = if (generator.supportsAnimation) 2.0f else 0f
+                    generator.renderCanvas(canvas, bitmap, params, seed, palette, quality, staticTime)
+                    PostFXProcessor.apply(bitmap, postFX)
+
+                    // Safety net: if output is nearly all-black, re-render at time=0
+                    // to catch generators with scroll/animation offsets that push
+                    // content off canvas at time=2.0
+                    if (generator.supportsAnimation && isBitmapBlank(bitmap, size)) {
+                        canvas.drawColor(android.graphics.Color.BLACK)
+                        generator.renderCanvas(canvas, bitmap, params, seed, palette, quality, 0f)
+                        PostFXProcessor.apply(bitmap, postFX)
+                    }
+                } catch (e: Exception) {
+                    android.util.Log.e("AlgoCanvas", "Render failed for ${generator.id}", e)
+                    canvas.drawColor(android.graphics.Color.BLACK)
+                    val errPaint = android.graphics.Paint().apply {
+                        color = android.graphics.Color.RED
+                        strokeWidth = 4f
+                        style = android.graphics.Paint.Style.STROKE
+                    }
+                    canvas.drawLine(0f, 0f, size.toFloat(), size.toFloat(), errPaint)
+                    canvas.drawLine(size.toFloat(), 0f, 0f, size.toFloat(), errPaint)
                 }
-                canvas.drawLine(0f, 0f, size.toFloat(), size.toFloat(), errPaint)
-                canvas.drawLine(size.toFloat(), 0f, 0f, size.toFloat(), errPaint)
             }
+            // Back on Main thread — safe to swap bitmap state without
+            // racing Compose's draw pass.
             val old = renderedBitmap
-            renderedBitmap = bitmap
+            renderedBitmap = newBitmap
+            newBitmap = null  // ownership transferred, don't recycle in finally
             old?.recycle()
+        } finally {
+            // If cancelled before the swap, recycle the orphaned bitmap
+            newBitmap?.recycle()
+            isRendering = false
         }
-        isRendering = false
     }
 
     Box(
