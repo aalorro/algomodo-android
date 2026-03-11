@@ -3,8 +3,6 @@ package com.artmondo.algomodo.generators.plotter
 import android.graphics.Bitmap
 import android.graphics.Canvas
 import android.graphics.Color
-import android.graphics.Paint
-import android.graphics.Path
 import com.artmondo.algomodo.core.rng.SeededRNG
 import com.artmondo.algomodo.core.rng.SimplexNoise
 import com.artmondo.algomodo.data.palettes.Palette
@@ -12,17 +10,14 @@ import com.artmondo.algomodo.generators.Generator
 import com.artmondo.algomodo.generators.ParamGroup
 import com.artmondo.algomodo.generators.Parameter
 import com.artmondo.algomodo.generators.Quality
-import com.artmondo.algomodo.rendering.SvgPath
-import kotlin.math.PI
-import kotlin.math.cos
-import kotlin.math.min
-import kotlin.math.sin
+import kotlin.math.*
 
 /**
- * Concentric offset path generator.
+ * Concentric offset path generator using signed distance fields.
  *
- * Draws concentric outlines that progressively offset outward from a central
- * shape (circle, square, or organic blob). Creates a ripple/contour effect.
+ * Draws concentric iso-distance rings around randomly placed seed shapes.
+ * Uses a per-pixel signed-distance field to locate ring boundaries, with
+ * FBM noise wobble for a hand-drawn look.
  */
 class PlotterOffsetPathsGenerator : Generator {
 
@@ -30,12 +25,12 @@ class PlotterOffsetPathsGenerator : Generator {
     override val family = "plotter"
     override val styleName = "Offset Paths"
     override val definition =
-        "Concentric offset outlines expanding outward from a central seed shape."
+        "Draws concentric iso-distance rings around randomly placed seed shapes, using a per-pixel signed-distance field to locate ring boundaries."
     override val algorithmNotes =
-        "A base shape is defined at the canvas centre. Successive offsets expand the shape " +
-        "by the specified spacing. For circles, offset is trivially radius+spacing. For " +
-        "squares, each ring is a larger rectangle. Blobs use simplex-noise-distorted radii " +
-        "so each ring has organic undulation."
+        "Seed shapes (circles, rectangles, triangles, stars, or noise-warped blobs) are placed " +
+        "with a jittered grid. For every pixel the global SDF is evaluated as the union of all " +
+        "shape SDFs, then perturbed with FBM noise for a hand-drawn look. Ring boundaries are " +
+        "detected where the perturbed SDF crosses multiples of the spacing value."
     override val supportsVector = false
     override val supportsAnimation = true
 
@@ -67,6 +62,67 @@ class PlotterOffsetPathsGenerator : Generator {
         "animSpeed" to 0.1f
     )
 
+    companion object {
+        private val BG = mapOf(
+            "white" to intArrayOf(248, 248, 245),
+            "cream" to intArrayOf(242, 234, 216),
+            "dark"  to intArrayOf(14, 14, 14)
+        )
+    }
+
+    // --- SDF primitives ---
+
+    private fun sdCircle(px: Float, py: Float, cx: Float, cy: Float, r: Float): Float {
+        val dx = px - cx; val dy = py - cy
+        return sqrt(dx * dx + dy * dy) - r
+    }
+
+    private fun sdRect(px: Float, py: Float, cx: Float, cy: Float, hw: Float, hh: Float): Float {
+        val qx = abs(px - cx) - hw
+        val qy = abs(py - cy) - hh
+        val ox = max(qx, 0f); val oy = max(qy, 0f)
+        return sqrt(ox * ox + oy * oy) + min(max(qx, qy), 0f)
+    }
+
+    private fun sdRegularPoly(px: Float, py: Float, cx: Float, cy: Float, r: Float, n: Int, rot: Float): Float {
+        val dx = px - cx; val dy = py - cy
+        val cosR = cos(-rot); val sinR = sin(-rot)
+        val rx = dx * cosR - dy * sinR
+        val ry = dx * sinR + dy * cosR
+        val angle = atan2(ry, rx)
+        val sector = (2.0 * PI / n).toFloat()
+        val halfSector = sector / 2f
+        val a = ((angle % sector) + sector) % sector - halfSector
+        val dist = sqrt(rx * rx + ry * ry)
+        return dist * cos(a) - r * cos(halfSector)
+    }
+
+    private fun sdStar(px: Float, py: Float, cx: Float, cy: Float, outerR: Float, rot: Float): Float {
+        val innerR = outerR * 0.38f
+        val dx = px - cx; val dy = py - cy
+        val cosR = cos(-rot); val sinR = sin(-rot)
+        val rx = dx * cosR - dy * sinR
+        val ry = dx * sinR + dy * cosR
+        val angle = atan2(ry, rx)
+        val sector = (2.0 * PI / 5.0).toFloat()
+        val halfSector = sector / 2f
+        val a = ((angle % sector) + sector) % sector - halfSector
+        val dist = sqrt(rx * rx + ry * ry)
+        val t = abs(a) / halfSector
+        val edgeR = outerR * (1f - t) + innerR * t
+        return dist - edgeR
+    }
+
+    // --- Shape data class ---
+
+    private data class Shape(
+        val type: String,
+        val cx: Float, val cy: Float,
+        val r: Float,
+        val hw: Float, val hh: Float,
+        val rot: Float
+    )
+
     override fun renderCanvas(
         canvas: Canvas,
         bitmap: Bitmap,
@@ -76,78 +132,179 @@ class PlotterOffsetPathsGenerator : Generator {
         quality: Quality,
         time: Float
     ) {
-        val w = bitmap.width.toFloat()
-        val h = bitmap.height.toFloat()
-        val shape = (params["shapeType"] as? String) ?: "circles"
-        val offsets = (params["ringCount"] as? Number)?.toInt() ?: 16
-        val spacing = (params["ringSpacing"] as? Number)?.toFloat() ?: 14f
-        val lineWidth = (params["lineWidth"] as? Number)?.toFloat() ?: 0.8f
+        val w = bitmap.width
+        val h = bitmap.height
+        val wf = w.toFloat()
+        val hf = h.toFloat()
 
-        val animSpeed = (params["animSpeed"] as? Number)?.toFloat() ?: 0.1f
-        val timeOff = time * animSpeed
-
+        val rng = SeededRNG(seed)
         val noise = SimplexNoise(seed)
-        val paletteColors = palette.colorInts()
 
-        canvas.drawColor(Color.BLACK)
-        val paint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
-            style = Paint.Style.STROKE
-            strokeWidth = lineWidth
-            strokeCap = Paint.Cap.ROUND
-            strokeJoin = Paint.Join.ROUND
-        }
+        val ringCount = ((params["ringCount"] as? Number)?.toInt() ?: 16).coerceAtLeast(1)
+        val spacing = ((params["ringSpacing"] as? Number)?.toFloat() ?: 14f).coerceAtLeast(2f)
+        val shapeCount = ((params["shapeCount"] as? Number)?.toInt() ?: 4).coerceAtLeast(1)
+        val shapeType = (params["shapeType"] as? String) ?: "circles"
+        val wobble = (params["wobble"] as? Number)?.toFloat() ?: 1.0f
+        val wobbleScale = (params["wobbleScale"] as? Number)?.toFloat() ?: 2.0f
+        val fillBands = (params["fillBands"] as? Boolean) ?: false
+        val lineWidth = (params["lineWidth"] as? Number)?.toFloat() ?: 0.8f
+        val colorMode = (params["colorMode"] as? String) ?: "palette-rings"
+        val background = (params["background"] as? String) ?: "cream"
+        val isDark = background == "dark"
+        val animSpeed = (params["animSpeed"] as? Number)?.toFloat() ?: 0.1f
+        val tOff = time * animSpeed * 0.3f
 
-        val cx = w / 2f
-        val cy = h / 2f
-        val baseRadius = min(w, h) * 0.05f
+        val bg = BG[background] ?: BG["cream"]!!
+        val bgColor = Color.rgb(bg[0], bg[1], bg[2])
 
-        val segments = when (quality) {
-            Quality.DRAFT -> 48
-            Quality.BALANCED -> 72
-            Quality.ULTRA -> 120
-        }
+        // Place seed shapes with jittered grid
+        val cols = ceil(sqrt(shapeCount.toFloat() * (wf / hf))).toInt().coerceAtLeast(1)
+        val rows = ceil(shapeCount.toFloat() / cols).toInt().coerceAtLeast(1)
+        val cw = wf / cols
+        val ch = hf / rows
+        val minDim = min(wf, hf)
 
-        for (ring in 0 until offsets) {
-            val r = baseRadius + ring * spacing
-            paint.color = paletteColors[ring % paletteColors.size]
-            paint.alpha = 200
+        val shapes = mutableListOf<Shape>()
+        for (r in 0 until rows) {
+            if (shapes.size >= shapeCount) break
+            for (c in 0 until cols) {
+                if (shapes.size >= shapeCount) break
+                val cx = (c + 0.2f + rng.range(0f, 0.6f)) * cw
+                val cy = (r + 0.2f + rng.range(0f, 0.6f)) * ch
+                val baseR = (0.12f + rng.range(0f, 0.14f)) * minDim
+                val rot = rng.range(0f, 2f * PI.toFloat())
 
-            val path = Path()
-
-            when (shape) {
-                "rectangles" -> {
-                    val halfSize = r
-                    path.addRect(
-                        cx - halfSize, cy - halfSize,
-                        cx + halfSize, cy + halfSize,
-                        Path.Direction.CW
-                    )
-                }
-                "blobs" -> {
-                    for (i in 0..segments) {
-                        val angle = i.toFloat() / segments * 2f * PI.toFloat()
-                        val noiseVal = noise.noise2D(
-                            cos(angle) * 2f + ring * 0.1f + timeOff,
-                            sin(angle) * 2f + ring * 0.1f
-                        )
-                        val localR = r * (1f + noiseVal * 0.3f)
-                        val px = cx + cos(angle) * localR
-                        val py = cy + sin(angle) * localR
-                        if (i == 0) path.moveTo(px, py) else path.lineTo(px, py)
+                val type = when (shapeType) {
+                    "circles" -> "circle"
+                    "rectangles" -> "rect"
+                    "triangles" -> "triangle"
+                    "stars" -> "star"
+                    "blobs" -> "circle" // blobs use circle SDF + extra wobble
+                    else -> { // mixed
+                        val pick = rng.range(0f, 1f)
+                        when {
+                            pick < 0.25f -> "circle"
+                            pick < 0.45f -> "rect"
+                            pick < 0.65f -> "triangle"
+                            pick < 0.85f -> "star"
+                            else -> "circle"
+                        }
                     }
-                    path.close()
                 }
-                else -> { // circle
-                    path.addCircle(cx, cy, r, Path.Direction.CW)
+
+                val aspect = 0.6f + rng.range(0f, 0.8f)
+                shapes.add(Shape(type, cx, cy, baseR, baseR * aspect, baseR / aspect, rot))
+            }
+        }
+
+        // Palette colors as RGB arrays
+        val paletteColors = palette.colorInts()
+        val colorsRgb = paletteColors.map { intArrayOf(Color.red(it), Color.green(it), Color.blue(it)) }
+
+        val halfLW = lineWidth * 0.5f
+        val globalAlpha = if (isDark) 0.88f else 0.82f
+        val maxDist = ringCount * spacing
+
+        // Pixel buffer
+        val pixels = IntArray(w * h)
+        val bgPixel = bgColor
+
+        // Fill background
+        pixels.fill(bgPixel)
+
+        for (py in 0 until h) {
+            val pyf = py.toFloat()
+            for (px in 0 until w) {
+                val pxf = px.toFloat()
+
+                // Evaluate union SDF across all shapes
+                var d = Float.MAX_VALUE
+                for (s in shapes) {
+                    val raw = when (s.type) {
+                        "rect" -> sdRect(pxf, pyf, s.cx, s.cy, s.hw, s.hh)
+                        "triangle" -> sdRegularPoly(pxf, pyf, s.cx, s.cy, s.r, 3, s.rot)
+                        "star" -> sdStar(pxf, pyf, s.cx, s.cy, s.r, s.rot)
+                        else -> sdCircle(pxf, pyf, s.cx, s.cy, s.r)
+                    }
+                    d = min(d, raw)
+                }
+
+                // Apply wobble
+                if (wobble > 0f) {
+                    val wn = noise.fbm(
+                        pxf / wf * wobbleScale + tOff,
+                        pyf / hf * wobbleScale + tOff * 0.7f,
+                        3, 2f, 0.5f
+                    )
+                    val wobbleMult = if (shapeType == "blobs") 0.7f else 0.35f
+                    d += wn * wobble * spacing * wobbleMult
+                }
+
+                if (d < 0f || d >= maxDist) continue
+
+                val ringIdx = (d / spacing).toInt()
+                val frac = (d % spacing) / spacing
+                val distFromEdge = min(frac, 1f - frac) * spacing
+
+                // Get ring color
+                val (cr, cg, cb) = getRingColor(ringIdx, ringCount, colorsRgb, colorMode)
+
+                if (fillBands) {
+                    val bandAlpha = globalAlpha * 0.5f
+                    var a01 = bandAlpha
+                    if (distFromEdge < halfLW + 1f) {
+                        val lineAlpha = max(0f, min(1f, halfLW + 1f - distFromEdge))
+                        a01 = bandAlpha + (globalAlpha - bandAlpha) * lineAlpha
+                    }
+                    val rr = (bg[0] * (1f - a01) + cr * a01).toInt().coerceIn(0, 255)
+                    val gg = (bg[1] * (1f - a01) + cg * a01).toInt().coerceIn(0, 255)
+                    val bb = (bg[2] * (1f - a01) + cb * a01).toInt().coerceIn(0, 255)
+                    pixels[py * w + px] = Color.rgb(rr, gg, bb)
+                } else {
+                    if (distFromEdge > halfLW + 1f) continue
+                    val alpha = max(0f, min(1f, halfLW + 1f - distFromEdge))
+                    val a01 = alpha * globalAlpha
+                    val rr = (bg[0] * (1f - a01) + cr * a01).toInt().coerceIn(0, 255)
+                    val gg = (bg[1] * (1f - a01) + cg * a01).toInt().coerceIn(0, 255)
+                    val bb = (bg[2] * (1f - a01) + cb * a01).toInt().coerceIn(0, 255)
+                    pixels[py * w + px] = Color.rgb(rr, gg, bb)
                 }
             }
+        }
 
-            canvas.drawPath(path, paint)
+        bitmap.setPixels(pixels, 0, w, 0, 0, w, h)
+    }
+
+    private fun getRingColor(
+        ringIdx: Int, ringCount: Int,
+        colors: List<IntArray>, colorMode: String
+    ): Triple<Int, Int, Int> {
+        return when (colorMode) {
+            "alternating" -> {
+                val c = if (ringIdx % 2 == 0) colors[0] else colors[colors.size - 1]
+                Triple(c[0], c[1], c[2])
+            }
+            "elevation" -> {
+                val t = ringIdx.toFloat() / max(1, ringCount - 1)
+                val ci = t * (colors.size - 1)
+                val i0 = floor(ci).toInt()
+                val i1 = min(colors.size - 1, i0 + 1)
+                val f = ci - i0
+                Triple(
+                    (colors[i0][0] + (colors[i1][0] - colors[i0][0]) * f).toInt().coerceIn(0, 255),
+                    (colors[i0][1] + (colors[i1][1] - colors[i0][1]) * f).toInt().coerceIn(0, 255),
+                    (colors[i0][2] + (colors[i1][2] - colors[i0][2]) * f).toInt().coerceIn(0, 255)
+                )
+            }
+            else -> { // palette-rings
+                val c = colors[ringIdx % colors.size]
+                Triple(c[0], c[1], c[2])
+            }
         }
     }
 
     override fun estimateCost(params: Map<String, Any>, quality: Quality): Float {
-        val offsets = (params["ringCount"] as? Number)?.toInt() ?: 16
-        return (offsets / 40f).coerceIn(0.1f, 1f)
+        val shapes = (params["shapeCount"] as? Number)?.toInt() ?: 4
+        return (shapes * 0.25f).coerceIn(0.2f, 1f)
     }
 }
