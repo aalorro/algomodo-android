@@ -14,7 +14,11 @@ import com.artmondo.algomodo.generators.Parameter
 import com.artmondo.algomodo.generators.Quality
 import com.artmondo.algomodo.rendering.SvgPath
 import kotlin.math.PI
+import kotlin.math.ceil
 import kotlin.math.cos
+import kotlin.math.floor
+import kotlin.math.max
+import kotlin.math.min
 import kotlin.math.sin
 import kotlin.math.sqrt
 
@@ -22,7 +26,9 @@ import kotlin.math.sqrt
  * Streamline generator from a noise-based vector field.
  *
  * Seeds points across the canvas and traces streamlines by following the
- * noise-derived angle at each point. Evenly-spaced seeding prevents overlap.
+ * noise-derived vector at each point. Evenly-spaced seeding prevents overlap.
+ * Supports curl-noise (divergence-free swirling), gradient (converging flows),
+ * and sine-lattice (regular wave pattern) field types.
  */
 class PlotterStreamlinesGenerator : Generator {
 
@@ -30,12 +36,12 @@ class PlotterStreamlinesGenerator : Generator {
     override val family = "plotter"
     override val styleName = "Streamlines"
     override val definition =
-        "Evenly-spaced streamlines following a simplex noise vector field."
+        "Traces evenly-spaced streamlines through a smooth 2D vector field derived from noise."
     override val algorithmNotes =
-        "Seed points are distributed on a grid with jitter. From each seed, the streamline " +
-        "is integrated forward and backward by sampling the noise field angle at the current " +
-        "position and stepping in that direction. Lines terminate when they leave the canvas " +
-        "or come too close to another streamline."
+        "A SimplexNoise scalar field generates the flow via curl (divergence-free), gradient " +
+        "(converging), or sine-lattice modes. Each streamline is integrated with the Euler method " +
+        "and terminated when it exits the canvas or approaches an existing line. A separation grid " +
+        "prevents overcrowding."
     override val supportsVector = false
     override val supportsAnimation = true
 
@@ -65,6 +71,14 @@ class PlotterStreamlinesGenerator : Generator {
         "animSpeed" to 0.15f
     )
 
+    companion object {
+        private val BG = mapOf(
+            "white" to Color.parseColor("#F8F8F5"),
+            "cream" to Color.parseColor("#F2EAD8"),
+            "dark" to Color.parseColor("#0E0E0E")
+        )
+    }
+
     override fun renderCanvas(
         canvas: Canvas,
         bitmap: Bitmap,
@@ -76,19 +90,25 @@ class PlotterStreamlinesGenerator : Generator {
     ) {
         val w = bitmap.width.toFloat()
         val h = bitmap.height.toFloat()
-        val lineCount = (params["lineCount"] as? Number)?.toFloat() ?: 400f
-        val maxLength = (params["maxSteps"] as? Number)?.toFloat() ?: 200f
-        val noiseScale = (params["fieldScale"] as? Number)?.toFloat() ?: 1.8f
+        val maxLines = ((params["lineCount"] as? Number)?.toFloat() ?: 400f).toInt()
+        val maxSteps = ((params["maxSteps"] as? Number)?.toFloat() ?: 200f).toInt()
+        val step = (params["stepLength"] as? Number)?.toFloat() ?: 5f
+        val fScale = (params["fieldScale"] as? Number)?.toFloat() ?: 1.8f
+        val minSep = (params["minSeparation"] as? Number)?.toFloat() ?: 8f
+        val fieldType = params["fieldType"] as? String ?: "curl-noise"
         val lineWidth = (params["lineWidth"] as? Number)?.toFloat() ?: 6f
-
+        val colorMode = params["colorMode"] as? String ?: "palette-cycle"
+        val background = params["background"] as? String ?: "cream"
         val animSpeed = (params["animSpeed"] as? Number)?.toFloat() ?: 0.15f
-        val timeOff = time * animSpeed
+        val timeOffset = time * animSpeed * 0.4f
+        val isDark = background == "dark"
 
         val rng = SeededRNG(seed)
         val noise = SimplexNoise(seed)
-        val paletteColors = palette.colorInts()
 
-        canvas.drawColor(Color.BLACK)
+        // Draw background
+        canvas.drawColor(BG[background] ?: BG["cream"]!!)
+
         val paint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
             style = Paint.Style.STROKE
             strokeWidth = lineWidth
@@ -96,110 +116,145 @@ class PlotterStreamlinesGenerator : Generator {
             strokeJoin = Paint.Join.ROUND
         }
 
-        // Separation distance between streamlines
-        val sep = 15f / (lineCount / 400f).coerceAtLeast(0.1f)
-        val stepSize = 2f
-
-        // Occupancy grid for separation test
-        val gridCellSize = sep * 0.5f
-        val gridW = (w / gridCellSize).toInt() + 1
-        val gridH = (h / gridCellSize).toInt() + 1
-        val occupied = BooleanArray(gridW * gridH)
+        // Separation grid — cell size = minSep / sqrt(2) for proper radius coverage
+        val sepCell = max(1f, minSep / sqrt(2f))
+        val sgw = ceil(w / sepCell).toInt() + 1
+        val sgh = ceil(h / sepCell).toInt() + 1
+        val sepGrid = BooleanArray(sgw * sgh)
 
         fun markOccupied(px: Float, py: Float) {
-            val gx = (px / gridCellSize).toInt()
-            val gy = (py / gridCellSize).toInt()
-            if (gx in 0 until gridW && gy in 0 until gridH) {
-                occupied[gy * gridW + gx] = true
-            }
+            val gx = min(sgw - 1, max(0, floor(px / sepCell).toInt()))
+            val gy = min(sgh - 1, max(0, floor(py / sepCell).toInt()))
+            sepGrid[gy * sgw + gx] = true
         }
 
         fun isOccupied(px: Float, py: Float): Boolean {
-            val gx = (px / gridCellSize).toInt()
-            val gy = (py / gridCellSize).toInt()
-            val r = 1
+            val gx = floor(px / sepCell).toInt()
+            val gy = floor(py / sepCell).toInt()
+            val r = ceil(minSep / sepCell).toInt()
             for (dy in -r..r) {
                 for (dx in -r..r) {
                     val nx = gx + dx
                     val ny = gy + dy
-                    if (nx in 0 until gridW && ny in 0 until gridH) {
-                        if (occupied[ny * gridW + nx]) return true
+                    if (nx in 0 until sgw && ny in 0 until sgh && sepGrid[ny * sgw + nx]) {
+                        // Distance check against cell center
+                        val cx = (nx + 0.5f) * sepCell
+                        val cy = (ny + 0.5f) * sepCell
+                        val ddx = px - cx
+                        val ddy = py - cy
+                        if (ddx * ddx + ddy * ddy < minSep * minSep) return true
                     }
                 }
             }
             return false
         }
 
-        // Generate seed points with jitter
-        val seeds = mutableListOf<Pair<Float, Float>>()
-        var sy = sep / 2f
-        while (sy < h) {
-            var sx = sep / 2f
-            while (sx < w) {
-                seeds.add(Pair(
-                    sx + rng.range(-sep * 0.3f, sep * 0.3f),
-                    sy + rng.range(-sep * 0.3f, sep * 0.3f)
-                ))
-                sx += sep
+        // FBM-based vector field computation matching the web version
+        fun getField(x: Float, y: Float): Pair<Float, Float> {
+            // +5 offset keeps canvas center away from FBM origin
+            val nx = (x / w - 0.5f) * fScale + 5f + timeOffset
+            val ny = (y / h - 0.5f) * fScale + 5f + timeOffset * 0.7f
+
+            if (fieldType == "sine-lattice") {
+                val freq = fScale * 3f
+                val vx = sin(ny * freq) + 0.3f * sin(nx * freq * 1.5f)
+                val vy = cos(nx * freq) + 0.3f * cos(ny * freq * 1.5f)
+                val len = sqrt(vx * vx + vy * vy) + 1e-6f
+                return (vx / len) to (vy / len)
             }
-            sy += sep
+
+            // Epsilon in noise-space units — ~1.5% of fScale
+            val eps = fScale * 0.015f
+
+            if (fieldType == "gradient") {
+                val dFx = noise.fbm(nx + eps, ny, 4, 2f, 0.5f) - noise.fbm(nx - eps, ny, 4, 2f, 0.5f)
+                val dFy = noise.fbm(nx, ny + eps, 4, 2f, 0.5f) - noise.fbm(nx, ny - eps, 4, 2f, 0.5f)
+                val len = sqrt(dFx * dFx + dFy * dFy) + 1e-6f
+                return (dFx / len) to (dFy / len)
+            }
+
+            // curl-noise (default): divergence-free field gives swirling, space-filling paths
+            val dFy = noise.fbm(nx, ny + eps, 4, 2f, 0.5f) - noise.fbm(nx, ny - eps, 4, 2f, 0.5f)
+            val dFx = noise.fbm(nx + eps, ny, 4, 2f, 0.5f) - noise.fbm(nx - eps, ny, 4, 2f, 0.5f)
+            // curl: (dF/dy, -dF/dx)
+            val vx = dFy
+            val vy = -dFx
+            val len = sqrt(vx * vx + vy * vy) + 1e-6f
+            return (vx / len) to (vy / len)
         }
-        rng.shuffle(seeds.toMutableList()).let { seeds.clear(); seeds.addAll(it) }
 
-        var colorIdx = 0
-        for ((startX, startY) in seeds) {
-            if (startX < 0 || startX >= w || startY < 0 || startY >= h) continue
-            if (isOccupied(startX, startY)) continue
+        val paletteColors = palette.colorInts()
 
-            val points = mutableListOf<Pair<Float, Float>>()
+        // Jittered grid seed pool — uniform coverage regardless of field topology
+        val gridSpacing = minSep * 1.5f
+        val gCols = ceil(w / gridSpacing).toInt()
+        val gRows = ceil(h / gridSpacing).toInt()
+        val seeds = mutableListOf<Pair<Float, Float>>()
+        for (gr in 0 until gRows) {
+            for (gc in 0 until gCols) {
+                seeds.add(
+                    (gc + rng.range(0f, 1f)) * gridSpacing to
+                    (gr + rng.range(0f, 1f)) * gridSpacing
+                )
+            }
+        }
+        // Fisher-Yates shuffle
+        for (i in seeds.size - 1 downTo 1) {
+            val j = (rng.range(0f, 1f) * (i + 1)).toInt().coerceAtMost(i)
+            val tmp = seeds[i]; seeds[i] = seeds[j]; seeds[j] = tmp
+        }
+
+        var linesDrawn = 0
+        var seedIdx = 0
+
+        while (linesDrawn < maxLines && seedIdx < seeds.size) {
+            val (sx, sy) = seeds[seedIdx++]
+            if (sx < 0 || sx >= w || sy < 0 || sy >= h) continue
+            if (isOccupied(sx, sy)) continue
 
             // Trace forward
-            var px = startX
-            var py = startY
-            var totalDist = 0f
-            for (step in 0 until (maxLength / stepSize).toInt()) {
-                if (px < 0 || px >= w || py < 0 || py >= h) break
-                if (step > 2 && isOccupied(px, py)) break
-
-                points.add(Pair(px, py))
-                markOccupied(px, py)
-
-                val angle = noise.noise2D(px / w * noiseScale + timeOff, py / h * noiseScale) * PI.toFloat()
-                px += cos(angle) * stepSize
-                py += sin(angle) * stepSize
-                totalDist += stepSize
+            val pts = mutableListOf(sx to sy)
+            var x = sx
+            var y = sy
+            for (s in 0 until maxSteps) {
+                val (vx, vy) = getField(x, y)
+                val nx = x + vx * step
+                val ny = y + vy * step
+                if (nx < 0 || nx > w || ny < 0 || ny > h) break
+                if (s > 0 && isOccupied(nx, ny)) break
+                pts.add(nx to ny)
+                x = nx; y = ny
             }
 
-            // Trace backward
-            px = startX
-            py = startY
-            val backPoints = mutableListOf<Pair<Float, Float>>()
-            for (step in 0 until (maxLength / stepSize).toInt()) {
-                if (px < 0 || px >= w || py < 0 || py >= h) break
-                if (step > 2 && isOccupied(px, py)) break
+            if (pts.size < 3) continue
 
-                backPoints.add(Pair(px, py))
-                markOccupied(px, py)
-
-                val angle = noise.noise2D(px / w * noiseScale + timeOff, py / h * noiseScale) * PI.toFloat()
-                px -= cos(angle) * stepSize
-                py -= sin(angle) * stepSize
+            // Determine color
+            val color: Int
+            if (colorMode == "position") {
+                val t = (sx / w * 0.5f + sy / h * 0.5f)
+                color = palette.lerpColor(t)
+            } else if (colorMode == "velocity") {
+                val (vx, vy) = getField(sx, sy)
+                val speed = min(1f, sqrt(vx * vx + vy * vy))
+                color = palette.lerpColor(speed)
+            } else {
+                color = paletteColors[linesDrawn % paletteColors.size]
             }
 
-            // Combine backward (reversed) + forward
-            val allPoints = backPoints.reversed() + points.drop(1)
-            if (allPoints.size < 3) continue
+            paint.color = color
+            paint.alpha = if (isDark) 217 else 191 // 0.85 / 0.75
 
             val path = Path()
-            path.moveTo(allPoints[0].first, allPoints[0].second)
-            for (i in 1 until allPoints.size) {
-                path.lineTo(allPoints[i].first, allPoints[i].second)
+            path.moveTo(pts[0].first, pts[0].second)
+            for (i in 1 until pts.size) {
+                path.lineTo(pts[i].first, pts[i].second)
             }
-
-            paint.color = paletteColors[colorIdx % paletteColors.size]
-            paint.alpha = 200
             canvas.drawPath(path, paint)
-            colorIdx++
+
+            // Mark all points as occupied after drawing
+            for ((px, py) in pts) markOccupied(px, py)
+
+            linesDrawn++
         }
     }
 
