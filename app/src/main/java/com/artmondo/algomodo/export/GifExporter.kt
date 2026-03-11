@@ -40,9 +40,7 @@ object GifExporter {
         val canvas = Canvas(bitmap)
         val reusablePixels = IntArray(pixelCount)
 
-        // For boomerang we need to store pixel data of middle frames
-        val boomerangFrames: MutableList<IntArray>? =
-            if (boomerang && totalFrames > 2) mutableListOf() else null
+        val doBoomerang = boomerang && totalFrames > 2
 
         val baos = ByteArrayOutputStream()
         val encoder = AnimatedGifEncoder()
@@ -50,7 +48,7 @@ object GifExporter {
         encoder.setRepeat(if (boomerang || endless) 0 else -1)
         encoder.setDelay(frameDelay)
 
-        val totalOutputFrames = if (boomerang && totalFrames > 2)
+        val totalOutputFrames = if (doBoomerang)
             totalFrames + (totalFrames - 2) else totalFrames
 
         // Render and encode forward frames
@@ -60,22 +58,20 @@ object GifExporter {
             generator.renderCanvas(canvas, bitmap, params, seed, palette, quality, time)
             bitmap.getPixels(reusablePixels, 0, resolution, 0, 0, resolution, resolution)
 
-            // Store pixel data for boomerang (excluding first and last frame)
-            if (boomerangFrames != null && i > 0 && i < totalFrames - 1) {
-                boomerangFrames.add(reusablePixels.copyOf())
-            }
-
             encoder.addFrame(bitmap, reusablePixels)
             onProgress(i.toFloat() / totalOutputFrames * 0.9f)
         }
 
-        // Encode reversed boomerang frames from stored pixel data
-        if (boomerangFrames != null) {
-            for (i in boomerangFrames.size - 1 downTo 0) {
-                val px = boomerangFrames[i]
-                bitmap.setPixels(px, 0, resolution, 0, 0, resolution, resolution)
-                encoder.addFrame(bitmap, px)
-                val progress = (totalFrames + (boomerangFrames.size - 1 - i)).toFloat()
+        // Re-render frames in reverse for boomerang (avoids storing all frames in RAM)
+        if (doBoomerang) {
+            for (i in (totalFrames - 2) downTo 1) {
+                val time = i.toFloat() / fps
+                canvas.drawColor(android.graphics.Color.BLACK)
+                generator.renderCanvas(canvas, bitmap, params, seed, palette, quality, time)
+                bitmap.getPixels(reusablePixels, 0, resolution, 0, 0, resolution, resolution)
+
+                encoder.addFrame(bitmap, reusablePixels)
+                val progress = (totalFrames + (totalFrames - 2 - i)).toFloat()
                 onProgress(progress / totalOutputFrames * 0.9f)
             }
         }
