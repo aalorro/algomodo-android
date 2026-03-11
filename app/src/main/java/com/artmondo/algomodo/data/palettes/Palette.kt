@@ -37,7 +37,11 @@ object CuratedPalettes {
         Palette("Neon", listOf("#FF00FF", "#00FFFF", "#FFFF00", "#FF0080", "#00FF80")),
         Palette("Ember", listOf("#1A0000", "#5C0A00", "#B32000", "#E05000", "#FF8040")),
         Palette("Arctic", listOf("#E0F7FA", "#80DEEA", "#26C6DA", "#00838F", "#004D40")),
-        Palette("Cosmic", listOf("#0D0221", "#0A0548", "#450920", "#A2095B", "#E9178A"))
+        Palette("Cosmic", listOf("#0D0221", "#0A0548", "#450920", "#A2095B", "#E9178A")),
+        Palette("Rainbow", listOf("#FF0000", "#FF8800", "#FFEE00", "#00CC44", "#3366FF")),
+        Palette("Contrast", listOf("#000000", "#FFFFFF", "#FF0000", "#FFFF00", "#0000FF")),
+        Palette("Earth", listOf("#5C3D2E", "#A0522D", "#C89B7B", "#D4A76A", "#F5DEB3")),
+        Palette("Nature", listOf("#2E7D32", "#66BB6A", "#AED581", "#81D4FA", "#FFCC80"))
     )
 
     val default = all[0] // Vibrant
