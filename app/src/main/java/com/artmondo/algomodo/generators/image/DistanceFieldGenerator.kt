@@ -164,11 +164,8 @@ class DistanceFieldGenerator : Generator {
                         Color.rgb(v, v, v)
                     }
                     "heat" -> {
-                        // Warm colour ramp: black -> red -> yellow -> white
-                        val r = (t * 3f).coerceIn(0f, 1f)
-                        val g = ((t - 0.33f) * 3f).coerceIn(0f, 1f)
-                        val b = ((t - 0.66f) * 3f).coerceIn(0f, 1f)
-                        Color.rgb((r * 255).toInt(), (g * 255).toInt(), (b * 255).toInt())
+                        // Heat ramp through palette with contrast boost
+                        palette.lerpColor(t)
                     }
                     else -> palette.lerpColor(t)  // "palette"
                 }

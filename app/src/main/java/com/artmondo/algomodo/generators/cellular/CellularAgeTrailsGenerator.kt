@@ -139,11 +139,10 @@ class CellularAgeTrailsGenerator : Generator {
 
                     when (colorMode) {
                         "heat" -> {
-                            // Fixed heat map: black -> red -> orange -> white
-                            val r = (mapped * 3f).coerceIn(0f, 1f)
-                            val g = ((mapped - 0.33f) * 3f).coerceIn(0f, 1f)
-                            val b = ((mapped - 0.66f) * 3f).coerceIn(0f, 1f)
-                            Color.argb(255, (r * 255).toInt(), (g * 255).toInt(), (b * 255).toInt())
+                            // Heat ramp through palette: emphasize bright end
+                            val color = palette.lerpColor(mapped)
+                            val alpha = (mapped * 255).toInt().coerceIn(0, 255)
+                            Color.argb(alpha, Color.red(color), Color.green(color), Color.blue(color))
                         }
                         else /* palette */ -> {
                             val color = palette.lerpColor(t)

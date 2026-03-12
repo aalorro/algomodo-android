@@ -62,7 +62,9 @@ class ForestFireGenerator : Generator {
 
         val w = bitmap.width
         val h = bitmap.height
-        val steps = (time * stepsPerFrame).toInt()
+        // Ensure enough simulation steps for visible dynamics even in static mode (time≈0)
+        val warmup = (200f / stepsPerFrame).toInt().coerceAtLeast(80)
+        val steps = warmup + (time * stepsPerFrame).toInt()
         val totalCells = gridSize * gridSize
 
         // Initialize from seed: start with a partially forested grid
@@ -111,21 +113,26 @@ class ForestFireGenerator : Generator {
         val pixels = IntArray(w * h)
         val paletteColors = palette.colorInts()
 
-        // Determine colors based on colorMode
+        // Determine colors based on colorMode — always palette-derived
         val treeColor: Int
         val fireColor: Int
         val emptyColor: Int
         when (colorMode) {
-            "palette" -> {
-                // first / mid / last palette colours for EMPTY / BURNING / TREE
-                treeColor = paletteColors[paletteColors.size - 1]
+            "classic" -> {
+                // Derive classic-style tones from palette: tree=last, fire=mid, empty=darkened first
+                val base = paletteColors[0]
+                emptyColor = Color.rgb(
+                    (Color.red(base) * 0.15f).toInt(),
+                    (Color.green(base) * 0.15f).toInt(),
+                    (Color.blue(base) * 0.15f).toInt()
+                )
                 fireColor = paletteColors[paletteColors.size / 2]
-                emptyColor = paletteColors[0]
+                treeColor = paletteColors[paletteColors.size - 1]
             }
-            else /* classic */ -> {
-                treeColor = Color.rgb(34, 139, 34)   // forest green
-                fireColor = Color.rgb(255, 69, 0)     // orange-red
-                emptyColor = Color.rgb(30, 20, 10)    // dark brown
+            else /* palette */ -> {
+                emptyColor = paletteColors[0]
+                fireColor = paletteColors[paletteColors.size / 2]
+                treeColor = paletteColors[paletteColors.size - 1]
             }
         }
 
