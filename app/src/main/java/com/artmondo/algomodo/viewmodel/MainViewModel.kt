@@ -51,7 +51,7 @@ data class MainUiState(
     val theme: String = "dark",
     val performanceMode: Boolean = false,
     val showFps: Boolean = false,
-    val interactionEnabled: Boolean = false,
+    val interactionEnabled: Boolean = true,
     val renderTrigger: Int = 0, // increment to force re-render
     val activeTab: Int = 0 // 0=generators, 1=params, 2=export, 3=settings
 )

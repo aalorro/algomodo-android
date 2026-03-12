@@ -31,7 +31,7 @@ class AppPreferences(private val dataStore: DataStore<Preferences>) {
     val canvasHeight: Flow<Int> = dataStore.data.map { it[CANVAS_HEIGHT] ?: 1080 }
     val quality: Flow<String> = dataStore.data.map { it[QUALITY] ?: "balanced" }
     val animationFps: Flow<Int> = dataStore.data.map { it[ANIMATION_FPS] ?: 24 }
-    val interactionEnabled: Flow<Boolean> = dataStore.data.map { it[INTERACTION_ENABLED] ?: false }
+    val interactionEnabled: Flow<Boolean> = dataStore.data.map { it[INTERACTION_ENABLED] ?: true }
 
     suspend fun setTheme(value: String) { dataStore.edit { it[THEME] = value } }
     suspend fun setPerformanceMode(value: Boolean) { dataStore.edit { it[PERFORMANCE_MODE] = value } }
