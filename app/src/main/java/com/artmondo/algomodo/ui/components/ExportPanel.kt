@@ -101,7 +101,7 @@ fun ExportPanel(
                 horizontalArrangement = Arrangement.spacedBy(4.dp),
                 verticalAlignment = Alignment.CenterVertically
             ) {
-                Text("Size:", style = MaterialTheme.typography.bodySmall, modifier = Modifier.width(50.dp))
+                Text("Size:", style = MaterialTheme.typography.bodySmall)
                 listOf(600, 800, 1000).forEach { res ->
                     FilterChip(
                         selected = exportState.gifResolution == res,
@@ -118,7 +118,7 @@ fun ExportPanel(
                 horizontalArrangement = Arrangement.spacedBy(4.dp),
                 verticalAlignment = Alignment.CenterVertically
             ) {
-                Text("Duration:", style = MaterialTheme.typography.bodySmall, modifier = Modifier.width(50.dp))
+                Text("Duration:", style = MaterialTheme.typography.bodySmall)
                 listOf(3, 5, 8).forEach { dur ->
                     FilterChip(
                         selected = exportState.gifDuration == dur,
@@ -165,7 +165,7 @@ fun ExportPanel(
                 horizontalArrangement = Arrangement.spacedBy(4.dp),
                 verticalAlignment = Alignment.CenterVertically
             ) {
-                Text("Duration:", style = MaterialTheme.typography.bodySmall, modifier = Modifier.width(50.dp))
+                Text("Duration:", style = MaterialTheme.typography.bodySmall)
                 FlowRow(
                     horizontalArrangement = Arrangement.spacedBy(4.dp),
                     verticalArrangement = Arrangement.spacedBy(4.dp)
@@ -200,7 +200,7 @@ fun ExportPanel(
                     horizontalArrangement = Arrangement.spacedBy(8.dp),
                     verticalAlignment = Alignment.CenterVertically
                 ) {
-                    Spacer(Modifier.width(50.dp))
+                    Spacer(Modifier.width(54.dp))
                     OutlinedTextField(
                         value = customText,
                         onValueChange = { newVal ->
