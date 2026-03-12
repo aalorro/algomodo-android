@@ -397,11 +397,15 @@ private fun NeonProgressBar(modifier: Modifier = Modifier) {
 /** Spot-check whether a bitmap is nearly all-black by sampling pixels. */
 private fun isBitmapBlank(bitmap: Bitmap, size: Int): Boolean {
     val step = (size / 8).coerceAtLeast(1)
+    // Bulk read — avoids per-pixel JNI overhead of getPixel()
+    val pixels = IntArray(size * size)
+    bitmap.getPixels(pixels, 0, size, 0, 0, size, size)
     var totalBrightness = 0L
     var samples = 0
     for (y in step until size step step) {
+        val rowOff = y * size
         for (x in step until size step step) {
-            val px = bitmap.getPixel(x, y)
+            val px = pixels[rowOff + x]
             val r = (px shr 16) and 0xFF
             val g = (px shr 8) and 0xFF
             val b = px and 0xFF
@@ -410,7 +414,5 @@ private fun isBitmapBlank(bitmap: Bitmap, size: Int): Boolean {
         }
     }
     if (samples == 0) return true
-    // Average brightness per sample across R+G+B (max 765)
-    // Threshold: if average < 3 (~0.4% brightness), consider blank
     return (totalBrightness / samples) < 3
 }

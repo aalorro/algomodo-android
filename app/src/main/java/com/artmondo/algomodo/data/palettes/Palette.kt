@@ -8,21 +8,32 @@ data class Palette(
     val name: String,
     val colors: List<String> // Always 5 hex colors
 ) {
-    fun colorInts(): List<Int> = colors.map { Color.parseColor(it) }
+    // Cached parsed color ints — avoids Color.parseColor() on every access
+    private val parsedColors: IntArray by lazy {
+        IntArray(colors.size) { Color.parseColor(colors[it]) }
+    }
 
-    fun colorAt(index: Int): Int = Color.parseColor(colors[index % colors.size])
+    fun colorInts(): List<Int> = parsedColors.toList()
+
+    fun colorAt(index: Int): Int = parsedColors[index % parsedColors.size]
 
     fun lerpColor(t: Float): Int {
+        val pc = parsedColors
         val clamped = t.coerceIn(0f, 1f)
-        val scaled = clamped * (colors.size - 1)
-        val i = scaled.toInt().coerceAtMost(colors.size - 2)
+        val scaled = clamped * (pc.size - 1)
+        val i = scaled.toInt().coerceAtMost(pc.size - 2)
         val frac = scaled - i
-        val c1 = colorAt(i)
-        val c2 = colorAt(i + 1)
+        val c1 = pc[i]
+        val c2 = pc[i + 1]
         val r = ((Color.red(c1) * (1 - frac) + Color.red(c2) * frac)).toInt()
         val g = ((Color.green(c1) * (1 - frac) + Color.green(c2) * frac)).toInt()
         val b = ((Color.blue(c1) * (1 - frac) + Color.blue(c2) * frac)).toInt()
         return Color.rgb(r, g, b)
+    }
+
+    /** Pre-compute a lookup table for fast indexed palette access in pixel loops. */
+    fun buildLut(size: Int = 256): IntArray = IntArray(size) { i ->
+        lerpColor(i.toFloat() / (size - 1).coerceAtLeast(1))
     }
 }
 
