@@ -48,6 +48,14 @@ fun PaletteSelector(
                     onClick = { onSelectPalette(palette) }
                 )
             }
+            item {
+                val displayPalette = if (selectedPalette.name == "Random") selectedPalette else CuratedPalettes.randomPlaceholder
+                PaletteChip(
+                    palette = displayPalette,
+                    isSelected = selectedPalette.name == "Random",
+                    onClick = { onSelectPalette(CuratedPalettes.random()) }
+                )
+            }
         }
     }
 }
@@ -69,6 +77,14 @@ fun VerticalPaletteSelector(
                 palette = palette,
                 isSelected = palette.name == selectedPalette.name,
                 onClick = { onSelectPalette(palette) }
+            )
+        }
+        item {
+            val displayPalette = if (selectedPalette.name == "Random") selectedPalette else CuratedPalettes.randomPlaceholder
+            VerticalPaletteChip(
+                palette = displayPalette,
+                isSelected = selectedPalette.name == "Random",
+                onClick = { onSelectPalette(CuratedPalettes.random()) }
             )
         }
     }
