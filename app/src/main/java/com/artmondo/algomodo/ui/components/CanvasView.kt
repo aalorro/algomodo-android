@@ -241,7 +241,13 @@ private fun AnimationCanvas(
             @Volatile var currentQuality: Quality = quality
             @Volatile var currentShowFps: Boolean = showFps
             @Volatile var resetRequested: Boolean = false
+            @Volatile var clearRequested: Boolean = false
         }
+    }
+
+    // Instant transition: flash surface black when generator changes
+    LaunchedEffect(generator.id) {
+        stateHolder.clearRequested = true
     }
 
     // Update the holder whenever compose state changes
@@ -301,6 +307,17 @@ private fun AnimationCanvas(
                             if (stateHolder.resetRequested) {
                                 stateHolder.resetRequested = false
                                 startTime = System.nanoTime()
+                            }
+
+                            // Instant transition: flash black when generator changes
+                            if (stateHolder.clearRequested) {
+                                stateHolder.clearRequested = false
+                                startTime = System.nanoTime()
+                                val c = holder.lockCanvas()
+                                if (c != null) {
+                                    c.drawColor(android.graphics.Color.BLACK)
+                                    holder.unlockCanvasAndPost(c)
+                                }
                             }
 
                             val frameStart = System.nanoTime()
