@@ -80,7 +80,13 @@ class GraphTessellationsGenerator : Generator {
         val tiling = (params["tilingType"] as? String) ?: "hexagonal"
         val cellSize = (params["cellSize"] as? Number)?.toFloat() ?: 50f
         val lineWidth = (params["edgeWidth"] as? Number)?.toFloat() ?: 1.5f
+        val edgeStyle = (params["edgeStyle"] as? String) ?: "dark"
+        val colorMode = (params["colorMode"] as? String) ?: "palette-cycle"
         val fillOpacity = (params["fillOpacity"] as? Number)?.toFloat() ?: 0.85f
+        val innerDetail = (params["innerDetail"] as? String) ?: "none"
+        val jitter = (params["jitter"] as? Number)?.toFloat() ?: 0f
+        val animMode = (params["animMode"] as? String) ?: "wave"
+        val speed = (params["speed"] as? Number)?.toFloat() ?: 0.3f
         val fillCells = fillOpacity > 0f
 
         val rng = SeededRNG(seed)
@@ -92,33 +98,124 @@ class GraphTessellationsGenerator : Generator {
         val fillPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
             style = Paint.Style.FILL
         }
+        val showEdges = edgeStyle != "none"
         val strokePaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
             style = Paint.Style.STROKE
             strokeWidth = lineWidth
-            color = Color.rgb(30, 30, 30)
+            color = when (edgeStyle) {
+                "light" -> Color.rgb(220, 220, 220)
+                "palette" -> colors[0]
+                else -> Color.rgb(30, 30, 30) // "dark"
+            }
         }
 
-        // Animation offset
-        val offsetX = time * 5f
-        val offsetY = time * 3f
+        // Animation
+        val animTime = if (animMode == "none") 0f else time * speed
+        var offsetX = 0f
+        var offsetY = 0f
+        when (animMode) {
+            "wave" -> {
+                offsetX = animTime * 15f
+                offsetY = animTime * 9f
+            }
+        }
 
         val polygons = generateTiling(tiling, cellSize, w, h, offsetX, offsetY)
+        val diagonal = sqrt(w * w + h * h)
+        val detailPaint = Paint(Paint.ANTI_ALIAS_FLAG)
 
         for ((index, polygon) in polygons.withIndex()) {
+            // Apply jitter to vertices
+            val jittered = if (jitter > 0f) {
+                polygon.mapIndexed { vi, (px, py) ->
+                    val jx = noise.noise2D(px * 0.01f + vi, py * 0.01f) * cellSize * jitter
+                    val jy = noise.noise2D(px * 0.01f + vi + 100f, py * 0.01f + 100f) * cellSize * jitter
+                    Pair(px + jx, py + jy)
+                }
+            } else polygon
+
             val path = Path()
-            if (polygon.isNotEmpty()) {
-                path.moveTo(polygon[0].first, polygon[0].second)
-                for (i in 1 until polygon.size) {
-                    path.lineTo(polygon[i].first, polygon[i].second)
+            if (jittered.isNotEmpty()) {
+                path.moveTo(jittered[0].first, jittered[0].second)
+                for (i in 1 until jittered.size) {
+                    path.lineTo(jittered[i].first, jittered[i].second)
                 }
                 path.close()
             }
 
+            // Compute centroid for coloring and detail
+            val cx = jittered.map { it.first }.average().toFloat()
+            val cy = jittered.map { it.second }.average().toFloat()
+
             if (fillCells) {
-                fillPaint.color = colors[index % colors.size]
+                val colorShift = if (animMode == "color-cycle") animTime * 2f else 0f
+                val baseAlpha = if (animMode == "breathe") {
+                    val breath = (sin(animTime * 3f + cx * 0.01f + cy * 0.01f) * 0.5f + 0.5f)
+                    (fillOpacity * (0.3f + 0.7f * breath) * 255).toInt().coerceIn(0, 255)
+                } else {
+                    (fillOpacity * 255).toInt().coerceIn(0, 255)
+                }
+
+                val baseColor = when (colorMode) {
+                    "checkerboard" -> {
+                        val ci = ((cx / cellSize).toInt() + (cy / cellSize).toInt()) % 2
+                        colors[ci.coerceIn(0, colors.size - 1)]
+                    }
+                    "radial-gradient" -> {
+                        val dx = cx - w / 2f
+                        val dy = cy - h / 2f
+                        val t = (sqrt(dx * dx + dy * dy) / (diagonal * 0.5f) + colorShift) % 1f
+                        palette.lerpColor(t)
+                    }
+                    "noise-field" -> {
+                        val n = (noise.noise2D(cx * 0.005f, cy * 0.005f + colorShift) + 1f) / 2f
+                        palette.lerpColor(n.coerceIn(0f, 1f))
+                    }
+                    "monochrome" -> {
+                        val gray = ((noise.noise2D(cx * 0.008f, cy * 0.008f) + 1f) / 2f * 255).toInt().coerceIn(30, 240)
+                        Color.rgb(gray, gray, gray)
+                    }
+                    else -> { // "palette-cycle"
+                        val shifted = (index + (colorShift * colors.size).toInt()) % colors.size
+                        colors[if (shifted < 0) shifted + colors.size else shifted]
+                    }
+                }
+
+                fillPaint.color = Color.argb(baseAlpha, Color.red(baseColor), Color.green(baseColor), Color.blue(baseColor))
                 canvas.drawPath(path, fillPaint)
             }
-            canvas.drawPath(path, strokePaint)
+            if (showEdges) {
+                if (edgeStyle == "palette") {
+                    strokePaint.color = colors[(index + 1) % colors.size]
+                }
+                canvas.drawPath(path, strokePaint)
+            }
+
+            // Inner detail
+            when (innerDetail) {
+                "centroid-dot" -> {
+                    detailPaint.style = Paint.Style.FILL
+                    detailPaint.color = Color.WHITE
+                    canvas.drawCircle(cx, cy, cellSize * 0.06f, detailPaint)
+                }
+                "inscribed-circle" -> {
+                    detailPaint.style = Paint.Style.STROKE
+                    detailPaint.strokeWidth = lineWidth * 0.5f
+                    detailPaint.color = Color.argb(100, 255, 255, 255)
+                    val minDist = jittered.minOf { (px, py) ->
+                        sqrt((px - cx) * (px - cx) + (py - cy) * (py - cy))
+                    } * 0.6f
+                    canvas.drawCircle(cx, cy, minDist, detailPaint)
+                }
+                "subdivision" -> {
+                    detailPaint.style = Paint.Style.STROKE
+                    detailPaint.strokeWidth = lineWidth * 0.3f
+                    detailPaint.color = Color.argb(60, 255, 255, 255)
+                    for ((px, py) in jittered) {
+                        canvas.drawLine(cx, cy, px, py, detailPaint)
+                    }
+                }
+            }
         }
     }
 
@@ -169,7 +266,7 @@ class GraphTessellationsGenerator : Generator {
             "square" -> generateSquare(cellSize, w, h, offsetX, offsetY)
             "hexagonal" -> generateHexagonal(cellSize, w, h, offsetX, offsetY)
             "cairo" -> generateCairo(cellSize, w, h, offsetX, offsetY)
-            "snub-square" -> generateSnubSquare(cellSize, w, h, offsetX, offsetY)
+            "penrose", "snub-square" -> generateSnubSquare(cellSize, w, h, offsetX, offsetY)
             else -> generateHexagonal(cellSize, w, h, offsetX, offsetY)
         }
     }

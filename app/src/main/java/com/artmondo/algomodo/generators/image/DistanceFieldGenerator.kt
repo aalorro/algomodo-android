@@ -72,6 +72,9 @@ class DistanceFieldGenerator : Generator {
         val threshold = (baseThreshold + timeShift).toInt().coerceIn(0, 255)
         val spread = (params["spread"] as? Number)?.toFloat() ?: 20f
         val invert = params["invert"] as? Boolean ?: false
+        val colorMode = (params["colorMode"] as? String) ?: "palette"
+        val edgeWidth = (params["edgeWidth"] as? Number)?.toFloat() ?: 1f
+        val showContours = params["showContours"] as? Boolean ?: false
 
         val source = params["_sourceImage"] as? Bitmap
         if (source == null) {
@@ -142,8 +145,31 @@ class DistanceFieldGenerator : Generator {
         val outPixels = IntArray(w * h)
         for (i in 0 until w * h) {
             val sdf = if (binary[i]) -distInside[i] else dist[i]
+            val absDist = abs(sdf)
             val t = ((sdf / spread) * 0.5f + 0.5f).coerceIn(0f, 1f)
-            outPixels[i] = palette.lerpColor(t)
+
+            // Edge highlight: pixels within edgeWidth of the boundary
+            val isEdge = absDist <= edgeWidth
+
+            // Contour lines: draw at regular intervals of spread/5
+            val contourInterval = (spread / 5f).coerceAtLeast(2f)
+            val isContour = showContours && (absDist % contourInterval) < 1f
+
+            outPixels[i] = when {
+                isEdge -> Color.WHITE  // sharp edge band
+                isContour -> Color.GRAY  // iso-distance contour lines
+                else -> when (colorMode) {
+                    "grayscale" -> {
+                        val v = (t * 255f).toInt().coerceIn(0, 255)
+                        Color.rgb(v, v, v)
+                    }
+                    "heat" -> {
+                        // Heat ramp through palette with contrast boost
+                        palette.lerpColor(t)
+                    }
+                    else -> palette.lerpColor(t)  // "palette"
+                }
+            }
         }
 
         bitmap.setPixels(outPixels, 0, w, 0, 0, w, h)

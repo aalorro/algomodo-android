@@ -52,11 +52,16 @@ class IsingModelGenerator : Generator {
     ) {
         val gridSize = (params["gridSize"] as? Number)?.toInt() ?: 128
         val temperature = (params["temperature"] as? Number)?.toFloat() ?: 2.27f
+        val externalField = (params["externalField"] as? Number)?.toFloat() ?: 0f
+        val iterations = (params["iterations"] as? Number)?.toInt() ?: 300
         val sweepsPerFrame = (params["sweepsPerFrame"] as? Number)?.toFloat() ?: 5f
+        val displayMode = (params["displayMode"] as? String) ?: "spin"
+        val boundary = (params["boundary"] as? String) ?: "periodic"
 
         val w = bitmap.width
         val h = bitmap.height
-        val sweeps = (time * sweepsPerFrame).toInt()
+        // Use iterations as warmup, then animate with sweepsPerFrame
+        val sweeps = iterations + (time * sweepsPerFrame).toInt()
         val totalCells = gridSize * gridSize
 
         // Initialize spins randomly from seed
@@ -65,13 +70,10 @@ class IsingModelGenerator : Generator {
             if (rng.boolean()) 1 else -1
         }
 
-        // Precompute acceptance probabilities for Metropolis
-        // dE can be -8, -4, 0, 4, 8 for 2D Ising
         val beta = 1f / temperature
-        val acceptProb = FloatArray(17) // index = dE + 8
-        for (de in -8..8) {
-            acceptProb[de + 8] = if (de <= 0) 1f else exp(-beta * de).coerceAtMost(1f)
-        }
+
+        // Track flip-age for flip-age display mode (step when each cell was last flipped)
+        val flipAge = IntArray(totalCells) { -1 }
 
         // Metropolis Monte Carlo sweeps
         for (sweep in 0 until sweeps) {
@@ -82,23 +84,39 @@ class IsingModelGenerator : Generator {
                 val idx = y * gridSize + x
                 val s = spin[idx]
 
-                // Sum of neighbors
-                val top = spin[((y - 1 + gridSize) % gridSize) * gridSize + x]
-                val bottom = spin[((y + 1) % gridSize) * gridSize + x]
-                val left = spin[y * gridSize + (x - 1 + gridSize) % gridSize]
-                val right = spin[y * gridSize + (x + 1) % gridSize]
-                val neighborSum = top + bottom + left + right
+                // Sum of neighbors, respecting boundary mode
+                val neighborSum = if (boundary == "open") {
+                    var sum = 0
+                    if (y > 0) sum += spin[(y - 1) * gridSize + x]
+                    if (y < gridSize - 1) sum += spin[(y + 1) * gridSize + x]
+                    if (x > 0) sum += spin[y * gridSize + (x - 1)]
+                    if (x < gridSize - 1) sum += spin[y * gridSize + (x + 1)]
+                    sum
+                } else {
+                    // periodic (torus)
+                    val top = spin[((y - 1 + gridSize) % gridSize) * gridSize + x]
+                    val bottom = spin[((y + 1) % gridSize) * gridSize + x]
+                    val left = spin[y * gridSize + (x - 1 + gridSize) % gridSize]
+                    val right = spin[y * gridSize + (x + 1) % gridSize]
+                    top + bottom + left + right
+                }
 
-                // Energy change for flipping
-                val dE = 2 * s * neighborSum // dE = 2 * s_i * sum(s_j)
+                // Energy change for flipping, including external field contribution
+                // dE = 2*s*sum(neighbors) + 2*s*H
+                val dEBase = 2 * s * neighborSum
+                val dEField = 2f * s * externalField
+                val dETotal = dEBase + dEField
+                // Use precomputed table for base lattice dE, and direct Boltzmann for field correction
+                val acceptP = if (dETotal <= 0f) 1f else exp(-beta * dETotal).coerceAtMost(1f)
 
-                if (rng.random() < acceptProb[dE + 8]) {
+                if (rng.random() < acceptP) {
                     spin[idx] = -s
+                    flipAge[idx] = sweep
                 }
             }
         }
 
-        // Render: map +1 and -1 to two palette colors
+        // Render based on displayMode
         val cellW = w.toFloat() / gridSize
         val cellH = h.toFloat() / gridSize
         val pixels = IntArray(w * h)
@@ -110,7 +128,40 @@ class IsingModelGenerator : Generator {
             for (px in 0 until w) {
                 val gx = (px / cellW).toInt().coerceAtMost(gridSize - 1)
                 val idx = gy * gridSize + gx
-                pixels[py * w + px] = if (spin[idx] == 1) colorUp else colorDown
+
+                pixels[py * w + px] = when (displayMode) {
+                    "palette" -> if (spin[idx] == 1) colorUp else colorDown
+                    "local-mag" -> {
+                        // 3x3 local magnetization average mapped to palette gradient
+                        var localSum = 0
+                        var count = 0
+                        for (dy in -1..1) {
+                            for (dx in -1..1) {
+                                val nx = (gx + dx + gridSize) % gridSize
+                                val ny = (gy + dy + gridSize) % gridSize
+                                localSum += spin[ny * gridSize + nx]
+                                count++
+                            }
+                        }
+                        val mag = (localSum.toFloat() / count + 1f) / 2f // normalize -1..1 to 0..1
+                        palette.lerpColor(mag.coerceIn(0f, 1f))
+                    }
+                    "flip-age" -> {
+                        // Color by how recently the cell was last flipped
+                        if (flipAge[idx] < 0) {
+                            Color.BLACK
+                        } else {
+                            // Use time-since-last-flip relative to a window, not total sweeps
+                            val window = (sweeps * 0.15f).toInt().coerceAtLeast(5)
+                            val timeSinceFlip = sweeps - flipAge[idx]
+                            val recency = (1f - timeSinceFlip.toFloat() / window).coerceIn(0f, 1f)
+                            palette.lerpColor(recency)
+                        }
+                    }
+                    else /* spin */ -> {
+                        if (spin[idx] == 1) colorUp else colorDown
+                    }
+                }
             }
         }
 

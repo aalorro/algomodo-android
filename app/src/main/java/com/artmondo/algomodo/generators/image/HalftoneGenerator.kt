@@ -76,6 +76,9 @@ class HalftoneGenerator : Generator {
         val angleDeg = if (speed > 0f && time > 0f) baseAngle + time * speed * 15f else baseAngle
         val shape = (params["shape"] as? String) ?: "circle"
         val colored = params["colored"] as? Boolean ?: true
+        val colorMode = (params["colorMode"] as? String) ?: "source"
+        val background = (params["background"] as? String) ?: "white"
+        val invert = params["invert"] as? Boolean ?: false
 
         val source = params["_sourceImage"] as? Bitmap
         if (source == null) {
@@ -85,7 +88,12 @@ class HalftoneGenerator : Generator {
 
         val scaled = if (source.width == w.toInt() && source.height == h.toInt()) source else Bitmap.createScaledBitmap(source, w.toInt(), h.toInt(), true)
 
-        canvas.drawColor(Color.WHITE)
+        val bgColor = when (background) {
+            "black" -> Color.BLACK
+            "cream" -> Color.rgb(255, 253, 240)
+            else -> Color.WHITE
+        }
+        canvas.drawColor(bgColor)
         val paint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
             style = Paint.Style.FILL
         }
@@ -117,15 +125,26 @@ class HalftoneGenerator : Generator {
                     val b = Color.blue(pixel)
                     val luma = (0.299f * r + 0.587f * g + 0.114f * b) / 255f
 
-                    // Invert: darker = bigger dot
-                    val dotR = dotSize * (1f - luma) * 0.5f
+                    // Invert controls whether dark or light areas get bigger dots
+                    val dotFactor = if (invert) luma else (1f - luma)
+                    val dotR = dotSize * dotFactor * 0.5f
 
                     if (dotR > 0.2f) {
-                        if (colored) {
-                            paint.color = Color.rgb(r, g, b)
-                        } else {
-                            val gray = (luma * 255).toInt().coerceIn(0, 255)
-                            paint.color = Color.rgb(0, 0, 0)
+                        paint.color = when {
+                            colored && colorMode == "source" -> Color.rgb(r, g, b)
+                            colored && colorMode == "palette" -> palette.lerpColor(luma)
+                            colored && colorMode == "cmyk" -> {
+                                // Simplified CMYK: tint the dot colour
+                                val c = 1f - r / 255f
+                                val m = 1f - g / 255f
+                                val y2 = 1f - b / 255f
+                                Color.rgb(
+                                    ((1f - c) * 255f).toInt().coerceIn(0, 255),
+                                    ((1f - m) * 255f).toInt().coerceIn(0, 255),
+                                    ((1f - y2) * 255f).toInt().coerceIn(0, 255)
+                                )
+                            }
+                            else -> Color.BLACK
                         }
 
                         when (shape) {

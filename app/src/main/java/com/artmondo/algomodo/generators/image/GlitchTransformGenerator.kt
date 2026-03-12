@@ -70,6 +70,9 @@ class GlitchTransformGenerator : Generator {
         val sliceHeight = (params["sliceHeight"] as? Number)?.toInt() ?: 10
         val channelShift = (params["channelShift"] as? Number)?.toInt() ?: 5
         val scanLines = params["scanLines"] as? Boolean ?: true
+        val scanLineOpacity = (params["scanLineOpacity"] as? Number)?.toFloat() ?: 0.4f
+        val distortion = (params["distortion"] as? String) ?: "none"
+        val jitter = (params["jitter"] as? Number)?.toFloat() ?: 0f
 
         val source = params["_sourceImage"] as? Bitmap
         if (source == null) {
@@ -103,6 +106,42 @@ class GlitchTransformGenerator : Generator {
             y += sh
         }
 
+        // Step 1b: Apply distortion mode
+        when (distortion) {
+            "wave" -> {
+                val temp = displaced.copyOf()
+                for (py in 0 until h) {
+                    val waveOffset = (kotlin.math.sin(py * 0.05f + time * speed * 3f) * intensity * w * 0.05f).toInt()
+                    for (px in 0 until w) {
+                        val sx = ((px + waveOffset) % w + w) % w
+                        displaced[py * w + px] = temp[py * w + sx]
+                    }
+                }
+            }
+            "block" -> {
+                val temp = displaced.copyOf()
+                for (py in 0 until h step sliceHeight) {
+                    val blockShift = if (rng.random() < intensity) rng.integer(-maxShift / 2, maxShift / 2) else 0
+                    val blockVShift = if (rng.random() < intensity) rng.integer(-sliceHeight, sliceHeight) else 0
+                    for (row in py until (py + sliceHeight).coerceAtMost(h)) {
+                        for (px in 0 until w) {
+                            val sx = ((px + blockShift) % w + w) % w
+                            val sy = ((row + blockVShift) % h + h) % h
+                            displaced[row * w + px] = temp[sy * w + sx]
+                        }
+                    }
+                }
+            }
+            "noise" -> {
+                val temp = displaced.copyOf()
+                for (i in 0 until w * h) {
+                    val noiseOff = (rng.random() * intensity * 6f).toInt() - (intensity * 3f).toInt()
+                    val ni = (i + noiseOff).coerceIn(0, w * h - 1)
+                    displaced[i] = temp[ni]
+                }
+            }
+        }
+
         // Step 2: RGB channel separation
         for (i in 0 until w * h) {
             val py = i / w
@@ -112,23 +151,31 @@ class GlitchTransformGenerator : Generator {
             val gIdx = i
             val bIdx = (py * w + ((px - channelShift + w) % w)).coerceIn(0, w * h - 1)
 
-            val r = Color.red(displaced[rIdx])
-            val g = Color.green(displaced[gIdx])
-            val b = Color.blue(displaced[bIdx])
+            var r = Color.red(displaced[rIdx])
+            var g = Color.green(displaced[gIdx])
+            var b = Color.blue(displaced[bIdx])
+
+            // Apply per-pixel colour jitter
+            if (jitter > 0f) {
+                r = (r + (rng.random() - 0.5f) * jitter * 2f).toInt().coerceIn(0, 255)
+                g = (g + (rng.random() - 0.5f) * jitter * 2f).toInt().coerceIn(0, 255)
+                b = (b + (rng.random() - 0.5f) * jitter * 2f).toInt().coerceIn(0, 255)
+            }
 
             outPixels[i] = Color.rgb(r, g, b)
         }
 
         // Step 3: Scan lines
         if (scanLines) {
+            val scanDarken = 1f - scanLineOpacity
             for (py in 0 until h) {
                 if (py % 2 == 0) continue
                 for (px in 0 until w) {
                     val idx = py * w + px
                     val p = outPixels[idx]
-                    val r = (Color.red(p) * 0.6f).toInt()
-                    val g = (Color.green(p) * 0.6f).toInt()
-                    val b = (Color.blue(p) * 0.6f).toInt()
+                    val r = (Color.red(p) * scanDarken).toInt()
+                    val g = (Color.green(p) * scanDarken).toInt()
+                    val b = (Color.blue(p) * scanDarken).toInt()
                     outPixels[idx] = Color.rgb(r, g, b)
                 }
             }

@@ -53,9 +53,18 @@ class ElementaryCaGenerator : Generator {
         quality: Quality,
         time: Float
     ) {
+        // Read ALL parameters
         val ruleNum = (params["rule"] as? Number)?.toInt() ?: 30
+        val ruleBNum = (params["ruleB"] as? Number)?.toInt() ?: 90
+        val blendMode = params["blendMode"] as? String ?: "none"
+        val neighborWidth = params["neighborWidth"] as? String ?: "3-cell"
         val gridSize = (params["gridSize"] as? Number)?.toInt() ?: 256
         val initialCondition = params["initialCondition"] as? String ?: "single-center"
+        val mutationRate = (params["mutationRate"] as? Number)?.toFloat() ?: 0.0f
+        val stepsPerFrame = (params["stepsPerFrame"] as? Number)?.toInt()?.coerceAtLeast(1) ?: 4
+        val colorMode = params["colorMode"] as? String ?: "binary"
+
+        val is5Cell = neighborWidth == "5-cell"
 
         val w = bitmap.width
         val h = bitmap.height
@@ -64,42 +73,111 @@ class ElementaryCaGenerator : Generator {
         val cellSize = (w / gridSize).coerceAtLeast(1)
         val cols = w / cellSize
         val visibleRows = h / cellSize
-        // Scroll offset based on time
-        val scrollOffset = (time * 30).toInt()
+        // Scroll offset based on time, scaled by stepsPerFrame
+        val scrollOffset = (time * 30 * stepsPerFrame).toInt()
         val totalRows = visibleRows + scrollOffset
 
         // Initialize first row
         val rng = SeededRNG(seed)
-        var currentRow = BooleanArray(cols)
-        if (initialCondition == "single-center") {
-            currentRow[cols / 2] = true
-        } else {
-            for (i in 0 until cols) {
-                currentRow[i] = rng.boolean(0.5f)
+        val currentRow = BooleanArray(cols)
+        when (initialCondition) {
+            "single-center" -> {
+                currentRow[cols / 2] = true
+            }
+            "two-center" -> {
+                // Three symmetric seeds for bilateral interference patterns
+                currentRow[cols / 2] = true
+                if (cols / 4 >= 0 && cols / 4 < cols) currentRow[cols / 4] = true
+                if (3 * cols / 4 >= 0 && 3 * cols / 4 < cols) currentRow[3 * cols / 4] = true
+            }
+            else -> { // "random"
+                for (i in 0 until cols) {
+                    currentRow[i] = rng.boolean(0.5f)
+                }
             }
         }
 
-        // Precompute rule table
-        val ruleTable = BooleanArray(8)
-        for (i in 0..7) {
-            ruleTable[i] = (ruleNum shr i) and 1 == 1
-        }
+        // Precompute rule tables for rule A and rule B
+        // For 5-cell totalistic: 6 possible sums (0..5), use rule mod 64 (6 bits)
+        // For 3-cell standard: 8 possible patterns (0..7), use full 8-bit rule
+        val ruleEntries = if (is5Cell) 6 else 8
+        val effectiveRuleA = if (is5Cell) ruleNum % 64 else ruleNum
+        val effectiveRuleB = if (is5Cell) ruleBNum % 64 else ruleBNum
+
+        // Mutable rule bits for mutation support
+        var currentRuleA = effectiveRuleA
+        var currentRuleB = effectiveRuleB
+
+        // Separate RNG for mutation so it doesn't disturb the init RNG sequence
+        val mutRng = SeededRNG(seed xor 0x7F3A)
 
         // Compute all rows up to visible area
+        // Also track density (neighbor count) per cell for density color mode
         val rowsData = Array(totalRows) { BooleanArray(cols) }
+        val densityData = Array(totalRows) { IntArray(cols) }
         rowsData[0] = currentRow.copyOf()
 
         for (row in 1 until totalRows) {
+            // Apply mutation: each generation, there's mutationRate probability of flipping one rule bit
+            if (mutationRate > 0f && mutRng.random() < mutationRate) {
+                val bit = mutRng.integer(0, ruleEntries - 1)
+                currentRuleA = currentRuleA xor (1 shl bit)
+            }
+            if (blendMode != "none" && mutationRate > 0f && mutRng.random() < mutationRate) {
+                val bit = mutRng.integer(0, ruleEntries - 1)
+                currentRuleB = currentRuleB xor (1 shl bit)
+            }
+
+            // Build rule tables from current (possibly mutated) rule values
+            val ruleTableA = BooleanArray(ruleEntries)
+            val ruleTableB = BooleanArray(ruleEntries)
+            for (i in 0 until ruleEntries) {
+                ruleTableA[i] = (currentRuleA shr i) and 1 == 1
+                ruleTableB[i] = (currentRuleB shr i) and 1 == 1
+            }
+
             val prev = rowsData[row - 1]
             val next = BooleanArray(cols)
+            val density = IntArray(cols)
+
             for (x in 0 until cols) {
-                val left = if (x > 0) prev[x - 1] else prev[cols - 1]
-                val center = prev[x]
-                val right = if (x < cols - 1) prev[x + 1] else prev[0]
-                val pattern = (if (left) 4 else 0) or (if (center) 2 else 0) or (if (right) 1 else 0)
-                next[x] = ruleTable[pattern]
+                val resultA: Boolean
+                val resultB: Boolean
+                val neighborCount: Int
+
+                if (is5Cell) {
+                    // 5-cell totalistic neighborhood: sum of 5 cells (x-2, x-1, x, x+1, x+2)
+                    var sum = 0
+                    for (dx in -2..2) {
+                        val nx = ((x + dx) % cols + cols) % cols
+                        if (prev[nx]) sum++
+                    }
+                    neighborCount = sum
+                    resultA = ruleTableA[sum]
+                    resultB = ruleTableB[sum]
+                } else {
+                    // Standard 3-cell neighborhood
+                    val left = if (x > 0) prev[x - 1] else prev[cols - 1]
+                    val center = prev[x]
+                    val right = if (x < cols - 1) prev[x + 1] else prev[0]
+                    val pattern = (if (left) 4 else 0) or (if (center) 2 else 0) or (if (right) 1 else 0)
+                    // Count ON neighbors for density (include center)
+                    neighborCount = (if (left) 1 else 0) + (if (center) 1 else 0) + (if (right) 1 else 0)
+                    resultA = ruleTableA[pattern]
+                    resultB = ruleTableB[pattern]
+                }
+
+                // Combine rule A and rule B based on blend mode
+                next[x] = when (blendMode) {
+                    "xor" -> resultA xor resultB
+                    "or" -> resultA || resultB
+                    "and" -> resultA && resultB
+                    else -> resultA // "none" - only rule A
+                }
+                density[x] = neighborCount
             }
             rowsData[row] = next
+            densityData[row] = density
         }
 
         // Render visible rows
@@ -112,10 +190,43 @@ class ElementaryCaGenerator : Generator {
             val row = rowsData[dataRow]
 
             for (col in 0 until cols) {
-                val color = if (row[col]) {
-                    paletteColors[dataRow % paletteColors.size]
-                } else {
-                    Color.BLACK
+                val color: Int = when (colorMode) {
+                    "age" -> {
+                        // Map row age (position in grid) to palette gradient
+                        val t = if (visibleRows > 1) visRow.toFloat() / (visibleRows - 1).toFloat() else 0f
+                        if (row[col]) {
+                            palette.lerpColor(t)
+                        } else {
+                            Color.BLACK
+                        }
+                    }
+                    "density" -> {
+                        // Map neighbour count to palette gradient
+                        val maxDensity = if (is5Cell) 5 else 3
+                        val d = densityData[dataRow][col]
+                        val t = if (maxDensity > 0) d.toFloat() / maxDensity.toFloat() else 0f
+                        if (row[col]) {
+                            palette.lerpColor(t)
+                        } else {
+                            // OFF cells with some neighbours get a dimmed color
+                            if (d > 0) {
+                                val dimColor = palette.lerpColor(t)
+                                val r = (Color.red(dimColor) * 0.15f).toInt()
+                                val g = (Color.green(dimColor) * 0.15f).toInt()
+                                val b = (Color.blue(dimColor) * 0.15f).toInt()
+                                Color.rgb(r, g, b)
+                            } else {
+                                Color.BLACK
+                            }
+                        }
+                    }
+                    else -> { // "binary"
+                        if (row[col]) {
+                            paletteColors[dataRow % paletteColors.size]
+                        } else {
+                            Color.BLACK
+                        }
+                    }
                 }
 
                 // Fill cell pixels

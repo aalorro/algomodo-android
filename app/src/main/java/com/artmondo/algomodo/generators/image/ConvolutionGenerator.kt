@@ -67,6 +67,11 @@ class ConvolutionGenerator : Generator {
         val baseStrength = (params["strength"] as? Number)?.toFloat() ?: 1f
         val strength = if (speed > 0f && time > 0f) baseStrength * (1f + kotlin.math.sin(time * speed * 2f) * 0.5f) else baseStrength
 
+        val passes = (params["passes"] as? Number)?.toInt() ?: 1
+        val preserveColor = params["preserveColor"] as? Boolean ?: false
+        val invert = params["invert"] as? Boolean ?: false
+        val mix = (params["mix"] as? Number)?.toFloat() ?: 1f
+
         val source = params["_sourceImage"] as? Bitmap
         if (source == null) {
             drawPlaceholder(canvas, bitmap)
@@ -83,8 +88,9 @@ class ConvolutionGenerator : Generator {
         }
 
         val scaled = if (source.width == w && source.height == h) source else Bitmap.createScaledBitmap(source, w, h, true)
-        val srcPixels = IntArray(w * h)
-        scaled.getPixels(srcPixels, 0, w, 0, 0, w, h)
+        val origPixels = IntArray(w * h)
+        scaled.getPixels(origPixels, 0, w, 0, 0, w, h)
+        var srcPixels = origPixels.copyOf()
         val outPixels = IntArray(w * h)
 
         val step = when (quality) {
@@ -93,43 +99,79 @@ class ConvolutionGenerator : Generator {
             Quality.ULTRA -> 1
         }
 
-        for (y in 0 until h step step) {
-            for (x in 0 until w step step) {
-                var rAcc = 0f; var gAcc = 0f; var bAcc = 0f
-                var ki = 0
-                for (ky in -1..1) {
-                    for (kx in -1..1) {
-                        val sx = (x + kx).coerceIn(0, w - 1)
-                        val sy = (y + ky).coerceIn(0, h - 1)
-                        val pixel = srcPixels[sy * w + sx]
-                        val kv = kernel[ki] * strength
-                        rAcc += Color.red(pixel) * kv
-                        gAcc += Color.green(pixel) * kv
-                        bAcc += Color.blue(pixel) * kv
-                        ki++
+        for (pass in 0 until passes) {
+            for (y in 0 until h step step) {
+                for (x in 0 until w step step) {
+                    var rAcc = 0f; var gAcc = 0f; var bAcc = 0f
+                    var ki = 0
+                    for (ky in -1..1) {
+                        for (kx in -1..1) {
+                            val sx = (x + kx).coerceIn(0, w - 1)
+                            val sy = (y + ky).coerceIn(0, h - 1)
+                            val pixel = srcPixels[sy * w + sx]
+                            val kv = kernel[ki] * strength
+                            rAcc += Color.red(pixel) * kv
+                            gAcc += Color.green(pixel) * kv
+                            bAcc += Color.blue(pixel) * kv
+                            ki++
+                        }
                     }
-                }
 
-                // For non-unity kernels, blend with original
-                val origPixel = srcPixels[y * w + x]
-                val blendFactor = if (kernelName == "blur") 1f else strength.coerceAtMost(1f)
-                val invBlend = 1f - blendFactor + blendFactor
+                    var r = rAcc.toInt().coerceIn(0, 255)
+                    var g = gAcc.toInt().coerceIn(0, 255)
+                    var b = bAcc.toInt().coerceIn(0, 255)
 
-                val r = rAcc.toInt().coerceIn(0, 255)
-                val g = gAcc.toInt().coerceIn(0, 255)
-                val b = bAcc.toInt().coerceIn(0, 255)
-                val color = Color.rgb(r, g, b)
+                    // preserveColor: keep original hue/saturation, only use filtered luminance
+                    if (preserveColor) {
+                        val origP = origPixels[y * w + x]
+                        val origHsv = FloatArray(3)
+                        Color.colorToHSV(origP, origHsv)
+                        val filteredHsv = FloatArray(3)
+                        Color.colorToHSV(Color.rgb(r, g, b), filteredHsv)
+                        origHsv[2] = filteredHsv[2]
+                        val preserved = Color.HSVToColor(origHsv)
+                        r = Color.red(preserved)
+                        g = Color.green(preserved)
+                        b = Color.blue(preserved)
+                    }
 
-                if (step == 1) {
-                    outPixels[y * w + x] = color
-                } else {
-                    for (dy in 0 until step) {
-                        for (dx in 0 until step) {
-                            val fx = x + dx; val fy = y + dy
-                            if (fx < w && fy < h) outPixels[fy * w + fx] = color
+                    val color = Color.rgb(r, g, b)
+
+                    if (step == 1) {
+                        outPixels[y * w + x] = color
+                    } else {
+                        for (dy in 0 until step) {
+                            for (dx in 0 until step) {
+                                val fx = x + dx; val fy = y + dy
+                                if (fx < w && fy < h) outPixels[fy * w + fx] = color
+                            }
                         }
                     }
                 }
+            }
+            // Feed output back as input for next pass
+            if (pass < passes - 1) {
+                srcPixels = outPixels.copyOf()
+            }
+        }
+
+        // Apply mix: blend between original and filtered
+        if (mix < 1f) {
+            for (i in 0 until w * h) {
+                val orig = origPixels[i]
+                val filt = outPixels[i]
+                val r = (Color.red(orig) * (1f - mix) + Color.red(filt) * mix).toInt().coerceIn(0, 255)
+                val g = (Color.green(orig) * (1f - mix) + Color.green(filt) * mix).toInt().coerceIn(0, 255)
+                val b = (Color.blue(orig) * (1f - mix) + Color.blue(filt) * mix).toInt().coerceIn(0, 255)
+                outPixels[i] = Color.rgb(r, g, b)
+            }
+        }
+
+        // Apply invert
+        if (invert) {
+            for (i in 0 until w * h) {
+                val p = outPixels[i]
+                outPixels[i] = Color.rgb(255 - Color.red(p), 255 - Color.green(p), 255 - Color.blue(p))
             }
         }
 

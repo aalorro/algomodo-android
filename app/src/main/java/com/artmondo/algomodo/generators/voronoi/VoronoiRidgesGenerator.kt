@@ -10,6 +10,8 @@ import com.artmondo.algomodo.generators.Generator
 import com.artmondo.algomodo.generators.ParamGroup
 import com.artmondo.algomodo.generators.Parameter
 import com.artmondo.algomodo.generators.Quality
+import kotlin.math.abs
+import kotlin.math.max
 import kotlin.math.pow
 import kotlin.math.sqrt
 
@@ -71,37 +73,75 @@ class VoronoiRidgesGenerator : Generator {
         val w = bitmap.width
         val h = bitmap.height
         val numPoints = (params["cellCount"] as? Number)?.toInt() ?: 50
-        val ridgeWidth = (params["ridgeSharpness"] as? Number)?.toFloat() ?: 1.5f
+        val octaves = (params["octaves"] as? Number)?.toInt()?.coerceIn(1, 5) ?: 3
+        val lacunarity = (params["lacunarity"] as? Number)?.toFloat() ?: 2.0f
+        val gain = (params["gain"] as? Number)?.toFloat() ?: 0.5f
+        val ridgeSharpness = (params["ridgeSharpness"] as? Number)?.toFloat() ?: 1.5f
+        val distMetric = (params["distanceMetric"] as? String) ?: "euclidean"
         val style = (params["colorMode"] as? String) ?: "palette"
+        val animSpeed = (params["animSpeed"] as? Number)?.toFloat() ?: 0.3f
+        val animAmp = (params["animAmp"] as? Number)?.toFloat() ?: 0.15f
 
-        val rng = SeededRNG(seed)
         val noise = SimplexNoise(seed)
 
-        val px = FloatArray(numPoints)
-        val py = FloatArray(numPoints)
-        for (i in 0 until numPoints) {
-            px[i] = rng.random() * w
-            py[i] = rng.random() * h
-        }
+        // Average cell spacing used as animation drift reference
+        val avgCellSize = sqrt((w * h).toFloat() / numPoints)
 
-        // Animate
-        if (time > 0f) {
-            for (i in 0 until numPoints) {
-                px[i] += noise.noise2D(i * 0.3f + 70f, time * 0.15f) * w * 0.04f
-                py[i] += noise.noise2D(i * 0.3f + 170f, time * 0.15f) * h * 0.04f
-                px[i] = px[i].coerceIn(0f, w.toFloat() - 1f)
-                py[i] = py[i].coerceIn(0f, h.toFloat() - 1f)
+        // Generate seed points for each octave. Each octave has more points
+        // (numPoints * lacunarity^oct) to create finer detail, with its own
+        // deterministic RNG stream offset by octave index.
+        data class OctaveData(
+            val px: FloatArray,
+            val py: FloatArray,
+            val count: Int,
+            val amplitude: Float,
+            val maxEdgeDist: Float
+        )
+
+        val octaveDataList = ArrayList<OctaveData>(octaves)
+
+        for (oct in 0 until octaves) {
+            val octRng = SeededRNG(seed + oct * 7919)
+            val freq = lacunarity.pow(oct.toFloat())
+            val amp = gain.pow(oct.toFloat())
+            val octPoints = (numPoints * freq).toInt().coerceIn(3, 4000)
+
+            val opx = FloatArray(octPoints)
+            val opy = FloatArray(octPoints)
+            for (i in 0 until octPoints) {
+                opx[i] = octRng.random() * w
+                opy[i] = octRng.random() * h
             }
-        }
 
-        // Sample max edge distance for normalization
-        var maxEdgeDist = 1f
-        for (s in 0 until 80) {
-            val sx = rng.random() * w
-            val sy = rng.random() * h
-            val (f1, f2) = findF1F2(sx, sy, px, py, numPoints)
-            val ed = f2 - f1
-            if (ed > maxEdgeDist) maxEdgeDist = ed
+            // Animate seed points
+            if (time > 0f) {
+                val driftRange = animAmp * avgCellSize / freq
+                for (i in 0 until octPoints) {
+                    opx[i] += noise.noise2D(
+                        i * 0.3f + 70f + oct * 100f,
+                        time * animSpeed
+                    ) * driftRange
+                    opy[i] += noise.noise2D(
+                        i * 0.3f + 170f + oct * 100f,
+                        time * animSpeed
+                    ) * driftRange
+                    opx[i] = opx[i].coerceIn(0f, w.toFloat() - 1f)
+                    opy[i] = opy[i].coerceIn(0f, h.toFloat() - 1f)
+                }
+            }
+
+            // Sample max edge distance for normalization of this octave
+            var maxEd = 1f
+            val sampleRng = SeededRNG(seed + oct * 3571)
+            for (s in 0 until 80) {
+                val sx = sampleRng.random() * w
+                val sy = sampleRng.random() * h
+                val r = findF1F2WithIndex(sx, sy, opx, opy, octPoints, distMetric)
+                val ed = r.f2 - r.f1
+                if (ed > maxEd) maxEd = ed
+            }
+
+            octaveDataList.add(OctaveData(opx, opy, octPoints, amp, maxEd))
         }
 
         val pixels = IntArray(w * h)
@@ -115,15 +155,27 @@ class VoronoiRidgesGenerator : Generator {
 
         for (row in 0 until h step step) {
             for (col in 0 until w step step) {
-                val (f1, f2, nearestIdx) = findF1F2WithIndex(
-                    col.toFloat(), row.toFloat(), px, py, numPoints
-                )
-                val edgeDist = f2 - f1
-                val normalized = (edgeDist / maxEdgeDist).coerceIn(0f, 1f)
+                // Accumulate ridge value across octaves (fBm-style)
+                var ridgeSum = 0f
+                var ampSum = 0f
+                var nearestIdx = 0 // from the base (first) octave for color
 
-                // Ridge intensity: high near edges (low normalized), low in interior
-                // ridgeWidth (ridgeSharpness) controls the power curve
-                val ridgeIntensity = (1f - normalized).pow(ridgeWidth)
+                for (oct in 0 until octaves) {
+                    val od = octaveDataList[oct]
+                    val result = findF1F2WithIndex(
+                        col.toFloat(), row.toFloat(),
+                        od.px, od.py, od.count, distMetric
+                    )
+                    val edgeDist = result.f2 - result.f1
+                    val normalized = (edgeDist / od.maxEdgeDist).coerceIn(0f, 1f)
+                    ridgeSum += (1f - normalized) * od.amplitude
+                    ampSum += od.amplitude
+                    if (oct == 0) nearestIdx = result.nearestIdx
+                }
+
+                // Normalize accumulated value and apply sharpness curve
+                val ridgeNorm = (ridgeSum / ampSum).coerceIn(0f, 1f)
+                val ridgeIntensity = ridgeNorm.pow(ridgeSharpness)
 
                 val color = when (style) {
                     "greyscale" -> {
@@ -168,19 +220,11 @@ class VoronoiRidgesGenerator : Generator {
 
     private data class F1F2Result(val f1: Float, val f2: Float, val nearestIdx: Int)
 
-    private fun findF1F2(
-        x: Float, y: Float,
-        px: FloatArray, py: FloatArray,
-        numPoints: Int
-    ): Pair<Float, Float> {
-        val r = findF1F2WithIndex(x, y, px, py, numPoints)
-        return Pair(r.f1, r.f2)
-    }
-
     private fun findF1F2WithIndex(
         x: Float, y: Float,
         px: FloatArray, py: FloatArray,
-        numPoints: Int
+        numPoints: Int,
+        metric: String
     ): F1F2Result {
         var f1 = Float.MAX_VALUE
         var f2 = Float.MAX_VALUE
@@ -189,7 +233,11 @@ class VoronoiRidgesGenerator : Generator {
         for (i in 0 until numPoints) {
             val dx = x - px[i]
             val dy = y - py[i]
-            val d = sqrt(dx * dx + dy * dy)
+            val d = when (metric) {
+                "manhattan" -> abs(dx) + abs(dy)
+                "chebyshev" -> max(abs(dx), abs(dy))
+                else -> sqrt(dx * dx + dy * dy) // euclidean
+            }
             if (d < f1) {
                 f2 = f1
                 f1 = d

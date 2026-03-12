@@ -50,11 +50,13 @@ class CyclicCaGenerator : Generator {
         val numStates = (params["states"] as? Number)?.toInt() ?: 8
         val gridSize = (params["gridSize"] as? Number)?.toInt() ?: 150
         val threshold = (params["threshold"] as? Number)?.toInt() ?: 1
+        val neighborhood = (params["neighborhood"] as? String) ?: "moore"
+        val warmupSteps = (params["warmupSteps"] as? Number)?.toInt() ?: 100
         val stepsPerSecond = (params["stepsPerFrame"] as? Number)?.toFloat() ?: 2f
 
         val w = bitmap.width
         val h = bitmap.height
-        val steps = (time * stepsPerSecond).toInt()
+        val steps = warmupSteps + (time * stepsPerSecond).toInt()
         val totalCells = gridSize * gridSize
 
         // Initialize from seed
@@ -71,12 +73,23 @@ class CyclicCaGenerator : Generator {
                     val nextState = (currentState + 1) % numStates
 
                     var count = 0
-                    for (dy in -1..1) {
-                        for (dx in -1..1) {
-                            if (dx == 0 && dy == 0) continue
-                            val nx = (x + dx + gridSize) % gridSize
-                            val ny = (y + dy + gridSize) % gridSize
+                    if (neighborhood == "vonneumann") {
+                        // Von Neumann: 4 orthogonal neighbors only
+                        val dirs = arrayOf(intArrayOf(0, -1), intArrayOf(0, 1), intArrayOf(-1, 0), intArrayOf(1, 0))
+                        for (d in dirs) {
+                            val nx = (x + d[0] + gridSize) % gridSize
+                            val ny = (y + d[1] + gridSize) % gridSize
                             if (grid[ny * gridSize + nx] == nextState) count++
+                        }
+                    } else {
+                        // Moore: 8 neighbors
+                        for (dy in -1..1) {
+                            for (dx in -1..1) {
+                                if (dx == 0 && dy == 0) continue
+                                val nx = (x + dx + gridSize) % gridSize
+                                val ny = (y + dy + gridSize) % gridSize
+                                if (grid[ny * gridSize + nx] == nextState) count++
+                            }
                         }
                     }
 

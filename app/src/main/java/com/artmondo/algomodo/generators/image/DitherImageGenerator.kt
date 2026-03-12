@@ -66,6 +66,9 @@ class DitherImageGenerator : Generator {
         val algorithm = (params["algorithm"] as? String) ?: "floyd-steinberg"
         val levels = (params["levels"] as? Number)?.toInt() ?: 2
         val colorMode = (params["colorMode"] as? String) ?: "bw"
+        val scale = (params["scale"] as? Number)?.toInt()?.coerceAtLeast(1) ?: 1
+        val contrast = (params["contrast"] as? Number)?.toFloat() ?: 1f
+        val invertOutput = params["invert"] as? Boolean ?: false
         val speed = (params["speed"] as? Number)?.toFloat() ?: 0f
         val timeBias = if (speed > 0f && time > 0f) kotlin.math.sin(time * speed * 2f) * 20f else 0f
 
@@ -75,66 +78,112 @@ class DitherImageGenerator : Generator {
             return
         }
 
-        val scaled = if (source.width == w && source.height == h) source else Bitmap.createScaledBitmap(source, w, h, true)
-        val srcPixels = IntArray(w * h)
-        scaled.getPixels(srcPixels, 0, w, 0, 0, w, h)
+        // Scale: downscale for chunky retro look, then we'll upscale at the end
+        val workW = (w / scale).coerceAtLeast(1)
+        val workH = (h / scale).coerceAtLeast(1)
+        val scaled = Bitmap.createScaledBitmap(
+            if (source.width == w && source.height == h) source else Bitmap.createScaledBitmap(source, w, h, true),
+            workW, workH, true
+        )
+        val srcPixels = IntArray(workW * workH)
+        scaled.getPixels(srcPixels, 0, workW, 0, 0, workW, workH)
 
         val paletteColors = palette.colorInts()
 
-        // Convert to float luminance array
-        val luma = FloatArray(w * h) { i ->
+        // Convert to float luminance array with contrast and invert
+        val luma = FloatArray(workW * workH) { i ->
             val p = srcPixels[i]
-            (0.299f * Color.red(p) + 0.587f * Color.green(p) + 0.114f * Color.blue(p) + timeBias).coerceIn(0f, 255f)
+            var v = 0.299f * Color.red(p) + 0.587f * Color.green(p) + 0.114f * Color.blue(p)
+            // Apply contrast
+            v = (v - 128f) * contrast + 128f
+            // Apply invert
+            if (invertOutput) v = 255f - v
+            (v + timeBias).coerceIn(0f, 255f)
         }
 
         // Also keep R, G, B channels for palette mode
-        val rCh = FloatArray(w * h) { Color.red(srcPixels[it]).toFloat() }
-        val gCh = FloatArray(w * h) { Color.green(srcPixels[it]).toFloat() }
-        val bCh = FloatArray(w * h) { Color.blue(srcPixels[it]).toFloat() }
+        val rCh = FloatArray(workW * workH) {
+            var v = Color.red(srcPixels[it]).toFloat()
+            v = (v - 128f) * contrast + 128f
+            if (invertOutput) v = 255f - v
+            v.coerceIn(0f, 255f)
+        }
+        val gCh = FloatArray(workW * workH) {
+            var v = Color.green(srcPixels[it]).toFloat()
+            v = (v - 128f) * contrast + 128f
+            if (invertOutput) v = 255f - v
+            v.coerceIn(0f, 255f)
+        }
+        val bCh = FloatArray(workW * workH) {
+            var v = Color.blue(srcPixels[it]).toFloat()
+            v = (v - 128f) * contrast + 128f
+            if (invertOutput) v = 255f - v
+            v.coerceIn(0f, 255f)
+        }
 
         when (algorithm) {
-            "floyd-steinberg" -> ditherFloydSteinberg(luma, w, h, levels)
-            "atkinson" -> ditherAtkinson(luma, w, h, levels)
-            "ordered", "bayer" -> ditherOrdered(luma, w, h, levels)
+            "floyd-steinberg" -> ditherFloydSteinberg(luma, workW, workH, levels)
+            "atkinson" -> ditherAtkinson(luma, workW, workH, levels)
+            "ordered", "bayer" -> ditherOrdered(luma, workW, workH, levels)
         }
 
-        if (colorMode == "palette") {
+        if (colorMode == "palette" || colorMode == "rgb") {
             when (algorithm) {
                 "floyd-steinberg" -> {
-                    ditherFloydSteinberg(rCh, w, h, levels)
-                    ditherFloydSteinberg(gCh, w, h, levels)
-                    ditherFloydSteinberg(bCh, w, h, levels)
+                    ditherFloydSteinberg(rCh, workW, workH, levels)
+                    ditherFloydSteinberg(gCh, workW, workH, levels)
+                    ditherFloydSteinberg(bCh, workW, workH, levels)
                 }
                 "atkinson" -> {
-                    ditherAtkinson(rCh, w, h, levels)
-                    ditherAtkinson(gCh, w, h, levels)
-                    ditherAtkinson(bCh, w, h, levels)
+                    ditherAtkinson(rCh, workW, workH, levels)
+                    ditherAtkinson(gCh, workW, workH, levels)
+                    ditherAtkinson(bCh, workW, workH, levels)
                 }
                 else -> {
-                    ditherOrdered(rCh, w, h, levels)
-                    ditherOrdered(gCh, w, h, levels)
-                    ditherOrdered(bCh, w, h, levels)
+                    ditherOrdered(rCh, workW, workH, levels)
+                    ditherOrdered(gCh, workW, workH, levels)
+                    ditherOrdered(bCh, workW, workH, levels)
                 }
             }
         }
 
-        // Build output pixels
-        val outPixels = IntArray(w * h)
-        for (i in 0 until w * h) {
-            if (colorMode == "bw") {
-                val v = luma[i].toInt().coerceIn(0, 255)
-                outPixels[i] = Color.rgb(v, v, v)
-            } else {
-                val r = rCh[i].toInt().coerceIn(0, 255)
-                val g = gCh[i].toInt().coerceIn(0, 255)
-                val b = bCh[i].toInt().coerceIn(0, 255)
-                // Map to nearest palette color
-                val t = (0.299f * r + 0.587f * g + 0.114f * b) / 255f
-                outPixels[i] = palette.lerpColor(t)
+        // Build output pixels at work resolution
+        val workPixels = IntArray(workW * workH)
+        for (i in 0 until workW * workH) {
+            workPixels[i] = when (colorMode) {
+                "bw" -> {
+                    val v = luma[i].toInt().coerceIn(0, 255)
+                    Color.rgb(v, v, v)
+                }
+                "rgb" -> {
+                    val r = rCh[i].toInt().coerceIn(0, 255)
+                    val g = gCh[i].toInt().coerceIn(0, 255)
+                    val b = bCh[i].toInt().coerceIn(0, 255)
+                    Color.rgb(r, g, b)
+                }
+                else -> { // "palette"
+                    val r = rCh[i].toInt().coerceIn(0, 255)
+                    val g = gCh[i].toInt().coerceIn(0, 255)
+                    val b = bCh[i].toInt().coerceIn(0, 255)
+                    val t = (0.299f * r + 0.587f * g + 0.114f * b) / 255f
+                    palette.lerpColor(t)
+                }
             }
         }
 
-        bitmap.setPixels(outPixels, 0, w, 0, 0, w, h)
+        // Upscale back to full resolution if scale > 1
+        if (scale > 1) {
+            val workBmp = Bitmap.createBitmap(workW, workH, Bitmap.Config.ARGB_8888)
+            workBmp.setPixels(workPixels, 0, workW, 0, 0, workW, workH)
+            val upscaled = Bitmap.createScaledBitmap(workBmp, w, h, false) // nearest-neighbor for chunky look
+            val upPixels = IntArray(w * h)
+            upscaled.getPixels(upPixels, 0, w, 0, 0, w, h)
+            bitmap.setPixels(upPixels, 0, w, 0, 0, w, h)
+            workBmp.recycle()
+            if (upscaled !== workBmp) upscaled.recycle()
+        } else {
+            bitmap.setPixels(workPixels, 0, w, 0, 0, w, h)
+        }
         if (scaled !== source) scaled.recycle()
     }
 

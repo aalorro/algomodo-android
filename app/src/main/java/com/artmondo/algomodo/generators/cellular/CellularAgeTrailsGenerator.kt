@@ -5,6 +5,7 @@ import android.graphics.Canvas
 import android.graphics.Color
 import com.artmondo.algomodo.core.rng.SeededRNG
 import com.artmondo.algomodo.data.palettes.Palette
+import kotlin.math.pow
 import com.artmondo.algomodo.generators.Generator
 import com.artmondo.algomodo.generators.ParamGroup
 import com.artmondo.algomodo.generators.Parameter
@@ -55,12 +56,17 @@ class CellularAgeTrailsGenerator : Generator {
     ) {
         val gridSize = (params["gridSize"] as? Number)?.toInt() ?: 128
         val density = (params["density"] as? Number)?.toFloat() ?: 0.35f
+        val rule = (params["rule"] as? String) ?: "life"
+        val warmupSteps = (params["warmupSteps"] as? Number)?.toInt() ?: 400
         val stepsPerFrame = (params["stepsPerFrame"] as? Number)?.toFloat() ?: 1f
         val decay = (params["decay"] as? Number)?.toFloat() ?: 0.95f
+        val exposure = (params["exposure"] as? Number)?.toFloat() ?: 0.5f
+        val gamma = (params["gamma"] as? Number)?.toFloat() ?: 0.7f
+        val colorMode = (params["colorMode"] as? String) ?: "palette"
 
         val w = bitmap.width
         val h = bitmap.height
-        val steps = (time * stepsPerFrame).toInt()
+        val steps = warmupSteps + (time * stepsPerFrame).toInt()
 
         // Initialize grid from seed
         val rng = SeededRNG(seed)
@@ -96,7 +102,14 @@ class CellularAgeTrailsGenerator : Generator {
                         }
                     }
                     val isAlive = alive[idx]
-                    val willLive = if (isAlive) neighbors == 2 || neighbors == 3 else neighbors == 3
+                    // Apply CA rule variant
+                    val willLive = when (rule) {
+                        "highlife" -> if (isAlive) neighbors == 2 || neighbors == 3 else neighbors == 3 || neighbors == 6
+                        "maze" -> if (isAlive) neighbors in 1..5 else neighbors == 3
+                        "daynight" -> if (isAlive) neighbors in setOf(3,4,6,7,8) else neighbors in setOf(3,6,7,8)
+                        "seeds" -> if (isAlive) false else neighbors == 2
+                        else /* life */ -> if (isAlive) neighbors == 2 || neighbors == 3 else neighbors == 3
+                    }
                     nextAlive[idx] = willLive
                     nextAge[idx] = if (willLive) 0 else age[idx] + 1
                 }
@@ -119,10 +132,24 @@ class CellularAgeTrailsGenerator : Generator {
 
                 pixels[py * w + px] = if (cellAge <= effectiveTrailLength) {
                     val t = cellAge.toFloat() / effectiveTrailLength
-                    val color = palette.lerpColor(t)
-                    // Fade alpha as age increases
-                    val alpha = ((1f - t) * 255).toInt().coerceIn(0, 255)
-                    Color.argb(alpha, Color.red(color), Color.green(color), Color.blue(color))
+                    // Apply exposure: brightness boosted for young cells
+                    val brightness = ((1f - t) * exposure).coerceIn(0f, 1f)
+                    // Apply gamma curve for tone mapping
+                    val mapped = brightness.toDouble().pow(gamma.toDouble()).toFloat()
+
+                    when (colorMode) {
+                        "heat" -> {
+                            // Heat ramp through palette: emphasize bright end
+                            val color = palette.lerpColor(mapped)
+                            val alpha = (mapped * 255).toInt().coerceIn(0, 255)
+                            Color.argb(alpha, Color.red(color), Color.green(color), Color.blue(color))
+                        }
+                        else /* palette */ -> {
+                            val color = palette.lerpColor(t)
+                            val alpha = (mapped * 255).toInt().coerceIn(0, 255)
+                            Color.argb(alpha, Color.red(color), Color.green(color), Color.blue(color))
+                        }
+                    }
                 } else {
                     Color.BLACK
                 }
