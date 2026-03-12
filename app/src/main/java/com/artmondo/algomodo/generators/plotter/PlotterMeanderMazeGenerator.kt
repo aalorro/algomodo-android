@@ -48,7 +48,8 @@ class PlotterMeanderMazeGenerator : Generator {
         Parameter.NumberParam("Line Width", "lineWidth", ParamGroup.TEXTURE, null, 0.5f, 4f, 0.25f, 1.25f),
         Parameter.SelectParam("Color Mode", "colorMode", ParamGroup.COLOR, "palette-distance: BFS distance drives gradient | palette-zone: diagonal zone | palette-noise: FBM tint", listOf("monochrome", "palette-distance", "palette-zone", "palette-noise"), "palette-distance"),
         Parameter.SelectParam("Background", "background", ParamGroup.COLOR, null, listOf("white", "cream", "dark"), "cream"),
-        Parameter.NumberParam("Speed", "speed", ParamGroup.FLOW_MOTION, "Animation speed — color cycling", 0f, 2f, 0.1f, 0f)
+        Parameter.SelectParam("Animation", "animMode", ParamGroup.FLOW_MOTION, "none: static | reveal: progressive draw | color-cycle: rotating palette", listOf("none", "reveal", "color-cycle"), "reveal"),
+        Parameter.NumberParam("Speed", "speed", ParamGroup.FLOW_MOTION, "Animation speed", 0.05f, 1f, 0.05f, 0.3f)
     )
 
     override fun getDefaultParams(): Map<String, Any> = mapOf(
@@ -62,7 +63,8 @@ class PlotterMeanderMazeGenerator : Generator {
         "lineWidth" to 1.25f,
         "colorMode" to "palette-distance",
         "background" to "cream",
-        "speed" to 0f
+        "animMode" to "reveal",
+        "speed" to 0.3f
     )
 
     // ── Background color constants matching web version ──────────────────
@@ -328,9 +330,16 @@ class PlotterMeanderMazeGenerator : Generator {
         val lineWidth = (params["lineWidth"] as? Number)?.toFloat() ?: 1.25f
         val colorMode = (params["colorMode"] as? String) ?: "palette-distance"
         val background = (params["background"] as? String) ?: "cream"
-        val speed = (params["speed"] as? Number)?.toFloat() ?: 0f
-        val colorShift = if (speed > 0f && time > 0f) (time * speed * 3f).toInt() else 0
+        val animMode = (params["animMode"] as? String) ?: "reveal"
+        val speed = (params["speed"] as? Number)?.toFloat() ?: 0.3f
+        val colorShift = if (animMode == "color-cycle" && time > 0f) (time * speed * 3f).toInt() else 0
         val isDark = background == "dark"
+
+        // Reveal animation progress: full reveal in ~8 seconds at speed=1.0
+        val revealDuration = 8f
+        val revealProgress = if (animMode == "reveal" && time >= 0f)
+            (time * speed / revealDuration).coerceIn(0f, 1f)
+        else 1f
 
         // Background
         canvas.drawColor(bgColor(background))
@@ -479,16 +488,17 @@ class PlotterMeanderMazeGenerator : Generator {
             for (d in dist) {
                 if (d > maxBFS) maxBFS = d
             }
+            val revealThreshold = (revealProgress * maxBFS).toInt()
 
-            // Fill cells with color heatmap
+            // Fill cells with color heatmap — gated by reveal threshold
             if (fillCells) {
                 for (r in 0 until rows) {
                     for (c in 0 until cols) {
                         val d = dist[r * cols + c]
-                        if (d < 0) continue
+                        if (d < 0 || d > revealThreshold) continue
                         val t = d.toFloat() / maxBFS
                         val baseColor = interpColor(t)
-                        val alpha = if (isDark) 64 else 46 // 0.25*255≈64, 0.18*255≈46
+                        val alpha = if (isDark) 64 else 46
                         fillPaint.color = Color.argb(
                             alpha,
                             Color.red(baseColor),
@@ -506,16 +516,41 @@ class PlotterMeanderMazeGenerator : Generator {
                 }
             }
 
-            // Outer border
+            // Outer border — progressive: each edge appears when adjacent cells are revealed
             paint.color = getColor(0, 0, 0)
             paint.style = Paint.Style.STROKE
-            canvas.drawRect(mx, my, mx + availW, my + availH, paint)
+            // Top edge: visible when row 0 has any revealed cell
+            if (dist[0] <= revealThreshold) {
+                canvas.drawLine(mx, my, mx + availW, my, paint)
+            }
+            // Left edge: visible when column 0 has any revealed cell
+            if (dist[0] <= revealThreshold) {
+                canvas.drawLine(mx, my, mx, my + availH, paint)
+            }
+            // Bottom edge: visible when last row has a revealed cell
+            val bottomRevealed = (0 until cols).any { c ->
+                val d = dist[(rows - 1) * cols + c]; d in 0..revealThreshold
+            }
+            if (bottomRevealed) {
+                canvas.drawLine(mx, my + availH, mx + availW, my + availH, paint)
+            }
+            // Right edge: visible when last column has a revealed cell
+            val rightRevealed = (0 until rows).any { r ->
+                val d = dist[r * cols + (cols - 1)]; d in 0..revealThreshold
+            }
+            if (rightRevealed) {
+                canvas.drawLine(mx + availW, my, mx + availW, my + availH, paint)
+            }
 
-            // Horizontal walls (wallH has rows-1 rows)
+            // Horizontal walls — only draw when adjacent cell is revealed
             for (row in 0 until rows - 1) {
                 for (col in 0 until cols) {
                     if (wallH[row][col]) {
                         val d = dist[row * cols + col]
+                        val dBelow = dist[(row + 1) * cols + col]
+                        val wallDist = min(if (d >= 0) d else Int.MAX_VALUE,
+                            if (dBelow >= 0) dBelow else Int.MAX_VALUE)
+                        if (wallDist > revealThreshold) continue
                         drawWall(
                             mx + col * cw, my + (row + 1) * ch,
                             mx + (col + 1) * cw, my + (row + 1) * ch,
@@ -525,11 +560,15 @@ class PlotterMeanderMazeGenerator : Generator {
                 }
             }
 
-            // Vertical walls (wallV has rows rows, cols-1 cols)
+            // Vertical walls — only draw when adjacent cell is revealed
             for (row in 0 until rows) {
                 for (col in 0 until cols - 1) {
                     if (wallV[row][col]) {
                         val d = dist[row * cols + col]
+                        val dRight = dist[row * cols + col + 1]
+                        val wallDist = min(if (d >= 0) d else Int.MAX_VALUE,
+                            if (dRight >= 0) dRight else Int.MAX_VALUE)
+                        if (wallDist > revealThreshold) continue
                         drawWall(
                             mx + (col + 1) * cw, my + row * ch,
                             mx + (col + 1) * cw, my + (row + 1) * ch,
@@ -539,8 +578,8 @@ class PlotterMeanderMazeGenerator : Generator {
                 }
             }
 
-            // Solution path overlay
-            if (showSolution) {
+            // Solution path overlay — only after full reveal
+            if (showSolution && revealProgress >= 1f) {
                 val target = (rows - 1) * cols + (cols - 1)
                 if (dist[target] >= 0) {
                     val path = solvePath(cols, rows, wallH, wallV, dist, target)
@@ -550,9 +589,9 @@ class PlotterMeanderMazeGenerator : Generator {
                         strokeCap = Paint.Cap.ROUND
                         strokeJoin = Paint.Join.ROUND
                         color = if (isDark)
-                            Color.argb(179, 255, 100, 100)  // rgba(255,100,100,0.7)
+                            Color.argb(179, 255, 100, 100)
                         else
-                            Color.argb(140, 220, 40, 40)    // rgba(220,40,40,0.55)
+                            Color.argb(140, 220, 40, 40)
                     }
                     val solPath = Path()
                     for (i in path.indices) {
@@ -565,15 +604,22 @@ class PlotterMeanderMazeGenerator : Generator {
             }
         } else {
             // Meander: boustrophedon serpentine path
-            // Total path length for proper distance normalization
             val totalPathLen = rows * cols
+            // Total drawable segments: each row has (cols+1) sub-segments + 1 connector (except last row)
+            val totalSegments = rows * (cols + 1) + (rows - 1)
+            val visibleSegments = if (revealProgress < 1f)
+                (revealProgress * totalSegments).toInt()
+            else totalSegments
+            var segCount = 0
 
-            // Fill cells with color heatmap (same as maze mode)
+            // Fill cells with color heatmap — gated by segment progress
             if (fillCells) {
                 for (r in 0 until rows) {
                     for (c in 0 until cols) {
-                        // Path distance: serpentine order
                         val d = if (r % 2 == 0) r * cols + c else r * cols + (cols - 1 - c)
+                        // Cell is revealed when its segment has been drawn
+                        val cellSeg = r * (cols + 1) + (if (r % 2 == 0) c else (cols - c)) + r.coerceAtMost(rows - 2).coerceAtLeast(0)
+                        if (cellSeg > visibleSegments) continue
                         val t = d.toFloat() / totalPathLen
                         val baseColor = interpColor(t)
                         val alpha = if (isDark) 64 else 46
@@ -602,38 +648,44 @@ class PlotterMeanderMazeGenerator : Generator {
                     var prevX = mx
                     var prevY = y
                     for (col in 0..cols) {
+                        if (segCount >= visibleSegments) break
                         val x = mx + col * cw
                         val c = min(col, cols - 1)
                         val dist = row * cols + c
                         drawWall(prevX, prevY, x, y, c, row, dist * maxDist / totalPathLen)
                         prevX = x
                         prevY = y
+                        segCount++
                     }
                     // Connector down to next row
-                    if (row < rows - 1) {
+                    if (row < rows - 1 && segCount < visibleSegments) {
                         val x = mx + cols * cw
                         val nextY = my + (row + 1.5f) * ch
                         val dist = row * cols + (cols - 1)
                         drawWall(x, y, x, nextY, cols - 1, row, dist * maxDist / totalPathLen)
+                        segCount++
                     }
                 } else {
                     // Right to left
                     var prevX = mx + cols * cw
                     var prevY = y
                     for (col in cols downTo 0) {
+                        if (segCount >= visibleSegments) break
                         val x = mx + col * cw
                         val c = max(col, 0)
                         val dist = row * cols + (cols - 1 - c)
                         drawWall(prevX, prevY, x, y, c, row, dist * maxDist / totalPathLen)
                         prevX = x
                         prevY = y
+                        segCount++
                     }
                     // Connector down to next row
-                    if (row < rows - 1) {
+                    if (row < rows - 1 && segCount < visibleSegments) {
                         val x = mx
                         val nextY = my + (row + 1.5f) * ch
                         val dist = (row + 1) * cols
                         drawWall(x, y, x, nextY, 0, row, dist * maxDist / totalPathLen)
+                        segCount++
                     }
                 }
             }
