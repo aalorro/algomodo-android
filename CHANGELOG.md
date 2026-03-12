@@ -2,6 +2,17 @@
 
 All notable changes to Algomodo will be documented in this file.
 
+## [1.3.4] - Android
+
+### Improvements
+- Rewrote 9 plotter generators to fully wire all declared parameters (Hatching, Bezier Ribbon, Contour Topo, Halftone Dots, Phyllotaxis, TSP, Stippling, Meander Maze, Contour Lines)
+- Optimized Guilloche animation performance (eliminated GC pressure from Pair allocations, reused Path objects, pre-computed constants)
+- Fixed Contour Lines rendering (bitmap self-overwrite bug)
+- Fixed Streamlines spiral effect (restored curl-noise field structure)
+- Improved Export tab layout for small phone screens
+- Touch interaction now enabled by default
+- GIF endless loop now enabled by default
+
 ## [1.3.3] - Android
 
 ### Improvements
