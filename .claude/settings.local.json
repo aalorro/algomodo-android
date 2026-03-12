@@ -9,7 +9,10 @@
       "Bash(/c/Users/arman/AppData/Local/Android/Sdk/platform-tools/adb.exe logcat:*)",
       "Bash(\"C:/Users/arman/AppData/Local/Android/Sdk/platform-tools/adb.exe\" logcat:*)",
       "Bash(ls:*)",
-      "Bash(./gradlew compileDebugKotlin:*)"
+      "Bash(./gradlew compileDebugKotlin:*)",
+      "Bash(./gradlew clean:*)",
+      "Bash(rm:*)",
+      "Bash(./gradlew:*)"
     ]
   }
 }

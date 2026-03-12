@@ -2,6 +2,30 @@
 
 All notable changes to Algomodo will be documented in this file.
 
+## [1.4.0] - Android
+
+### New Features
+- Progressive reveal animation for Maze/Meander generator — walls and path segments draw incrementally over ~8 seconds, with solution path appearing only after full reveal
+- Random color palette generation with golden-angle hue spacing
+- Animated "Surprise Me" button with gold shimmer effect
+
+### Performance
+- Optimized rendering across all 107 generators by caching parsed palette colors (eliminates hex string parsing per pixel)
+- Added `Palette.buildLut()` for pre-computed color lookup tables in pixel-loop generators
+- PostFX single-pass processing — grain, vignette, dither, and posterize now apply in one pixel loop instead of four
+- Replaced per-pixel `getPixel()` JNI calls with bulk `getPixels()` in blank detection
+
+### Improvements
+- Instant canvas transitions when switching generators via Surprise Me
+- Milestone progress bar for long renders — shows 25%, 60%, 90% progress after 1 second
+- Surprise Me now always picks active animation and feature options (never selects "none")
+- Surprise Me avoids extreme parameter values for more balanced results
+- Enhanced Voronoi generators with improved noise animation and distance metrics
+- Enhanced graph generators with new features and optimizations
+- Palette-based color interpolation refactored across generators
+- Animation snapshot time capture for accurate exports
+- Animation controls with tooltip guidance
+
 ## [1.3.4] - Android
 
 ### Improvements
