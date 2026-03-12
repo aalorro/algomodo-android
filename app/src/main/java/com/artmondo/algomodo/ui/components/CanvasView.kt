@@ -9,6 +9,7 @@ import androidx.compose.animation.core.RepeatMode
 import androidx.compose.animation.core.animateFloat
 import androidx.compose.animation.core.infiniteRepeatable
 import androidx.compose.animation.core.rememberInfiniteTransition
+import androidx.compose.animation.core.animateFloatAsState
 import androidx.compose.animation.core.tween
 import androidx.compose.foundation.Canvas as ComposeCanvas
 import androidx.compose.foundation.Image
@@ -205,7 +206,40 @@ private fun StaticCanvas(
             )
         }
 
-        if (isRendering) {
+        // Milestone progress bar for long renders (> 1s)
+        var milestoneProgress by remember { mutableFloatStateOf(0f) }
+        var showMilestoneBar by remember { mutableStateOf(false) }
+
+        LaunchedEffect(isRendering) {
+            if (isRendering) {
+                showMilestoneBar = false
+                milestoneProgress = 0f
+                kotlinx.coroutines.delay(1000)
+                if (!isRendering) return@LaunchedEffect
+                showMilestoneBar = true
+                milestoneProgress = 0.25f
+                kotlinx.coroutines.delay(1500)
+                if (!isRendering) { showMilestoneBar = false; return@LaunchedEffect }
+                milestoneProgress = 0.60f
+                kotlinx.coroutines.delay(1500)
+                if (!isRendering) { showMilestoneBar = false; return@LaunchedEffect }
+                milestoneProgress = 0.90f
+            } else {
+                showMilestoneBar = false
+            }
+        }
+
+        if (showMilestoneBar) {
+            MilestoneProgressBar(
+                progress = milestoneProgress,
+                modifier = Modifier
+                    .align(Alignment.BottomCenter)
+                    .padding(bottom = 25.dp)
+                    .fillMaxWidth()
+                    .padding(horizontal = 25.dp)
+                    .height(3.dp)
+            )
+        } else if (isRendering) {
             NeonProgressBar(
                 modifier = Modifier
                     .align(Alignment.BottomCenter)
@@ -415,6 +449,35 @@ private fun NeonProgressBar(modifier: Modifier = Modifier) {
             color = neonGreen,
             topLeft = Offset(x, 0f),
             size = Size(barWidth, size.height)
+        )
+    }
+}
+
+@Composable
+private fun MilestoneProgressBar(progress: Float, modifier: Modifier = Modifier) {
+    val neonGreen = Color(0xFF39FF14)
+    val glowGreen = Color(0x6639FF14)
+    val trackColor = Color(0x3339FF14)
+    val animatedProgress by animateFloatAsState(
+        targetValue = progress,
+        animationSpec = tween(400, easing = androidx.compose.animation.core.FastOutSlowInEasing),
+        label = "milestoneProgress"
+    )
+
+    ComposeCanvas(modifier = modifier) {
+        // Track background
+        drawRect(color = trackColor, size = size)
+        // Glow behind filled portion
+        val filledWidth = size.width * animatedProgress
+        drawRect(
+            color = glowGreen,
+            topLeft = Offset(-2f, -2f),
+            size = Size(filledWidth + 4f, size.height + 4f)
+        )
+        // Bright filled bar
+        drawRect(
+            color = neonGreen,
+            size = Size(filledWidth, size.height)
         )
     }
 }
