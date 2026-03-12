@@ -14,6 +14,10 @@ import com.artmondo.algomodo.generators.Parameter
 import com.artmondo.algomodo.generators.Quality
 import com.artmondo.algomodo.rendering.SvgBuilder
 import com.artmondo.algomodo.rendering.SvgPath
+import kotlin.math.PI
+import kotlin.math.atan2
+import kotlin.math.cos
+import kotlin.math.sin
 import kotlin.math.sqrt
 
 /**
@@ -82,43 +86,92 @@ class GraphLowPolyGenerator : Generator {
         val w = bitmap.width.toFloat()
         val h = bitmap.height.toFloat()
         val numPoints = (params["pointCount"] as? Number)?.toInt() ?: 150
-        val jitter = (params["noiseScale"] as? Number)?.toFloat() ?: 3f
+        val distribution = (params["distribution"] as? String) ?: "jittered-grid"
+        val noiseScale = (params["noiseScale"] as? Number)?.toFloat() ?: 3f
+        val noiseOctaves = (params["noiseOctaves"] as? Number)?.toInt() ?: 4
+        val elevationContrast = (params["elevationContrast"] as? Number)?.toFloat() ?: 1.5f
+        val lightAngle = (params["lightAngle"] as? Number)?.toFloat() ?: 135f
+        val lightIntensity = (params["lightIntensity"] as? Number)?.toFloat() ?: 0.4f
+        val showEdges = params["showEdges"] as? Boolean ?: false
         val strokeWidth = (params["edgeWidth"] as? Number)?.toFloat() ?: 0.5f
         val colorMode = (params["colorMode"] as? String) ?: "elevation"
+        val animSpeed = (params["animSpeed"] as? Number)?.toFloat() ?: 0.15f
+        val vertexDrift = (params["vertexDrift"] as? Number)?.toFloat() ?: 0.15f
 
         val rng = SeededRNG(seed)
         val noise = SimplexNoise(seed)
         val colors = palette.colorInts()
 
-        // Generate jittered grid points
-        val cols = sqrt(numPoints.toFloat() * w / h).toInt().coerceAtLeast(3)
-        val rows = (numPoints / cols).coerceAtLeast(3)
-        val cellW = w / (cols - 1)
-        val cellH = h / (rows - 1)
+        // Light direction vector
+        val lightRad = Math.toRadians(lightAngle.toDouble()).toFloat()
+        val lightDx = cos(lightRad)
+        val lightDy = sin(lightRad)
 
+        // Generate points based on distribution mode
         val allPoints = mutableListOf<Pair<Float, Float>>()
 
-        for (r in 0 until rows) {
-            for (c in 0 until cols) {
-                var px = c * cellW
-                var py = r * cellH
-
-                // Don't jitter corner/edge points too much
-                val edgeFactor = if (r == 0 || r == rows - 1 || c == 0 || c == cols - 1) 0.2f else 1f
-
-                val jx = (rng.random() - 0.5f) * cellW * jitter * edgeFactor
-                val jy = (rng.random() - 0.5f) * cellH * jitter * edgeFactor
-
-                // Animate jitter
-                if (time > 0f) {
-                    val ni = allPoints.size
-                    px += noise.noise2D(ni * 0.3f + 10f, time * 0.2f) * cellW * 0.15f * edgeFactor
-                    py += noise.noise2D(ni * 0.3f + 110f, time * 0.2f) * cellH * 0.15f * edgeFactor
+        when (distribution) {
+            "random" -> {
+                for (i in 0 until numPoints) {
+                    allPoints.add(Pair(rng.random() * w, rng.random() * h))
                 }
+            }
+            "fibonacci" -> {
+                val goldenAngle = (PI * (3.0 - sqrt(5.0))).toFloat()
+                for (i in 0 until numPoints) {
+                    val t = i.toFloat() / numPoints
+                    val r = sqrt(t) * minOf(w, h) * 0.5f
+                    val theta = i * goldenAngle
+                    allPoints.add(Pair(
+                        (w / 2f + r * cos(theta)).coerceIn(0f, w),
+                        (h / 2f + r * sin(theta)).coerceIn(0f, h)
+                    ))
+                }
+            }
+            "poisson-disc" -> {
+                // Simplified Poisson-disc: random with minimum distance rejection
+                val minDist = sqrt(w * h / numPoints) * 0.7f
+                var attempts = 0
+                while (allPoints.size < numPoints && attempts < numPoints * 20) {
+                    val px = rng.random() * w
+                    val py = rng.random() * h
+                    val tooClose = allPoints.any { (ox, oy) ->
+                        val dx = ox - px; val dy = oy - py
+                        dx * dx + dy * dy < minDist * minDist
+                    }
+                    if (!tooClose) allPoints.add(Pair(px, py))
+                    attempts++
+                }
+            }
+            else -> { // "jittered-grid"
+                val cols = sqrt(numPoints.toFloat() * w / h).toInt().coerceAtLeast(3)
+                val rows = (numPoints / cols).coerceAtLeast(3)
+                val cellW = w / (cols - 1)
+                val cellH = h / (rows - 1)
+                for (r in 0 until rows) {
+                    for (c in 0 until cols) {
+                        val edgeFactor = if (r == 0 || r == rows - 1 || c == 0 || c == cols - 1) 0.2f else 1f
+                        val jx = (rng.random() - 0.5f) * cellW * noiseScale * edgeFactor
+                        val jy = (rng.random() - 0.5f) * cellH * noiseScale * edgeFactor
+                        val px = (c * cellW + jx).coerceIn(0f, w)
+                        val py = (r * cellH + jy).coerceIn(0f, h)
+                        allPoints.add(Pair(px, py))
+                    }
+                }
+            }
+        }
 
-                px = (px + jx).coerceIn(0f, w)
-                py = (py + jy).coerceIn(0f, h)
-                allPoints.add(Pair(px, py))
+        // Animate vertex drift
+        if (time > 0f && animSpeed > 0f) {
+            for (i in allPoints.indices) {
+                val (px, py) = allPoints[i]
+                val avgCell = sqrt(w * h / allPoints.size.coerceAtLeast(1))
+                val driftX = noise.noise2D(i * 0.3f + 10f, time * animSpeed) * avgCell * vertexDrift
+                val driftY = noise.noise2D(i * 0.3f + 110f, time * animSpeed) * avgCell * vertexDrift
+                allPoints[i] = Pair(
+                    (px + driftX).coerceIn(0f, w),
+                    (py + driftY).coerceIn(0f, h)
+                )
             }
         }
 
@@ -141,6 +194,21 @@ class GraphLowPolyGenerator : Generator {
 
         val triangles = bowyerWatson(pointsX, pointsY, n)
 
+        // Compute elevation at each point using multi-octave noise
+        val elevation = FloatArray(n)
+        val noiseFreq = noiseScale / w * 4f
+        for (i in 0 until n) {
+            var elev = 0f
+            var amp = 1f
+            var freq = noiseFreq
+            for (oct in 0 until noiseOctaves) {
+                elev += noise.noise2D(pointsX[i] * freq + seed * 0.1f, pointsY[i] * freq) * amp
+                amp *= 0.5f
+                freq *= 2f
+            }
+            elevation[i] = (elev * elevationContrast).coerceIn(-1f, 1f)
+        }
+
         // Render
         canvas.drawColor(Color.BLACK)
         val fillPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply { style = Paint.Style.FILL }
@@ -155,15 +223,47 @@ class GraphLowPolyGenerator : Generator {
         for (tri in triangles) {
             val cx = (pointsX[tri.a] + pointsX[tri.b] + pointsX[tri.c]) / 3f
             val cy = (pointsY[tri.a] + pointsY[tri.b] + pointsY[tri.c]) / 3f
+            val avgElev = (elevation[tri.a] + elevation[tri.b] + elevation[tri.c]) / 3f
 
-            fillPaint.color = when (colorMode) {
-                "random" -> colors[(tri.a * 7 + tri.b * 13 + tri.c * 23) % colors.size]
-                "gradient" -> palette.lerpColor(cy / h)
-                else -> { // position
-                    val t = (sqrt(cx * cx + cy * cy) / diagonal).coerceIn(0f, 1f)
+            // Compute face normal for lighting (using elevation as Z)
+            val ux = pointsX[tri.b] - pointsX[tri.a]
+            val uy = pointsY[tri.b] - pointsY[tri.a]
+            val uz = (elevation[tri.b] - elevation[tri.a]) * w * 0.3f
+            val vx = pointsX[tri.c] - pointsX[tri.a]
+            val vy = pointsY[tri.c] - pointsY[tri.a]
+            val vz = (elevation[tri.c] - elevation[tri.a]) * w * 0.3f
+            val nx = uy * vz - uz * vy
+            val ny = uz * vx - ux * vz
+            val nLen = sqrt(nx * nx + ny * ny + 1f)
+            val dot = (nx / nLen * lightDx + ny / nLen * lightDy).coerceIn(-1f, 1f)
+            val shade = 1f + dot * lightIntensity
+
+            // Compute slope (steepness) for slope color mode
+            val slopeVal = sqrt(nx * nx + ny * ny) / nLen
+
+            val baseColor = when (colorMode) {
+                "slope" -> {
+                    palette.lerpColor(slopeVal.coerceIn(0f, 1f))
+                }
+                "aspect" -> {
+                    // Color by face orientation angle
+                    val angle = ((kotlin.math.atan2(ny, nx) + PI.toFloat()) / (2f * PI.toFloat()))
+                    palette.lerpColor(angle.coerceIn(0f, 1f))
+                }
+                "palette-flat" -> {
+                    colors[(tri.a * 7 + tri.b * 13 + tri.c * 23).let { if (it < 0) -it else it } % colors.size]
+                }
+                else -> { // "elevation"
+                    val t = ((avgElev + 1f) / 2f).coerceIn(0f, 1f)
                     palette.lerpColor(t)
                 }
             }
+
+            // Apply lighting shade to color
+            val r = (Color.red(baseColor) * shade).toInt().coerceIn(0, 255)
+            val g = (Color.green(baseColor) * shade).toInt().coerceIn(0, 255)
+            val b = (Color.blue(baseColor) * shade).toInt().coerceIn(0, 255)
+            fillPaint.color = Color.rgb(r, g, b)
 
             val path = Path().apply {
                 moveTo(pointsX[tri.a], pointsY[tri.a])
@@ -173,7 +273,9 @@ class GraphLowPolyGenerator : Generator {
             }
 
             canvas.drawPath(path, fillPaint)
-            canvas.drawPath(path, strokePaint)
+            if (showEdges) {
+                canvas.drawPath(path, strokePaint)
+            }
         }
     }
 

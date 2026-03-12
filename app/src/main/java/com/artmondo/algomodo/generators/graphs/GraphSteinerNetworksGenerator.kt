@@ -13,6 +13,7 @@ import com.artmondo.algomodo.generators.Parameter
 import com.artmondo.algomodo.generators.Quality
 import com.artmondo.algomodo.rendering.SvgBuilder
 import com.artmondo.algomodo.rendering.SvgPath
+import kotlin.math.ceil
 import kotlin.math.sqrt
 
 /**
@@ -82,49 +83,219 @@ class GraphSteinerNetworksGenerator : Generator {
         val w = bitmap.width.toFloat()
         val h = bitmap.height.toFloat()
         val numTerminals = (params["terminalCount"] as? Number)?.toInt() ?: 12
+        val distribution = (params["distribution"] as? String) ?: "random"
+        val steinerIterations = (params["steinerIterations"] as? Number)?.toInt() ?: 80
+        val showMST = params["showMST"] as? Boolean ?: true
+        val showVoronoi = params["showVoronoi"] as? Boolean ?: false
         val lineWidth = (params["edgeWidth"] as? Number)?.toFloat() ?: 3f
-        val showTerminals = true // hardcoded (not in schema; always show)
         val terminalSize = (params["nodeSize"] as? Number)?.toFloat() ?: 8f
+        val glowIntensity = (params["glowIntensity"] as? Number)?.toFloat() ?: 0.5f
+        val colorMode = (params["colorMode"] as? String) ?: "by-subtree"
+        val background = (params["background"] as? String) ?: "dark"
+        val animMode = (params["animMode"] as? String) ?: "grow"
+        val speed = (params["speed"] as? Number)?.toFloat() ?: 0.3f
 
         val rng = SeededRNG(seed)
         val noise = SimplexNoise(seed)
         val colors = palette.colorInts()
 
-        // Generate terminal points with margin
+        // Generate terminal points based on distribution
         val margin = w * 0.1f
         val termX = FloatArray(numTerminals)
         val termY = FloatArray(numTerminals)
-        for (i in 0 until numTerminals) {
-            termX[i] = rng.range(margin, w - margin)
-            termY[i] = rng.range(margin, h - margin)
-        }
-
-        // Animate terminals
-        if (time > 0f) {
-            for (i in 0 until numTerminals) {
-                termX[i] += noise.noise2D(i * 0.5f + 50f, time * 0.1f) * w * 0.05f
-                termY[i] += noise.noise2D(i * 0.5f + 150f, time * 0.1f) * h * 0.05f
-                termX[i] = termX[i].coerceIn(margin, w - margin)
-                termY[i] = termY[i].coerceIn(margin, h - margin)
+        when (distribution) {
+            "clustered" -> {
+                val numClusters = (numTerminals / 3).coerceAtLeast(2)
+                val clusterCx = FloatArray(numClusters) { rng.range(margin, w - margin) }
+                val clusterCy = FloatArray(numClusters) { rng.range(margin, h - margin) }
+                for (i in 0 until numTerminals) {
+                    val ci = i % numClusters
+                    termX[i] = (clusterCx[ci] + (rng.random() - 0.5f) * w * 0.15f).coerceIn(margin, w - margin)
+                    termY[i] = (clusterCy[ci] + (rng.random() - 0.5f) * h * 0.15f).coerceIn(margin, h - margin)
+                }
+            }
+            "ring" -> {
+                val cx = w / 2f; val cy = h / 2f
+                val radius = minOf(w, h) * 0.35f
+                for (i in 0 until numTerminals) {
+                    val angle = (2.0 * Math.PI * i / numTerminals).toFloat()
+                    termX[i] = cx + radius * kotlin.math.cos(angle)
+                    termY[i] = cy + radius * kotlin.math.sin(angle)
+                }
+            }
+            "grid" -> {
+                val cols = kotlin.math.ceil(sqrt(numTerminals.toFloat())).toInt()
+                val rows = (numTerminals + cols - 1) / cols
+                val stepX = (w - 2 * margin) / (cols - 1).coerceAtLeast(1)
+                val stepY = (h - 2 * margin) / (rows - 1).coerceAtLeast(1)
+                for (i in 0 until numTerminals) {
+                    termX[i] = margin + (i % cols) * stepX
+                    termY[i] = margin + (i / cols) * stepY
+                }
+            }
+            "fibonacci" -> {
+                val goldenAngle = (Math.PI * (3.0 - sqrt(5.0))).toFloat()
+                val cx = w / 2f; val cy = h / 2f
+                for (i in 0 until numTerminals) {
+                    val t = i.toFloat() / numTerminals
+                    val r = sqrt(t) * minOf(w, h) * 0.4f
+                    val theta = i * goldenAngle
+                    termX[i] = cx + r * kotlin.math.cos(theta)
+                    termY[i] = cy + r * kotlin.math.sin(theta)
+                }
+            }
+            else -> { // "random"
+                for (i in 0 until numTerminals) {
+                    termX[i] = rng.range(margin, w - margin)
+                    termY[i] = rng.range(margin, h - margin)
+                }
             }
         }
 
-        // Compute approximate Steiner tree
-        val result = computeSteinerTree(termX, termY, numTerminals)
+        // Animate terminals based on mode
+        val animTime = time * speed
+        when (animMode) {
+            "drift" -> {
+                for (i in 0 until numTerminals) {
+                    termX[i] += noise.noise2D(i * 0.5f + 50f, animTime) * w * 0.05f
+                    termY[i] += noise.noise2D(i * 0.5f + 150f, animTime) * h * 0.05f
+                    termX[i] = termX[i].coerceIn(margin, w - margin)
+                    termY[i] = termY[i].coerceIn(margin, h - margin)
+                }
+            }
+            // "grow" and "pulse" handled during rendering
+        }
 
-        // Render
-        canvas.drawColor(Color.BLACK)
+        // Compute MST first (for showMST option)
+        val mstEdges = computeMST(termX, termY, numTerminals)
+
+        // Compute approximate Steiner tree with user-specified iterations
+        val result = computeSteinerTree(termX, termY, numTerminals, steinerIterations)
+
+        // Background
+        when (background) {
+            "blueprint" -> canvas.drawColor(Color.rgb(20, 40, 80))
+            "light" -> canvas.drawColor(Color.rgb(240, 240, 235))
+            else -> canvas.drawColor(Color.BLACK)
+        }
+
+        // Draw Voronoi territory shading
+        if (showVoronoi && numTerminals > 0) {
+            val voronoiPaint = Paint().apply { style = Paint.Style.FILL }
+            val step = (w / 80f).toInt().coerceAtLeast(2)
+            for (px in 0 until bitmap.width step step) {
+                for (py in 0 until bitmap.height step step) {
+                    var minDist = Float.MAX_VALUE
+                    var closest = 0
+                    for (i in 0 until numTerminals) {
+                        val dx = px - result.px[i]
+                        val dy = py - result.py[i]
+                        val d = dx * dx + dy * dy
+                        if (d < minDist) { minDist = d; closest = i }
+                    }
+                    voronoiPaint.color = Color.argb(25, Color.red(colors[closest % colors.size]),
+                        Color.green(colors[closest % colors.size]), Color.blue(colors[closest % colors.size]))
+                    canvas.drawRect(px.toFloat(), py.toFloat(), (px + step).toFloat(), (py + step).toFloat(), voronoiPaint)
+                }
+            }
+        }
+
+        // Compute edge depths for coloring
+        val adjacency = buildAdjacency(result.edges, result.px.size)
+        val depths = IntArray(result.px.size) { -1 }
+        if (result.px.isNotEmpty()) {
+            depths[0] = 0
+            val queue = ArrayDeque<Int>()
+            queue.add(0)
+            while (queue.isNotEmpty()) {
+                val node = queue.removeFirst()
+                for (nb in adjacency[node] ?: emptyList()) {
+                    if (depths[nb] < 0) {
+                        depths[nb] = depths[node] + 1
+                        queue.add(nb)
+                    }
+                }
+            }
+        }
+        val maxDepth = depths.max().coerceAtLeast(1)
+
+        // Grow animation: reveal edges progressively
+        val growFraction = if (animMode == "grow") (animTime * 0.5f).coerceIn(0f, 1f) else 1f
+        val visibleEdgeCount = (result.edges.size * growFraction).toInt()
+
         val linePaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
             style = Paint.Style.STROKE
             strokeWidth = lineWidth
             strokeCap = Paint.Cap.ROUND
         }
 
-        // Draw edges
+        // Draw MST reference lines if enabled
+        if (showMST && result.edges.isNotEmpty()) {
+            val mstPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+                style = Paint.Style.STROKE
+                strokeWidth = lineWidth * 0.3f
+                strokeCap = Paint.Cap.ROUND
+                color = when (background) {
+                    "light" -> Color.argb(40, 0, 0, 0)
+                    else -> Color.argb(40, 255, 255, 255)
+                }
+            }
+            for ((a, b) in mstEdges) {
+                canvas.drawLine(termX[a], termY[a], termX[b], termY[b], mstPaint)
+            }
+        }
+
+        // Draw Steiner edges with glow
         val edgeCount = result.edges.size
         for ((idx, edge) in result.edges.withIndex()) {
-            val t = idx.toFloat() / edgeCount.coerceAtLeast(1)
-            linePaint.color = palette.lerpColor(t)
+            if (idx >= visibleEdgeCount) break
+
+            // Pulse animation: modulate alpha
+            val pulseAlpha = if (animMode == "pulse") {
+                val phase = kotlin.math.sin(animTime * 3f + idx * 0.5f) * 0.3f + 0.7f
+                (phase * 255).toInt().coerceIn(80, 255)
+            } else 255
+
+            val edgeColor = when (colorMode) {
+                "by-depth" -> {
+                    val d = (depths[edge.first].coerceAtLeast(0) + depths[edge.second].coerceAtLeast(0)) / 2f
+                    palette.lerpColor((d / maxDepth).coerceIn(0f, 1f))
+                }
+                "edge-length" -> {
+                    val dx = result.px[edge.first] - result.px[edge.second]
+                    val dy = result.py[edge.first] - result.py[edge.second]
+                    val len = sqrt(dx * dx + dy * dy)
+                    palette.lerpColor((len / (w * 0.5f)).coerceIn(0f, 1f))
+                }
+                "radial" -> {
+                    val mx = (result.px[edge.first] + result.px[edge.second]) / 2f
+                    val my = (result.py[edge.first] + result.py[edge.second]) / 2f
+                    val dx = mx - w / 2f
+                    val dy = my - h / 2f
+                    val t = sqrt(dx * dx + dy * dy) / (w * 0.6f)
+                    palette.lerpColor(t.coerceIn(0f, 1f))
+                }
+                else -> { // "by-subtree"
+                    val t = idx.toFloat() / edgeCount.coerceAtLeast(1)
+                    palette.lerpColor(t)
+                }
+            }
+
+            // Glow layer
+            if (glowIntensity > 0f) {
+                linePaint.strokeWidth = lineWidth * (2f + glowIntensity * 3f)
+                linePaint.color = Color.argb((glowIntensity * 60 * pulseAlpha / 255).toInt().coerceIn(5, 80),
+                    Color.red(edgeColor), Color.green(edgeColor), Color.blue(edgeColor))
+                canvas.drawLine(
+                    result.px[edge.first], result.py[edge.first],
+                    result.px[edge.second], result.py[edge.second],
+                    linePaint
+                )
+            }
+
+            // Main edge
+            linePaint.strokeWidth = lineWidth
+            linePaint.color = Color.argb(pulseAlpha, Color.red(edgeColor), Color.green(edgeColor), Color.blue(edgeColor))
             canvas.drawLine(
                 result.px[edge.first], result.py[edge.first],
                 result.px[edge.second], result.py[edge.second],
@@ -132,22 +303,21 @@ class GraphSteinerNetworksGenerator : Generator {
             )
         }
 
-        if (showTerminals) {
-            val dotPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
-                style = Paint.Style.FILL
-            }
+        val dotPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+            style = Paint.Style.FILL
+        }
 
-            // Draw terminal points
-            for (i in 0 until numTerminals) {
-                dotPaint.color = colors[i % colors.size]
-                canvas.drawCircle(result.px[i], result.py[i], terminalSize, dotPaint)
-            }
+        // Draw terminal points
+        for (i in 0 until numTerminals) {
+            dotPaint.color = colors[i % colors.size]
+            canvas.drawCircle(result.px[i], result.py[i], terminalSize, dotPaint)
+        }
 
-            // Draw Steiner points smaller and white
-            dotPaint.color = Color.WHITE
-            for (i in numTerminals until result.px.size) {
-                canvas.drawCircle(result.px[i], result.py[i], terminalSize * 0.5f, dotPaint)
-            }
+        // Draw Steiner points smaller and white
+        val steinerColor = when (background) { "light" -> Color.DKGRAY; else -> Color.WHITE }
+        dotPaint.color = steinerColor
+        for (i in numTerminals until result.px.size) {
+            canvas.drawCircle(result.px[i], result.py[i], terminalSize * 0.5f, dotPaint)
         }
     }
 
@@ -214,7 +384,7 @@ class GraphSteinerNetworksGenerator : Generator {
         val edges: List<Pair<Int, Int>>
     )
 
-    private fun computeSteinerTree(termX: FloatArray, termY: FloatArray, n: Int): TreeResult {
+    private fun computeSteinerTree(termX: FloatArray, termY: FloatArray, n: Int, maxIterations: Int = 80): TreeResult {
         if (n < 2) {
             return TreeResult(termX.copyOf(), termY.copyOf(), emptyList())
         }
@@ -228,8 +398,8 @@ class GraphSteinerNetworksGenerator : Generator {
         var totalLength = mstLength(allX.toFloatArray(), allY.toFloatArray(), mstEdges)
 
         // Iterative Steiner point insertion
-        // Try inserting candidate points at midpoints and Fermat points of MST edge triangles
-        for (iteration in 0 until 5) {
+        val iters = (maxIterations / 16).coerceIn(1, 20)
+        for (iteration in 0 until iters) {
             var improved = false
 
             // For each pair of adjacent edges sharing a node, try a Steiner point

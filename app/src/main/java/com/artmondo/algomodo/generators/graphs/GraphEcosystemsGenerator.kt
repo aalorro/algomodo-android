@@ -93,32 +93,58 @@ class GraphEcosystemsGenerator : Generator {
     ) {
         val w = bitmap.width.toFloat()
         val h = bitmap.height.toFloat()
-        val numSpecies = 2 // hardcoded (not in schema; prey + predators)
-        val initialPop = (params["initialPrey"] as? Number)?.toInt() ?: 120
-        val speed = (params["preySpeed"] as? Number)?.toFloat() ?: 2f
+        val initialPrey = (params["initialPrey"] as? Number)?.toInt() ?: 120
+        val initialPredators = (params["initialPredators"] as? Number)?.toInt() ?: 25
+        val preySpeed = (params["preySpeed"] as? Number)?.toFloat() ?: 2f
+        val predatorSpeed = (params["predatorSpeed"] as? Number)?.toFloat() ?: 1.5f
+        val flockRadius = (params["flockRadius"] as? Number)?.toFloat() ?: 80f
+        val huntRadius = (params["huntRadius"] as? Number)?.toFloat() ?: 120f
+        val reproductionRate = (params["reproductionRate"] as? Number)?.toFloat() ?: 0.005f
+        val nodeSize = (params["nodeSize"] as? Number)?.toFloat() ?: 6f
+        val edgeWidth = (params["edgeWidth"] as? Number)?.toFloat() ?: 1f
+        val colorMode = (params["colorMode"] as? String) ?: "species"
         val showTrails = params["showTrails"] as? Boolean ?: true
+        val stepsPerFrame = (params["stepsPerFrame"] as? Number)?.toInt() ?: 2
 
         val rng = SeededRNG(seed)
         val colors = palette.colorInts()
         val trailLen = 30
 
         // Adjust population for quality
-        val pop = when (quality) {
-            Quality.DRAFT -> (initialPop * 0.5f).toInt()
-            Quality.BALANCED -> initialPop
-            Quality.ULTRA -> (initialPop * 1.5f).toInt()
+        val qualityMul = when (quality) {
+            Quality.DRAFT -> 0.5f
+            Quality.BALANCED -> 1f
+            Quality.ULTRA -> 1.5f
         }
+        val preyPop = (initialPrey * qualityMul).toInt()
+        val predPop = (initialPredators * qualityMul).toInt()
 
-        // Initialize agents
+        // Scale radii relative to canvas size
+        val flockRadiusPx = flockRadius / 300f * w
+        val huntRadiusPx = huntRadius / 300f * w
+        val flockSq = flockRadiusPx * flockRadiusPx
+        val huntSq = huntRadiusPx * huntRadiusPx
+
+        // Initialize agents: prey (species 0) then predators (species 1)
         val agents = mutableListOf<Agent>()
-        for (i in 0 until pop) {
-            val sp = i % numSpecies
+        for (i in 0 until preyPop) {
             agents.add(Agent(
                 x = rng.random() * w,
                 y = rng.random() * h,
-                vx = (rng.random() - 0.5f) * speed * 2f,
-                vy = (rng.random() - 0.5f) * speed * 2f,
-                species = sp,
+                vx = (rng.random() - 0.5f) * preySpeed * 2f,
+                vy = (rng.random() - 0.5f) * preySpeed * 2f,
+                species = 0,
+                trailX = FloatArray(trailLen),
+                trailY = FloatArray(trailLen)
+            ))
+        }
+        for (i in 0 until predPop) {
+            agents.add(Agent(
+                x = rng.random() * w,
+                y = rng.random() * h,
+                vx = (rng.random() - 0.5f) * predatorSpeed * 2f,
+                vy = (rng.random() - 0.5f) * predatorSpeed * 2f,
+                species = 1,
                 trailX = FloatArray(trailLen),
                 trailY = FloatArray(trailLen)
             ))
@@ -126,9 +152,8 @@ class GraphEcosystemsGenerator : Generator {
 
         // Simulate
         val dt = 0.016f
-        val totalSteps = (time / dt).toInt().coerceAtMost(2000)
-        val perceptionRadius = w * 0.08f
-        val perceptionSq = perceptionRadius * perceptionRadius
+        val totalSteps = ((time / dt) * stepsPerFrame).toInt().coerceAtMost(3000)
+        val maxPop = (preyPop + predPop) * 3
 
         for (step in 0 until totalSteps) {
             for (agent in agents) {
@@ -137,36 +162,35 @@ class GraphEcosystemsGenerator : Generator {
                 var flockX = 0f; var flockY = 0f
                 var fleeCount = 0; var chaseCount = 0; var flockCount = 0
 
-                val predatorSpecies = (agent.species + 1) % numSpecies
-                val preySpecies = (agent.species + numSpecies - 1) % numSpecies
+                val isPredator = agent.species == 1
+                val agentSpeed = if (isPredator) predatorSpeed else preySpeed
 
                 for (other in agents) {
                     if (other === agent) continue
                     val dx = other.x - agent.x
                     val dy = other.y - agent.y
                     val distSq = dx * dx + dy * dy
-                    if (distSq > perceptionSq || distSq < 0.01f) continue
+                    if (distSq < 0.01f) continue
 
-                    when (other.species) {
-                        predatorSpecies -> {
-                            // Flee from predator
-                            val dist = sqrt(distSq)
-                            fleeX -= dx / dist
-                            fleeY -= dy / dist
-                            fleeCount++
-                        }
-                        preySpecies -> {
-                            // Chase prey
-                            val dist = sqrt(distSq)
-                            chaseX += dx / dist
-                            chaseY += dy / dist
-                            chaseCount++
-                        }
-                        agent.species -> {
-                            // Flock with same species
+                    if (other.species == agent.species) {
+                        // Flock with same species
+                        if (distSq <= flockSq) {
                             flockX += other.x
                             flockY += other.y
                             flockCount++
+                        }
+                    } else if (distSq <= huntSq) {
+                        val dist = sqrt(distSq)
+                        if (isPredator) {
+                            // Predator chases prey
+                            chaseX += dx / dist
+                            chaseY += dy / dist
+                            chaseCount++
+                        } else {
+                            // Prey flees from predator
+                            fleeX -= dx / dist
+                            fleeY -= dy / dist
+                            fleeCount++
                         }
                     }
                 }
@@ -175,18 +199,18 @@ class GraphEcosystemsGenerator : Generator {
                 var ax = 0f; var ay = 0f
 
                 if (fleeCount > 0) {
-                    ax += fleeX / fleeCount * speed * 3f
-                    ay += fleeY / fleeCount * speed * 3f
+                    ax += fleeX / fleeCount * agentSpeed * 3f
+                    ay += fleeY / fleeCount * agentSpeed * 3f
                 }
                 if (chaseCount > 0) {
-                    ax += chaseX / chaseCount * speed * 2f
-                    ay += chaseY / chaseCount * speed * 2f
+                    ax += chaseX / chaseCount * agentSpeed * 2f
+                    ay += chaseY / chaseCount * agentSpeed * 2f
                 }
                 if (flockCount > 0) {
                     val avgX = flockX / flockCount
                     val avgY = flockY / flockCount
-                    ax += (avgX - agent.x) * 0.001f * speed
-                    ay += (avgY - agent.y) * 0.001f * speed
+                    ax += (avgX - agent.x) * 0.001f * agentSpeed
+                    ay += (avgY - agent.y) * 0.001f * agentSpeed
                 }
 
                 // Update velocity
@@ -195,7 +219,7 @@ class GraphEcosystemsGenerator : Generator {
 
                 // Limit speed
                 val spd = sqrt(agent.vx * agent.vx + agent.vy * agent.vy)
-                val maxSpeed = speed * 3f
+                val maxSpeed = agentSpeed * 3f
                 if (spd > maxSpeed) {
                     agent.vx = agent.vx / spd * maxSpeed
                     agent.vy = agent.vy / spd * maxSpeed
@@ -219,21 +243,85 @@ class GraphEcosystemsGenerator : Generator {
                     if (agent.trailCount < trailLen) agent.trailCount++
                 }
             }
+
+            // Reproduction every 50 steps
+            if (step % 50 == 0 && agents.size < maxPop) {
+                val newAgents = mutableListOf<Agent>()
+                for (agent in agents) {
+                    if (agents.size + newAgents.size >= maxPop) break
+                    if (rng.random() < reproductionRate) {
+                        val spd = if (agent.species == 0) preySpeed else predatorSpeed
+                        newAgents.add(Agent(
+                            x = agent.x + (rng.random() - 0.5f) * 10f,
+                            y = agent.y + (rng.random() - 0.5f) * 10f,
+                            vx = (rng.random() - 0.5f) * spd * 2f,
+                            vy = (rng.random() - 0.5f) * spd * 2f,
+                            species = agent.species,
+                            trailX = FloatArray(trailLen),
+                            trailY = FloatArray(trailLen)
+                        ))
+                    }
+                }
+                agents.addAll(newAgents)
+            }
+        }
+
+        // Pre-compute agent colors
+        val agentColors = IntArray(agents.size)
+        when (colorMode) {
+            "energy" -> {
+                for (i in agents.indices) {
+                    val a = agents[i]
+                    val spd = sqrt(a.vx * a.vx + a.vy * a.vy)
+                    val t = (spd / 8f).coerceIn(0f, 1f)
+                    agentColors[i] = palette.lerpColor(t)
+                }
+            }
+            "age" -> {
+                for (i in agents.indices) {
+                    val t = (agents[i].trailCount.toFloat() / trailLen).coerceIn(0f, 1f)
+                    agentColors[i] = palette.lerpColor(t)
+                }
+            }
+            "connections" -> {
+                val counts = IntArray(agents.size)
+                for (i in agents.indices) {
+                    for (j in i + 1 until agents.size) {
+                        if (agents[j].species != agents[i].species) continue
+                        val dx = agents[j].x - agents[i].x
+                        val dy = agents[j].y - agents[i].y
+                        if (dx * dx + dy * dy <= flockSq) {
+                            counts[i]++
+                            counts[j]++
+                        }
+                    }
+                }
+                val maxCount = counts.maxOrNull()?.coerceAtLeast(1) ?: 1
+                for (i in agents.indices) {
+                    agentColors[i] = palette.lerpColor(counts[i].toFloat() / maxCount)
+                }
+            }
+            else -> { // "species"
+                for (i in agents.indices) {
+                    agentColors[i] = colors[agents[i].species % colors.size]
+                }
+            }
         }
 
         // Render
         canvas.drawColor(Color.BLACK)
 
         val paint = Paint(Paint.ANTI_ALIAS_FLAG)
+        val scaledEdgeWidth = edgeWidth * w / 360f
 
         if (showTrails) {
             paint.style = Paint.Style.STROKE
-            paint.strokeWidth = 1.5f
+            paint.strokeWidth = scaledEdgeWidth
             paint.strokeCap = Paint.Cap.ROUND
 
-            for (agent in agents) {
+            for ((idx, agent) in agents.withIndex()) {
                 if (agent.trailCount < 2) continue
-                val baseColor = colors[agent.species % colors.size]
+                val baseColor = agentColors[idx]
 
                 for (k in 1 until agent.trailCount) {
                     val prevIdx = if (agent.trailCount < trailLen) k - 1
@@ -258,14 +346,10 @@ class GraphEcosystemsGenerator : Generator {
 
         // Draw agents as dots
         paint.style = Paint.Style.FILL
-        val dotRadius = when (quality) {
-            Quality.DRAFT -> 3f
-            Quality.BALANCED -> 2.5f
-            Quality.ULTRA -> 2f
-        }
+        val dotRadius = nodeSize * w / 360f * 0.5f
 
-        for (agent in agents) {
-            paint.color = colors[agent.species % colors.size]
+        for ((idx, agent) in agents.withIndex()) {
+            paint.color = agentColors[idx]
             canvas.drawCircle(agent.x, agent.y, dotRadius, paint)
         }
     }
