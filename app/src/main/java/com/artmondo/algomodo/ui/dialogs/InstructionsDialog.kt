@@ -58,7 +58,7 @@ fun InstructionsDialog(onDismiss: () -> Unit) {
                     "Up to 50 steps. Undo/redo buttons on the canvas bar. Each parameter change, seed change, generator change, and randomization creates a history entry."
                 }
                 HelpSection("Color Palettes") {
-                    "10 curated palettes with 5 colors each. Lock the palette to preserve it during SURPRISE ME operations."
+                    "14 curated palettes with 5 colors each, plus a Random palette that generates 5 new random colors each time you tap it. Random colors use golden-angle hue spacing for visually diverse combinations. Lock the palette to preserve it during SURPRISE ME operations."
                 }
                 HelpSection("Presets") {
                     "Save your favorite generator + parameter + palette combos as presets. Each preset captures a circular thumbnail snapshot.\n\n" +

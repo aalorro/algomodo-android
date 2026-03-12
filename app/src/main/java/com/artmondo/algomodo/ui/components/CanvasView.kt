@@ -35,6 +35,7 @@ import com.artmondo.algomodo.rendering.PostFXSettings
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 import java.util.concurrent.atomic.AtomicInteger
+import java.util.concurrent.atomic.AtomicLong
 
 @Composable
 fun AlgoCanvas(
@@ -48,6 +49,7 @@ fun AlgoCanvas(
     animationFps: Int,
     showFps: Boolean,
     renderTrigger: Int,
+    onPauseTimeCapture: ((Float) -> Unit)? = null,
     modifier: Modifier = Modifier
 ) {
     if (generator == null) {
@@ -60,6 +62,9 @@ fun AlgoCanvas(
         return
     }
 
+    // Shared animation time — written by AnimationCanvas thread, read when switching to static
+    val animTimeBits = remember { AtomicLong(java.lang.Float.floatToIntBits(2.0f).toLong()) }
+
     if (isAnimating && generator.supportsAnimation) {
         AnimationCanvas(
             generator = generator,
@@ -70,9 +75,18 @@ fun AlgoCanvas(
             fps = animationFps,
             showFps = showFps,
             renderTrigger = renderTrigger,
+            animTimeBits = animTimeBits,
             modifier = modifier
         )
     } else {
+        val capturedTime = java.lang.Float.intBitsToFloat(animTimeBits.get().toInt())
+        val staticTime = if (generator.supportsAnimation) capturedTime else 0f
+
+        // Notify parent of the paused time for export use
+        LaunchedEffect(staticTime) {
+            onPauseTimeCapture?.invoke(staticTime)
+        }
+
         StaticCanvas(
             generator = generator,
             params = params,
@@ -80,6 +94,7 @@ fun AlgoCanvas(
             palette = palette,
             quality = quality,
             postFX = postFX,
+            staticTime = staticTime,
             renderTrigger = renderTrigger,
             modifier = modifier
         )
@@ -98,6 +113,7 @@ private fun StaticCanvas(
     palette: Palette,
     quality: Quality,
     postFX: PostFXSettings,
+    staticTime: Float = if (generator.supportsAnimation) 2.0f else 0f,
     renderTrigger: Int,
     modifier: Modifier = Modifier
 ) {
@@ -109,7 +125,7 @@ private fun StaticCanvas(
         onDispose { renderedBitmap?.recycle() }
     }
 
-    LaunchedEffect(generator.id, params, seed, palette, quality, postFX, renderTrigger) {
+    LaunchedEffect(generator.id, params, seed, palette, quality, postFX, staticTime, renderTrigger) {
         val myGeneration = renderGeneration.incrementAndGet()
         isRendering = true
         var newBitmap: Bitmap? = null
@@ -129,7 +145,6 @@ private fun StaticCanvas(
                 val canvas = Canvas(bitmap)
                 canvas.drawColor(android.graphics.Color.BLACK)
                 try {
-                    val staticTime = if (generator.supportsAnimation) 2.0f else 0f
                     generator.renderCanvas(canvas, bitmap, params, seed, palette, quality, staticTime)
                     PostFXProcessor.apply(bitmap, postFX)
 
@@ -205,6 +220,7 @@ private fun AnimationCanvas(
     fps: Int,
     showFps: Boolean,
     renderTrigger: Int,
+    animTimeBits: AtomicLong,
     modifier: Modifier = Modifier
 ) {
     // Mutable state holder that the render thread reads from
@@ -281,6 +297,7 @@ private fun AnimationCanvas(
 
                             val frameStart = System.nanoTime()
                             val time = (frameStart - startTime) / 1_000_000_000f
+                            animTimeBits.set(java.lang.Float.floatToIntBits(time).toLong())
 
                             // Read latest state each frame
                             val gen = stateHolder.currentGenerator

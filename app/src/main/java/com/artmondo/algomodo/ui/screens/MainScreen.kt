@@ -203,6 +203,7 @@ fun MainScreen(
                         animationFps = state.animationFps,
                         showFps = state.showFps,
                         renderTrigger = state.renderTrigger,
+                        onPauseTimeCapture = { viewModel.setSnapshotTime(it) },
                         modifier = canvasModifier
                     )
                 }
@@ -324,7 +325,8 @@ fun MainScreen(
                 state.generator?.let { gen ->
                     exportViewModel.quickSave(
                         context, gen, renderParams, state.seed, state.palette,
-                        state.quality, state.postFX, state.isAnimating
+                        state.quality, state.postFX, state.isAnimating,
+                        snapshotTime = state.snapshotTime
                     )
                 }
             }
@@ -516,11 +518,11 @@ fun MainScreen(
                         supportsVector = state.generator?.supportsVector == true,
                         onExportPng = {
                             val gen = state.generator ?: return@ExportPanel
-                            exportViewModel.exportPng(context, gen, renderParams, state.seed, state.palette, state.quality, state.postFX, 1080, 1080)
+                            exportViewModel.exportPng(context, gen, renderParams, state.seed, state.palette, state.quality, state.postFX, 1080, 1080, state.snapshotTime)
                         },
                         onExportJpg = {
                             val gen = state.generator ?: return@ExportPanel
-                            exportViewModel.exportJpg(context, gen, renderParams, state.seed, state.palette, state.quality, state.postFX, 1080, 1080)
+                            exportViewModel.exportJpg(context, gen, renderParams, state.seed, state.palette, state.quality, state.postFX, 1080, 1080, state.snapshotTime)
                         },
                         onExportSvg = {
                             val gen = state.generator ?: return@ExportPanel
