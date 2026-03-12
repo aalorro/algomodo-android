@@ -52,6 +52,7 @@ data class MainUiState(
     val performanceMode: Boolean = false,
     val showFps: Boolean = false,
     val interactionEnabled: Boolean = true,
+    val snapshotTime: Float = 2.0f, // animation time captured on pause
     val renderTrigger: Int = 0, // increment to force re-render
     val activeTab: Int = 0 // 0=generators, 1=params, 2=export, 3=settings
 )
@@ -344,6 +345,10 @@ class MainViewModel @Inject constructor(
 
     fun setSourceImage(bitmap: Bitmap?) {
         _state.update { it.copy(sourceImage = bitmap, renderTrigger = it.renderTrigger + 1) }
+    }
+
+    fun setSnapshotTime(time: Float) {
+        _state.update { it.copy(snapshotTime = time) }
     }
 
     fun setActiveTab(tab: Int) {
