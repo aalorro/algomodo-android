@@ -564,7 +564,36 @@ class PlotterMeanderMazeGenerator : Generator {
                 }
             }
         } else {
-            // Meander: boustrophedon serpentine path (matching web version)
+            // Meander: boustrophedon serpentine path
+            // Total path length for proper distance normalization
+            val totalPathLen = rows * cols
+
+            // Fill cells with color heatmap (same as maze mode)
+            if (fillCells) {
+                for (r in 0 until rows) {
+                    for (c in 0 until cols) {
+                        // Path distance: serpentine order
+                        val d = if (r % 2 == 0) r * cols + c else r * cols + (cols - 1 - c)
+                        val t = d.toFloat() / totalPathLen
+                        val baseColor = interpColor(t)
+                        val alpha = if (isDark) 64 else 46
+                        fillPaint.color = Color.argb(
+                            alpha,
+                            Color.red(baseColor),
+                            Color.green(baseColor),
+                            Color.blue(baseColor)
+                        )
+                        canvas.drawRect(
+                            mx + c * cw,
+                            my + r * ch,
+                            mx + (c + 1) * cw,
+                            my + (r + 1) * ch,
+                            fillPaint
+                        )
+                    }
+                }
+            }
+
             for (row in 0 until rows) {
                 val y = my + (row + 0.5f) * ch
 
@@ -576,8 +605,7 @@ class PlotterMeanderMazeGenerator : Generator {
                         val x = mx + col * cw
                         val c = min(col, cols - 1)
                         val dist = row * cols + c
-                        paint.color = getColor(c, row, dist)
-                        canvas.drawLine(prevX, prevY, x, y, paint)
+                        drawWall(prevX, prevY, x, y, c, row, dist * maxDist / totalPathLen)
                         prevX = x
                         prevY = y
                     }
@@ -586,8 +614,7 @@ class PlotterMeanderMazeGenerator : Generator {
                         val x = mx + cols * cw
                         val nextY = my + (row + 1.5f) * ch
                         val dist = row * cols + (cols - 1)
-                        paint.color = getColor(cols - 1, row, dist)
-                        canvas.drawLine(x, y, x, nextY, paint)
+                        drawWall(x, y, x, nextY, cols - 1, row, dist * maxDist / totalPathLen)
                     }
                 } else {
                     // Right to left
@@ -596,9 +623,8 @@ class PlotterMeanderMazeGenerator : Generator {
                     for (col in cols downTo 0) {
                         val x = mx + col * cw
                         val c = max(col, 0)
-                        val dist = row * cols + c
-                        paint.color = getColor(c, row, dist)
-                        canvas.drawLine(prevX, prevY, x, y, paint)
+                        val dist = row * cols + (cols - 1 - c)
+                        drawWall(prevX, prevY, x, y, c, row, dist * maxDist / totalPathLen)
                         prevX = x
                         prevY = y
                     }
@@ -606,9 +632,8 @@ class PlotterMeanderMazeGenerator : Generator {
                     if (row < rows - 1) {
                         val x = mx
                         val nextY = my + (row + 1.5f) * ch
-                        val dist = row * cols
-                        paint.color = getColor(0, row, dist)
-                        canvas.drawLine(x, y, x, nextY, paint)
+                        val dist = (row + 1) * cols
+                        drawWall(x, y, x, nextY, 0, row, dist * maxDist / totalPathLen)
                     }
                 }
             }
