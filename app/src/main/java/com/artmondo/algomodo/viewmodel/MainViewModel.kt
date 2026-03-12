@@ -242,7 +242,8 @@ class MainViewModel @Inject constructor(
     private fun safeRandomStep(param: Parameter.NumberParam, rng: SeededRNG): Float {
         val steps = ((param.max - param.min) / param.step).toInt()
         val minStep = (steps * 0.15f).toInt().coerceIn(1, steps)
-        return param.min + rng.integer(minStep, steps) * param.step
+        val maxStep = (steps - 1).coerceAtLeast(minStep) // avoid absolute max
+        return param.min + rng.integer(minStep, maxStep) * param.step
     }
 
     fun randomize() {
@@ -265,7 +266,8 @@ class MainViewModel @Inject constructor(
                     newParams[param.key] = rng.boolean()
                 }
                 is Parameter.SelectParam -> {
-                    newParams[param.key] = rng.pick(param.options)
+                    val choices = param.options.filter { it != "none" }.ifEmpty { param.options }
+                    newParams[param.key] = rng.pick(choices)
                 }
                 is Parameter.TextParam, is Parameter.ColorParam -> {
                     // Never randomize text or color params
@@ -303,7 +305,11 @@ class MainViewModel @Inject constructor(
                     newParams[param.key] = safeRandomStep(param, rng)
                 }
                 is Parameter.BooleanParam -> newParams[param.key] = rng.boolean()
-                is Parameter.SelectParam -> newParams[param.key] = rng.pick(param.options)
+                is Parameter.SelectParam -> {
+                    // Filter out "none" — surprise me should always pick an active option
+                    val choices = param.options.filter { it != "none" }.ifEmpty { param.options }
+                    newParams[param.key] = rng.pick(choices)
+                }
                 is Parameter.TextParam -> newParams[param.key] = param.default
                 is Parameter.ColorParam -> newParams[param.key] = param.default
             }
