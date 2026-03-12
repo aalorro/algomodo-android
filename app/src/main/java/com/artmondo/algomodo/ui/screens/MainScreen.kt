@@ -293,13 +293,15 @@ fun MainScreen(
             CanvasButton(Icons.Filled.Undo, "Undo", enabled = canUndo) { viewModel.undo() }
 
             // Play button with one-time tooltip
-            val playTooltipState = rememberTooltipState()
+            val playTooltipState = rememberTooltipState(isPersistent = true)
             var playTooltipShown by remember { mutableStateOf(false) }
             LaunchedEffect(Unit) {
                 if (!playTooltipShown) {
                     delay(800)
                     playTooltipShown = true
                     playTooltipState.show()
+                    delay(8000)
+                    playTooltipState.dismiss()
                 }
             }
             TooltipBox(

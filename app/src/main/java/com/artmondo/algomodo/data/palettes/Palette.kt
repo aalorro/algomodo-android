@@ -44,7 +44,40 @@ object CuratedPalettes {
         Palette("Nature", listOf("#2E7D32", "#66BB6A", "#AED581", "#81D4FA", "#FFCC80"))
     )
 
+    // Display-only placeholder for "Random" in the palette list
+    val randomPlaceholder = Palette("Random", listOf("#FF0000", "#00FF00", "#0000FF", "#FFFF00", "#FF00FF"))
+
     val default = all[0] // Vibrant
 
     fun byName(name: String): Palette? = all.find { it.name == name }
+
+    /** Generate a palette with 5 visually diverse random colors using golden-angle hue spacing. */
+    fun random(): Palette {
+        val baseHue = (Math.random() * 360).toFloat()
+        val colors = (0 until 5).map { i ->
+            val hue = (baseHue + i * 137.508f) % 360f // golden angle
+            val sat = 0.55f + (Math.random() * 0.35f).toFloat()
+            val lit = 0.42f + (Math.random() * 0.28f).toFloat()
+            hslToHex(hue, sat, lit)
+        }
+        return Palette("Random", colors)
+    }
+
+    private fun hslToHex(h: Float, s: Float, l: Float): String {
+        val c = (1f - kotlin.math.abs(2f * l - 1f)) * s
+        val x = c * (1f - kotlin.math.abs((h / 60f) % 2f - 1f))
+        val m = l - c / 2f
+        val (r1, g1, b1) = when {
+            h < 60f  -> Triple(c, x, 0f)
+            h < 120f -> Triple(x, c, 0f)
+            h < 180f -> Triple(0f, c, x)
+            h < 240f -> Triple(0f, x, c)
+            h < 300f -> Triple(x, 0f, c)
+            else     -> Triple(c, 0f, x)
+        }
+        val r = ((r1 + m) * 255).toInt().coerceIn(0, 255)
+        val g = ((g1 + m) * 255).toInt().coerceIn(0, 255)
+        val b = ((b1 + m) * 255).toInt().coerceIn(0, 255)
+        return "#%02X%02X%02X".format(r, g, b)
+    }
 }
