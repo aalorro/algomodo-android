@@ -18,6 +18,24 @@ fun ChangelogDialog(onDismiss: () -> Unit) {
         text = {
             Text(
                 text = """
+v1.4.0 (Android)
+New Features:
+- Progressive reveal animation for Maze/Meander generator
+- Random color palette generation
+- Animated "Surprise Me" button with gold shimmer
+
+Performance:
+- Optimized rendering across all 107 generators (cached palette colors, single-pass PostFX)
+- Pre-computed color lookup tables for pixel-loop generators
+- Bulk pixel reads replace per-pixel JNI calls
+
+Improvements:
+- Instant canvas transitions on Surprise Me
+- Milestone progress bar for long renders (25%, 60%, 90%)
+- Surprise Me always picks active options, avoids extreme values
+- Enhanced Voronoi and graph generators
+- Animation snapshot time for accurate exports
+
 v1.3.4 (Android)
 Improvements:
 - Rewrote 9 plotter generators to fully wire all declared parameters
