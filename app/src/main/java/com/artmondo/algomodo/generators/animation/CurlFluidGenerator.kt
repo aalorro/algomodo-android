@@ -145,6 +145,7 @@ class CurlFluidGenerator : Generator {
         val speed = (params["speed"] as? Number)?.toFloat() ?: 3f
         val evolution = (params["evolution"] as? Number)?.toFloat() ?: 0.05f
         val lineWidth = (params["lineWidth"] as? Number)?.toFloat() ?: 0.75f
+        val trailDecay = (params["trailDecay"] as? Number)?.toFloat() ?: 0.025f
         val colorMode = (params["colorMode"] as? String) ?: "palette"
 
         val rng = SeededRNG(seed)
@@ -242,7 +243,10 @@ class CurlFluidGenerator : Generator {
                     }
 
                     // Alpha increases toward the head of the trail
-                    val alpha = (40 + (seg.toFloat() / segCount * 180).toInt()).coerceIn(40, 220)
+                    // trailDecay modulates fade: higher decay → older segments more transparent
+                    val decayMul = (1f - trailDecay * 4f).coerceIn(0.05f, 1f)
+                    val minAlpha = (40 * decayMul).toInt().coerceAtLeast(5)
+                    val alpha = (minAlpha + (seg.toFloat() / segCount * (220 - minAlpha)).toInt()).coerceIn(5, 220)
 
                     val c = when (colorMode) {
                         "velocity" -> {

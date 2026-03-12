@@ -68,11 +68,15 @@ class PixelSortGenerator : Generator {
         val h = bitmap.height
         val direction = (params["direction"] as? String) ?: "horizontal"
         val speed = (params["speed"] as? Number)?.toFloat() ?: 0.5f
-        val baseThreshold = (params["threshold"] as? Number)?.toFloat() ?: 80f
+        val baseLower = (params["lowerThreshold"] as? Number)?.toFloat() ?: 30f
+        val baseUpper = (params["upperThreshold"] as? Number)?.toFloat() ?: 200f
         val timeShift = if (speed > 0f && time > 0f) kotlin.math.sin(time * speed * 2f) * 40f else 0f
-        val threshold = (baseThreshold + timeShift).coerceIn(10f, 245f)
+        val lowerThreshold = (baseLower + timeShift).coerceIn(10f, 245f)
+        val upperThreshold = (baseUpper + timeShift).coerceIn(lowerThreshold + 1f, 255f)
         val sortBy = (params["sortBy"] as? String) ?: "brightness"
         val intensity = (params["intensity"] as? Number)?.toFloat() ?: 0.5f
+        val reverse = params["reverse"] as? Boolean ?: false
+        val maxSpan = (params["maxSpan"] as? Number)?.toInt() ?: 500
 
         val source = params["_sourceImage"] as? Bitmap
         if (source == null) {
@@ -94,15 +98,15 @@ class PixelSortGenerator : Generator {
                 for (y in 0 until h) {
                     var x = 0
                     while (x < w) {
-                        // Find span start (above threshold)
-                        while (x < w && luma(pixels[y * w + x]) < threshold) x++
+                        // Find span start (within threshold range)
+                        while (x < w && (luma(pixels[y * w + x]) < lowerThreshold || luma(pixels[y * w + x]) > upperThreshold)) x++
                         val start = x
-                        while (x < w && luma(pixels[y * w + x]) >= threshold) x++
+                        while (x < w && luma(pixels[y * w + x]) >= lowerThreshold && luma(pixels[y * w + x]) <= upperThreshold && (x - start) < maxSpan) x++
                         val end = x
 
                         if (end > start + 1 && rng.random() < intensity) {
                             val span = pixels.copyOfRange(y * w + start, y * w + end)
-                            sortSpan(span, sortBy)
+                            sortSpan(span, sortBy, reverse)
                             System.arraycopy(span, 0, pixels, y * w + start, span.size)
                         }
                     }
@@ -112,14 +116,14 @@ class PixelSortGenerator : Generator {
                 for (x in 0 until w) {
                     var y = 0
                     while (y < h) {
-                        while (y < h && luma(pixels[y * w + x]) < threshold) y++
+                        while (y < h && (luma(pixels[y * w + x]) < lowerThreshold || luma(pixels[y * w + x]) > upperThreshold)) y++
                         val start = y
-                        while (y < h && luma(pixels[y * w + x]) >= threshold) y++
+                        while (y < h && luma(pixels[y * w + x]) >= lowerThreshold && luma(pixels[y * w + x]) <= upperThreshold && (y - start) < maxSpan) y++
                         val end = y
 
                         if (end > start + 1 && rng.random() < intensity) {
                             val span = IntArray(end - start) { pixels[(start + it) * w + x] }
-                            sortSpan(span, sortBy)
+                            sortSpan(span, sortBy, reverse)
                             for (i in span.indices) {
                                 pixels[(start + i) * w + x] = span[i]
                             }
@@ -130,7 +134,7 @@ class PixelSortGenerator : Generator {
             "diagonal" -> {
                 // Sort along 45-degree diagonals
                 for (d in 0 until w + h - 1) {
-                    val diagPixels = mutableListOf<Pair<Int, Int>>() // (index in pixels array, sort position)
+                    val diagPixels = mutableListOf<Pair<Int, Int>>()
                     val startX = if (d < h) 0 else d - h + 1
                     val startY = if (d < h) d else h - 1
                     var dx = startX
@@ -145,14 +149,14 @@ class PixelSortGenerator : Generator {
 
                     var i = 0
                     while (i < diagPixels.size) {
-                        while (i < diagPixels.size && luma(pixels[diagPixels[i].first]) < threshold) i++
+                        while (i < diagPixels.size && (luma(pixels[diagPixels[i].first]) < lowerThreshold || luma(pixels[diagPixels[i].first]) > upperThreshold)) i++
                         val start = i
-                        while (i < diagPixels.size && luma(pixels[diagPixels[i].first]) >= threshold) i++
+                        while (i < diagPixels.size && luma(pixels[diagPixels[i].first]) >= lowerThreshold && luma(pixels[diagPixels[i].first]) <= upperThreshold && (i - start) < maxSpan) i++
                         val end = i
 
                         if (end > start + 1 && rng.random() < intensity) {
                             val span = IntArray(end - start) { pixels[diagPixels[start + it].first] }
-                            sortSpan(span, sortBy)
+                            sortSpan(span, sortBy, reverse)
                             for (j in span.indices) {
                                 pixels[diagPixels[start + j].first] = span[j]
                             }
@@ -167,7 +171,7 @@ class PixelSortGenerator : Generator {
         if (scaled !== source) scaled.recycle()
     }
 
-    private fun sortSpan(arr: IntArray, sortBy: String) {
+    private fun sortSpan(arr: IntArray, sortBy: String, reverse: Boolean = false) {
         val n = arr.size
         val keys = FloatArray(n)
         val hsv = FloatArray(3)
@@ -187,7 +191,8 @@ class PixelSortGenerator : Generator {
             val key = keys[i]
             val pixel = arr[i]
             var j = i - 1
-            while (j >= 0 && keys[j] > key) {
+            val cmp = if (reverse) { a: Float, b: Float -> a < b } else { a: Float, b: Float -> a > b }
+            while (j >= 0 && cmp(keys[j], key)) {
                 keys[j + 1] = keys[j]
                 arr[j + 1] = arr[j]
                 j--

@@ -69,6 +69,11 @@ class VoronoiCrackleGenerator : Generator {
         val numPoints = (params["cellCount"] as? Number)?.toInt() ?: 80
         val intensity = 1f
         val lineWidth = (params["crackWidth"] as? Number)?.toFloat() ?: 2f
+        val crackColor = (params["crackColor"] as? String) ?: "black"
+        val fillMode = (params["fillMode"] as? String) ?: "gradient"
+        val distanceMetric = (params["distanceMetric"] as? String) ?: "Euclidean"
+        val animSpeed = (params["animSpeed"] as? Number)?.toFloat() ?: 0.4f
+        val animAmp = (params["animAmp"] as? Number)?.toFloat() ?: 0.2f
 
         val rng = SeededRNG(seed)
         val noise = SimplexNoise(seed)
@@ -82,9 +87,11 @@ class VoronoiCrackleGenerator : Generator {
 
         // Animate
         if (time > 0f) {
+            val speed = animSpeed / 0.4f
+            val amp = animAmp / 0.2f
             for (i in 0 until numPoints) {
-                px[i] += noise.noise2D(i * 0.25f + 40f, time * 0.15f) * w * 0.03f
-                py[i] += noise.noise2D(i * 0.25f + 140f, time * 0.15f) * h * 0.03f
+                px[i] += noise.noise2D(i * 0.25f + 40f, time * 0.15f * speed) * w * 0.03f * amp
+                py[i] += noise.noise2D(i * 0.25f + 140f, time * 0.15f * speed) * h * 0.03f * amp
                 px[i] = px[i].coerceIn(0f, w.toFloat() - 1f)
                 py[i] = py[i].coerceIn(0f, h.toFloat() - 1f)
             }
@@ -93,12 +100,20 @@ class VoronoiCrackleGenerator : Generator {
         val pixels = IntArray(w * h)
         val colors = palette.colorInts()
 
+        // Determine crack line color
+        val crackColorInt = when (crackColor) {
+            "white" -> Color.WHITE
+            "palette-first" -> colors.firstOrNull() ?: Color.BLACK
+            "palette-last" -> colors.lastOrNull() ?: Color.BLACK
+            else -> Color.BLACK  // "black"
+        }
+
         // Sample max edge distance for normalization
         var maxCrackle = 1f
         for (s in 0 until 100) {
             val sx = rng.random() * w
             val sy = rng.random() * h
-            val (f1, f2) = findF1F2BruteForce(sx, sy, px, py, numPoints)
+            val (f1, f2) = findF1F2BruteForce(sx, sy, px, py, numPoints, distanceMetric)
             val c = (f2 - f1)
             if (c > maxCrackle) maxCrackle = c
         }
@@ -113,17 +128,48 @@ class VoronoiCrackleGenerator : Generator {
 
         for (row in 0 until h step step) {
             for (col in 0 until w step step) {
-                val (f1, f2, nearestIdx) = findF1F2WithIndexBruteForce(col.toFloat(), row.toFloat(), px, py, numPoints)
+                val (f1, f2, nearestIdx) = findF1F2WithIndexBruteForce(col.toFloat(), row.toFloat(), px, py, numPoints, distanceMetric)
                 val crackleRaw = (f2 - f1) / maxCrackle
                 // Apply intensity exponent and line width scaling
                 val crackle = (crackleRaw / lineScale).coerceIn(0f, 1f).pow(intensity)
 
-                // Low crackle = near edge = bright colour, high crackle = interior = dark
-                val edgeColor = colors[nearestIdx % colors.size]
-                val r = (Color.red(edgeColor) * (1f - crackle * 0.85f)).toInt().coerceIn(0, 255)
-                val g = (Color.green(edgeColor) * (1f - crackle * 0.85f)).toInt().coerceIn(0, 255)
-                val b = (Color.blue(edgeColor) * (1f - crackle * 0.85f)).toInt().coerceIn(0, 255)
-                val color = Color.rgb(r, g, b)
+                val color = if (crackle < 0.15f) {
+                    // Near the crack line - use crack color
+                    crackColorInt
+                } else {
+                    // Cell interior - use fill mode
+                    when (fillMode) {
+                        "flat-dark" -> {
+                            val base = colors[nearestIdx % colors.size]
+                            val factor = 0.3f
+                            Color.rgb(
+                                (Color.red(base) * factor).toInt().coerceIn(0, 255),
+                                (Color.green(base) * factor).toInt().coerceIn(0, 255),
+                                (Color.blue(base) * factor).toInt().coerceIn(0, 255)
+                            )
+                        }
+                        "flat-light" -> {
+                            val base = colors[nearestIdx % colors.size]
+                            val factor = 0.85f
+                            Color.rgb(
+                                (Color.red(base) * factor + 255 * (1f - factor)).toInt().coerceIn(0, 255),
+                                (Color.green(base) * factor + 255 * (1f - factor)).toInt().coerceIn(0, 255),
+                                (Color.blue(base) * factor + 255 * (1f - factor)).toInt().coerceIn(0, 255)
+                            )
+                        }
+                        "palette" -> {
+                            colors[nearestIdx % colors.size]
+                        }
+                        else -> {
+                            // "gradient" - original behavior with brightness gradient
+                            val edgeColor = colors[nearestIdx % colors.size]
+                            val r = (Color.red(edgeColor) * (1f - crackle * 0.85f)).toInt().coerceIn(0, 255)
+                            val g = (Color.green(edgeColor) * (1f - crackle * 0.85f)).toInt().coerceIn(0, 255)
+                            val b = (Color.blue(edgeColor) * (1f - crackle * 0.85f)).toInt().coerceIn(0, 255)
+                            Color.rgb(r, g, b)
+                        }
+                    }
+                }
 
                 if (step == 1) {
                     pixels[row * w + col] = color
@@ -145,16 +191,23 @@ class VoronoiCrackleGenerator : Generator {
 
     private data class F1F2Result(val f1: Float, val f2: Float, val nearestIdx: Int)
 
+    private fun computeDistance(dx: Float, dy: Float, metric: String): Float = when (metric) {
+        "Manhattan" -> kotlin.math.abs(dx) + kotlin.math.abs(dy)
+        "Chebyshev" -> maxOf(kotlin.math.abs(dx), kotlin.math.abs(dy))
+        else -> sqrt(dx * dx + dy * dy)
+    }
+
     private fun findF1F2BruteForce(
         x: Float, y: Float,
-        px: FloatArray, py: FloatArray, numPoints: Int
+        px: FloatArray, py: FloatArray, numPoints: Int,
+        metric: String = "Euclidean"
     ): Pair<Float, Float> {
         var f1 = Float.MAX_VALUE
         var f2 = Float.MAX_VALUE
         for (i in 0 until numPoints) {
             val dx = x - px[i]
             val dy = y - py[i]
-            val d = sqrt(dx * dx + dy * dy)
+            val d = computeDistance(dx, dy, metric)
             if (d < f1) {
                 f2 = f1
                 f1 = d
@@ -167,7 +220,8 @@ class VoronoiCrackleGenerator : Generator {
 
     private fun findF1F2WithIndexBruteForce(
         x: Float, y: Float,
-        px: FloatArray, py: FloatArray, numPoints: Int
+        px: FloatArray, py: FloatArray, numPoints: Int,
+        metric: String = "Euclidean"
     ): F1F2Result {
         var f1 = Float.MAX_VALUE
         var f2 = Float.MAX_VALUE
@@ -175,7 +229,7 @@ class VoronoiCrackleGenerator : Generator {
         for (i in 0 until numPoints) {
             val dx = x - px[i]
             val dy = y - py[i]
-            val d = sqrt(dx * dx + dy * dy)
+            val d = computeDistance(dx, dy, metric)
             if (d < f1) {
                 f2 = f1
                 f1 = d
