@@ -40,6 +40,7 @@ import com.artmondo.algomodo.ui.components.*
 import com.artmondo.algomodo.ui.dialogs.*
 import com.artmondo.algomodo.viewmodel.ExportViewModel
 import com.artmondo.algomodo.viewmodel.MainViewModel
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import androidx.compose.foundation.gestures.awaitEachGesture
 import androidx.compose.foundation.gestures.awaitFirstDown
@@ -202,6 +203,7 @@ fun MainScreen(
                         animationFps = state.animationFps,
                         showFps = state.showFps,
                         renderTrigger = state.renderTrigger,
+                        onPauseTimeCapture = { viewModel.setSnapshotTime(it) },
                         modifier = canvasModifier
                     )
                 }
@@ -290,11 +292,30 @@ fun MainScreen(
             verticalAlignment = Alignment.CenterVertically
         ) {
             CanvasButton(Icons.Filled.Undo, "Undo", enabled = canUndo) { viewModel.undo() }
-            CanvasButton(
-                if (state.isAnimating) Icons.Filled.Pause else Icons.Filled.PlayArrow,
-                if (state.isAnimating) "Pause" else "Play",
-                enabled = state.generator?.supportsAnimation == true
-            ) { viewModel.toggleAnimation() }
+
+            // Play button with one-time tooltip
+            val playTooltipState = rememberTooltipState(isPersistent = true)
+            var playTooltipShown by remember { mutableStateOf(false) }
+            LaunchedEffect(Unit) {
+                if (!playTooltipShown) {
+                    delay(800)
+                    playTooltipShown = true
+                    playTooltipState.show()
+                    delay(8000)
+                    playTooltipState.dismiss()
+                }
+            }
+            TooltipBox(
+                positionProvider = TooltipDefaults.rememberPlainTooltipPositionProvider(),
+                tooltip = { PlainTooltip { Text("Press play to animate") } },
+                state = playTooltipState
+            ) {
+                CanvasButton(
+                    if (state.isAnimating) Icons.Filled.Pause else Icons.Filled.PlayArrow,
+                    if (state.isAnimating) "Pause" else "Play",
+                    enabled = state.generator?.supportsAnimation == true
+                ) { viewModel.toggleAnimation() }
+            }
             CanvasButton(Icons.Filled.Casino, "Rand") { viewModel.randomize() }
             CanvasButton(Icons.Filled.Redo, "Redo", enabled = canRedo) { viewModel.redo() }
             CanvasButton(Icons.Filled.AutoAwesome, "Surprise") { viewModel.surpriseMe() }
@@ -304,7 +325,8 @@ fun MainScreen(
                 state.generator?.let { gen ->
                     exportViewModel.quickSave(
                         context, gen, renderParams, state.seed, state.palette,
-                        state.quality, state.postFX, state.isAnimating
+                        state.quality, state.postFX, state.isAnimating,
+                        snapshotTime = state.snapshotTime
                     )
                 }
             }
@@ -496,11 +518,11 @@ fun MainScreen(
                         supportsVector = state.generator?.supportsVector == true,
                         onExportPng = {
                             val gen = state.generator ?: return@ExportPanel
-                            exportViewModel.exportPng(context, gen, renderParams, state.seed, state.palette, state.quality, state.postFX, 1080, 1080)
+                            exportViewModel.exportPng(context, gen, renderParams, state.seed, state.palette, state.quality, state.postFX, 1080, 1080, state.snapshotTime)
                         },
                         onExportJpg = {
                             val gen = state.generator ?: return@ExportPanel
-                            exportViewModel.exportJpg(context, gen, renderParams, state.seed, state.palette, state.quality, state.postFX, 1080, 1080)
+                            exportViewModel.exportJpg(context, gen, renderParams, state.seed, state.palette, state.quality, state.postFX, 1080, 1080, state.snapshotTime)
                         },
                         onExportSvg = {
                             val gen = state.generator ?: return@ExportPanel

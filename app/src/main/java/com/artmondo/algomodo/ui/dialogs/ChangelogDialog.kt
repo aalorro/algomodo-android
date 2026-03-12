@@ -18,6 +18,16 @@ fun ChangelogDialog(onDismiss: () -> Unit) {
         text = {
             Text(
                 text = """
+v1.3.4 (Android)
+Improvements:
+- Rewrote 9 plotter generators to fully wire all declared parameters
+- Optimized Guilloche animation performance
+- Fixed Contour Lines rendering
+- Fixed Streamlines spiral effect
+- Improved Export tab layout for small phone screens
+- Touch interaction now enabled by default
+- GIF endless loop now enabled by default
+
 v1.3.3 (Android)
 Improvements:
 - Enhanced Lissajous generator with improved parameter handling

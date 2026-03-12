@@ -30,7 +30,7 @@ data class ExportUiState(
     val gifDuration: Int = 5,
     val gifResolution: Int = 600,
     val gifBoomerang: Boolean = false,
-    val gifEndless: Boolean = false,
+    val gifEndless: Boolean = true,
     val videoDuration: Int = 15,
     val lastExportUri: Uri? = null,
     val error: String? = null
@@ -74,7 +74,8 @@ class ExportViewModel @Inject constructor() : ViewModel() {
         palette: Palette,
         quality: Quality,
         postFX: PostFXSettings,
-        isAnimating: Boolean
+        isAnimating: Boolean,
+        snapshotTime: Float = 0f
     ) {
         viewModelScope.launch(Dispatchers.IO) {
             _state.update { it.copy(isExporting = true, error = null) }
@@ -82,7 +83,7 @@ class ExportViewModel @Inject constructor() : ViewModel() {
                 val size = 1080
                 val bitmap = Bitmap.createBitmap(size, size, Bitmap.Config.ARGB_8888)
                 val canvas = Canvas(bitmap)
-                generator.renderCanvas(canvas, bitmap, params, seed, palette, quality, 0f)
+                generator.renderCanvas(canvas, bitmap, params, seed, palette, quality, snapshotTime)
                 PostFXProcessor.apply(bitmap, postFX)
 
                 val uri = PngExporter.export(context, bitmap, "algomodo_${System.currentTimeMillis()}")
@@ -103,14 +104,15 @@ class ExportViewModel @Inject constructor() : ViewModel() {
         quality: Quality,
         postFX: PostFXSettings,
         width: Int,
-        height: Int
+        height: Int,
+        snapshotTime: Float = 0f
     ) {
         viewModelScope.launch(Dispatchers.IO) {
             _state.update { it.copy(isExporting = true, error = null) }
             try {
                 val bitmap = Bitmap.createBitmap(width, height, Bitmap.Config.ARGB_8888)
                 val canvas = Canvas(bitmap)
-                generator.renderCanvas(canvas, bitmap, params, seed, palette, quality, 0f)
+                generator.renderCanvas(canvas, bitmap, params, seed, palette, quality, snapshotTime)
                 PostFXProcessor.apply(bitmap, postFX)
 
                 val uri = PngExporter.export(context, bitmap, "algomodo_${System.currentTimeMillis()}")
@@ -131,7 +133,8 @@ class ExportViewModel @Inject constructor() : ViewModel() {
         quality: Quality,
         postFX: PostFXSettings,
         width: Int,
-        height: Int
+        height: Int,
+        snapshotTime: Float = 0f
     ) {
         viewModelScope.launch(Dispatchers.IO) {
             _state.update { it.copy(isExporting = true, error = null) }
@@ -140,7 +143,7 @@ class ExportViewModel @Inject constructor() : ViewModel() {
                 val canvas = Canvas(bitmap)
                 // Fill white background for JPG
                 canvas.drawColor(android.graphics.Color.WHITE)
-                generator.renderCanvas(canvas, bitmap, params, seed, palette, quality, 0f)
+                generator.renderCanvas(canvas, bitmap, params, seed, palette, quality, snapshotTime)
                 PostFXProcessor.apply(bitmap, postFX)
 
                 val uri = JpgExporter.export(context, bitmap, "algomodo_${System.currentTimeMillis()}")

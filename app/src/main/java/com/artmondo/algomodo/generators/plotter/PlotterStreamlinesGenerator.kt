@@ -13,7 +13,6 @@ import com.artmondo.algomodo.generators.ParamGroup
 import com.artmondo.algomodo.generators.Parameter
 import com.artmondo.algomodo.generators.Quality
 import com.artmondo.algomodo.rendering.SvgPath
-import kotlin.math.PI
 import kotlin.math.ceil
 import kotlin.math.cos
 import kotlin.math.floor
@@ -106,14 +105,6 @@ class PlotterStreamlinesGenerator : Generator {
         val rng = SeededRNG(seed)
         val noise = SimplexNoise(seed)
 
-        // Seed-based field rotation and noise origin — ensures each seed produces
-        // a genuinely different flow direction instead of a fixed ~45° diagonal.
-        val fieldRotation = rng.range(0f, 2f * PI.toFloat())
-        val cosRot = cos(fieldRotation)
-        val sinRot = sin(fieldRotation)
-        val noiseOffX = rng.range(0f, 100f)
-        val noiseOffY = rng.range(0f, 100f)
-
         // Draw background
         canvas.drawColor(BG[background] ?: BG["cream"]!!)
 
@@ -157,39 +148,39 @@ class PlotterStreamlinesGenerator : Generator {
             return false
         }
 
-        // FBM-based vector field computation with seed-based rotation
+        // FBM-based vector field computation — matches web version exactly.
+        // +5 offset keeps sampling away from FBM origin (which is always 0).
+        // Different seeds produce different flow topologies via SimplexNoise(seed).
         fun getField(x: Float, y: Float): Pair<Float, Float> {
-            val nx = (x / w - 0.5f) * fScale + noiseOffX + timeOffset
-            val ny = (y / h - 0.5f) * fScale + noiseOffY + timeOffset * 0.7f
-
-            var vx: Float
-            var vy: Float
+            val nx = (x / w - 0.5f) * fScale + 5f + timeOffset
+            val ny = (y / h - 0.5f) * fScale + 5f + timeOffset * 0.7f
 
             if (fieldType == "sine-lattice") {
                 val freq = fScale * 3f
-                vx = sin(ny * freq) + 0.3f * sin(nx * freq * 1.5f)
-                vy = cos(nx * freq) + 0.3f * cos(ny * freq * 1.5f)
-            } else {
-                // Epsilon in noise-space units — ~1.5% of fScale
-                val eps = fScale * 0.015f
-
-                if (fieldType == "gradient") {
-                    vx = noise.fbm(nx + eps, ny, 4, 2f, 0.5f) - noise.fbm(nx - eps, ny, 4, 2f, 0.5f)
-                    vy = noise.fbm(nx, ny + eps, 4, 2f, 0.5f) - noise.fbm(nx, ny - eps, 4, 2f, 0.5f)
-                } else {
-                    // curl-noise (default): divergence-free swirling field
-                    val dFy = noise.fbm(nx, ny + eps, 4, 2f, 0.5f) - noise.fbm(nx, ny - eps, 4, 2f, 0.5f)
-                    val dFx = noise.fbm(nx + eps, ny, 4, 2f, 0.5f) - noise.fbm(nx - eps, ny, 4, 2f, 0.5f)
-                    vx = dFy
-                    vy = -dFx
-                }
+                val vx = sin(ny * freq) + 0.3f * sin(nx * freq * 1.5f)
+                val vy = cos(nx * freq) + 0.3f * cos(ny * freq * 1.5f)
+                val len = sqrt(vx * vx + vy * vy) + 1e-6f
+                return (vx / len) to (vy / len)
             }
 
-            // Apply seed-based rotation so each seed produces a different flow direction
-            val rvx = vx * cosRot - vy * sinRot
-            val rvy = vx * sinRot + vy * cosRot
-            val len = sqrt(rvx * rvx + rvy * rvy) + 1e-6f
-            return (rvx / len) to (rvy / len)
+            // Epsilon in noise-space units — ~1.5% of fScale
+            val eps = fScale * 0.015f
+
+            if (fieldType == "gradient") {
+                val dFx = noise.fbm(nx + eps, ny, 4, 2f, 0.5f) - noise.fbm(nx - eps, ny, 4, 2f, 0.5f)
+                val dFy = noise.fbm(nx, ny + eps, 4, 2f, 0.5f) - noise.fbm(nx, ny - eps, 4, 2f, 0.5f)
+                val len = sqrt(dFx * dFx + dFy * dFy) + 1e-6f
+                return (dFx / len) to (dFy / len)
+            }
+
+            // curl-noise (default): divergence-free field gives spiraling, space-filling paths
+            val dFy = noise.fbm(nx, ny + eps, 4, 2f, 0.5f) - noise.fbm(nx, ny - eps, 4, 2f, 0.5f)
+            val dFx = noise.fbm(nx + eps, ny, 4, 2f, 0.5f) - noise.fbm(nx - eps, ny, 4, 2f, 0.5f)
+            // curl: (dF/dy, -dF/dx)
+            val vx = dFy
+            val vy = -dFx
+            val len = sqrt(vx * vx + vy * vy) + 1e-6f
+            return (vx / len) to (vy / len)
         }
 
         val paletteColors = palette.colorInts()

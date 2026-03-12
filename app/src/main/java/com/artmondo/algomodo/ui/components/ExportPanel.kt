@@ -1,6 +1,7 @@
 package com.artmondo.algomodo.ui.components
 
 import androidx.compose.foundation.layout.*
+import androidx.compose.foundation.layout.FlowRow
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.*
 import androidx.compose.material3.*
@@ -68,13 +69,9 @@ fun ExportPanel(
         )
         Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
             Button(onClick = onExportPng, modifier = Modifier.weight(1f)) {
-                Icon(Icons.Filled.Image, contentDescription = null, modifier = Modifier.size(18.dp))
-                Spacer(Modifier.width(4.dp))
                 Text("PNG")
             }
             Button(onClick = onExportJpg, modifier = Modifier.weight(1f)) {
-                Icon(Icons.Filled.Image, contentDescription = null, modifier = Modifier.size(18.dp))
-                Spacer(Modifier.width(4.dp))
                 Text("JPG")
             }
             if (supportsVector) {
@@ -101,10 +98,10 @@ fun ExportPanel(
 
             // Shared resolution
             Row(
-                horizontalArrangement = Arrangement.spacedBy(8.dp),
+                horizontalArrangement = Arrangement.spacedBy(4.dp),
                 verticalAlignment = Alignment.CenterVertically
             ) {
-                Text("Size:", style = MaterialTheme.typography.bodySmall, modifier = Modifier.width(70.dp))
+                Text("Size:", style = MaterialTheme.typography.bodySmall)
                 listOf(600, 800, 1000).forEach { res ->
                     FilterChip(
                         selected = exportState.gifResolution == res,
@@ -118,10 +115,10 @@ fun ExportPanel(
             Text("GIF", style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.secondary)
 
             Row(
-                horizontalArrangement = Arrangement.spacedBy(8.dp),
+                horizontalArrangement = Arrangement.spacedBy(4.dp),
                 verticalAlignment = Alignment.CenterVertically
             ) {
-                Text("Duration:", style = MaterialTheme.typography.bodySmall, modifier = Modifier.width(70.dp))
+                Text("Duration:", style = MaterialTheme.typography.bodySmall)
                 listOf(3, 5, 8).forEach { dur ->
                     FilterChip(
                         selected = exportState.gifDuration == dur,
@@ -165,25 +162,30 @@ fun ExportPanel(
             val isCustom = exportState.videoDuration !in listOf(5, 15, 30)
 
             Row(
-                horizontalArrangement = Arrangement.spacedBy(8.dp),
+                horizontalArrangement = Arrangement.spacedBy(4.dp),
                 verticalAlignment = Alignment.CenterVertically
             ) {
-                Text("Duration:", style = MaterialTheme.typography.bodySmall, modifier = Modifier.width(70.dp))
-                listOf(5, 15, 30).forEach { dur ->
+                Text("Duration:", style = MaterialTheme.typography.bodySmall)
+                FlowRow(
+                    horizontalArrangement = Arrangement.spacedBy(4.dp),
+                    verticalArrangement = Arrangement.spacedBy(4.dp)
+                ) {
+                    listOf(5, 15, 30).forEach { dur ->
+                        FilterChip(
+                            selected = exportState.videoDuration == dur && !showCustomDuration,
+                            onClick = {
+                                showCustomDuration = false
+                                onVideoDurationChange(dur)
+                            },
+                            label = { Text("${dur}s") }
+                        )
+                    }
                     FilterChip(
-                        selected = exportState.videoDuration == dur && !showCustomDuration,
-                        onClick = {
-                            showCustomDuration = false
-                            onVideoDurationChange(dur)
-                        },
-                        label = { Text("${dur}s") }
+                        selected = showCustomDuration || isCustom,
+                        onClick = { showCustomDuration = true },
+                        label = { Text(if (isCustom && !showCustomDuration) "${exportState.videoDuration}s" else "Custom") }
                     )
                 }
-                FilterChip(
-                    selected = showCustomDuration || isCustom,
-                    onClick = { showCustomDuration = true },
-                    label = { Text(if (isCustom && !showCustomDuration) "${exportState.videoDuration}s" else "Custom") }
-                )
             }
             Text("MP4 duration only (max 60s)", style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
 
@@ -198,7 +200,7 @@ fun ExportPanel(
                     horizontalArrangement = Arrangement.spacedBy(8.dp),
                     verticalAlignment = Alignment.CenterVertically
                 ) {
-                    Spacer(Modifier.width(70.dp))
+                    Spacer(Modifier.width(54.dp))
                     OutlinedTextField(
                         value = customText,
                         onValueChange = { newVal ->

@@ -6,12 +6,16 @@ import android.graphics.Color
 import android.graphics.Paint
 import android.graphics.Path
 import com.artmondo.algomodo.core.rng.SeededRNG
+import com.artmondo.algomodo.core.rng.SimplexNoise
 import com.artmondo.algomodo.data.palettes.Palette
 import com.artmondo.algomodo.generators.Generator
 import com.artmondo.algomodo.generators.ParamGroup
 import com.artmondo.algomodo.generators.Parameter
 import com.artmondo.algomodo.generators.Quality
-import com.artmondo.algomodo.rendering.SvgPath
+import kotlin.math.floor
+import kotlin.math.max
+import kotlin.math.min
+import kotlin.math.sqrt
 
 /**
  * Meander / maze / Hilbert-curve space-filling patterns.
@@ -61,6 +65,243 @@ class PlotterMeanderMazeGenerator : Generator {
         "speed" to 0f
     )
 
+    // ── Background color constants matching web version ──────────────────
+    private fun bgColor(key: String): Int = when (key) {
+        "white" -> Color.rgb(248, 248, 245)
+        "cream" -> Color.rgb(242, 234, 216)
+        "dark"  -> Color.rgb(14, 14, 14)
+        else    -> Color.rgb(242, 234, 216)
+    }
+
+    // ── Maze generation algorithms ──────────────────────────────────────
+
+    private data class MazeWalls(
+        val wallH: Array<BooleanArray>, // wallH[row][col], rows-1 rows
+        val wallV: Array<BooleanArray>  // wallV[row][col], rows rows, cols-1 cols
+    )
+
+    private fun generateMazeDFS(cols: Int, rows: Int, rng: SeededRNG): MazeWalls {
+        val wallH = Array(rows - 1) { BooleanArray(cols) { true } }
+        val wallV = Array(rows) { BooleanArray(cols - 1) { true } }
+        val visited = BooleanArray(cols * rows)
+        val stack = mutableListOf(0)
+        visited[0] = true
+        val dx = intArrayOf(0, 1, 0, -1)
+        val dy = intArrayOf(-1, 0, 1, 0)
+
+        while (stack.isNotEmpty()) {
+            val curr = stack.last()
+            val cx = curr % cols
+            val cy = curr / cols
+            val nbrs = mutableListOf<Pair<Int, Int>>() // (index, dir)
+            for (dir in 0 until 4) {
+                val nx = cx + dx[dir]
+                val ny = cy + dy[dir]
+                if (nx in 0 until cols && ny in 0 until rows && !visited[ny * cols + nx]) {
+                    nbrs.add(Pair(ny * cols + nx, dir))
+                }
+            }
+            if (nbrs.isEmpty()) {
+                stack.removeAt(stack.size - 1)
+                continue
+            }
+            val (next, dir) = rng.pick(nbrs)
+            val nx = cx + dx[dir]
+            val ny = cy + dy[dir]
+            when (dir) {
+                0 -> if (ny >= 0) wallH[ny][cx] = false          // north
+                1 -> if (cx < cols - 1) wallV[cy][cx] = false    // east
+                2 -> if (cy < rows - 1) wallH[cy][cx] = false    // south
+                3 -> if (nx >= 0) wallV[cy][nx] = false           // west
+            }
+            visited[next] = true
+            stack.add(next)
+        }
+        return MazeWalls(wallH, wallV)
+    }
+
+    private fun generateMazeKruskal(cols: Int, rows: Int, rng: SeededRNG): MazeWalls {
+        val wallH = Array(rows - 1) { BooleanArray(cols) { true } }
+        val wallV = Array(rows) { BooleanArray(cols - 1) { true } }
+
+        // Union-Find
+        val parent = IntArray(cols * rows) { -1 }
+
+        fun find(x: Int): Int {
+            var v = x
+            while (parent[v] >= 0) v = parent[v]
+            return v
+        }
+
+        fun union(a: Int, b: Int): Boolean {
+            val ra = find(a)
+            val rb = find(b)
+            if (ra == rb) return false
+            if (parent[ra] < parent[rb]) {
+                parent[ra] += parent[rb]
+                parent[rb] = ra
+            } else {
+                parent[rb] += parent[ra]
+                parent[ra] = rb
+            }
+            return true
+        }
+
+        // Collect all edges: (cell1, cell2, isHoriz, r, c)
+        data class Edge(val a: Int, val b: Int, val isH: Boolean, val r: Int, val c: Int)
+
+        val edges = mutableListOf<Edge>()
+        for (r in 0 until rows - 1) {
+            for (c in 0 until cols) {
+                edges.add(Edge(r * cols + c, (r + 1) * cols + c, true, r, c))
+            }
+        }
+        for (r in 0 until rows) {
+            for (c in 0 until cols - 1) {
+                edges.add(Edge(r * cols + c, r * cols + c + 1, false, r, c))
+            }
+        }
+        rng.shuffle(edges)
+        for (edge in edges) {
+            if (union(edge.a, edge.b)) {
+                if (edge.isH) wallH[edge.r][edge.c] = false
+                else wallV[edge.r][edge.c] = false
+            }
+        }
+        return MazeWalls(wallH, wallV)
+    }
+
+    private fun generateMazeBinaryTree(cols: Int, rows: Int, rng: SeededRNG): MazeWalls {
+        val wallH = Array(rows - 1) { BooleanArray(cols) { true } }
+        val wallV = Array(rows) { BooleanArray(cols - 1) { true } }
+        for (r in 0 until rows) {
+            for (c in 0 until cols) {
+                val canN = r > 0
+                val canW = c > 0
+                if (canN && canW) {
+                    if (rng.random() < 0.5f) wallH[r - 1][c] = false
+                    else wallV[r][c - 1] = false
+                } else if (canN) {
+                    wallH[r - 1][c] = false
+                } else if (canW) {
+                    wallV[r][c - 1] = false
+                }
+            }
+        }
+        return MazeWalls(wallH, wallV)
+    }
+
+    private fun generateMazeSidewinder(cols: Int, rows: Int, rng: SeededRNG): MazeWalls {
+        val wallH = Array(rows - 1) { BooleanArray(cols) { true } }
+        val wallV = Array(rows) { BooleanArray(cols - 1) { true } }
+        for (r in 0 until rows) {
+            var runStart = 0
+            for (c in 0 until cols) {
+                if (r == 0) {
+                    // First row: carve right
+                    if (c < cols - 1) wallV[r][c] = false
+                } else {
+                    val closeRun = c == cols - 1 || rng.random() < 0.5f
+                    if (closeRun) {
+                        val pick = runStart + floor(rng.random() * (c - runStart + 1)).toInt()
+                        wallH[r - 1][pick] = false // carve north from random cell in run
+                        runStart = c + 1
+                    } else {
+                        wallV[r][c] = false // carve east
+                    }
+                }
+            }
+        }
+        return MazeWalls(wallH, wallV)
+    }
+
+    private fun generateMaze(cols: Int, rows: Int, rng: SeededRNG, algorithm: String): MazeWalls {
+        return when (algorithm) {
+            "kruskal" -> generateMazeKruskal(cols, rows, rng)
+            "binary-tree" -> generateMazeBinaryTree(cols, rows, rng)
+            "sidewinder" -> generateMazeSidewinder(cols, rows, rng)
+            else -> generateMazeDFS(cols, rows, rng)
+        }
+    }
+
+    // ── BFS from cell (0,0) ─────────────────────────────────────────────
+
+    private fun bfs(cols: Int, rows: Int, wallH: Array<BooleanArray>, wallV: Array<BooleanArray>): IntArray {
+        val dist = IntArray(cols * rows) { -1 }
+        val queue = mutableListOf(0)
+        dist[0] = 0
+        val dx = intArrayOf(0, 1, 0, -1)
+        val dy = intArrayOf(-1, 0, 1, 0)
+        var head = 0
+
+        while (head < queue.size) {
+            val curr = queue[head++]
+            val cx = curr % cols
+            val cy = curr / cols
+            for (dir in 0 until 4) {
+                val nx = cx + dx[dir]
+                val ny = cy + dy[dir]
+                if (nx < 0 || nx >= cols || ny < 0 || ny >= rows) continue
+                val passable = when (dir) {
+                    0 -> cy > 0 && !wallH[cy - 1][cx]           // north
+                    1 -> cx < cols - 1 && !wallV[cy][cx]        // east
+                    2 -> cy < rows - 1 && !wallH[cy][cx]        // south
+                    3 -> cx > 0 && !wallV[cy][cx - 1]           // west
+                    else -> false
+                }
+                if (passable) {
+                    val ni = ny * cols + nx
+                    if (dist[ni] == -1) {
+                        dist[ni] = dist[curr] + 1
+                        queue.add(ni)
+                    }
+                }
+            }
+        }
+        return dist
+    }
+
+    // ── Reconstruct shortest path from cell 0 to target ────────────────
+
+    private fun solvePath(
+        cols: Int, rows: Int,
+        wallH: Array<BooleanArray>, wallV: Array<BooleanArray>,
+        dist: IntArray, target: Int
+    ): List<Int> {
+        val path = mutableListOf(target)
+        var curr = target
+        val dx = intArrayOf(0, 1, 0, -1)
+        val dy = intArrayOf(-1, 0, 1, 0)
+
+        while (curr != 0) {
+            val cx = curr % cols
+            val cy = curr / cols
+            for (dir in 0 until 4) {
+                val nx = cx + dx[dir]
+                val ny = cy + dy[dir]
+                if (nx < 0 || nx >= cols || ny < 0 || ny >= rows) continue
+                val passable = when (dir) {
+                    0 -> cy > 0 && !wallH[cy - 1][cx]
+                    1 -> cx < cols - 1 && !wallV[cy][cx]
+                    2 -> cy < rows - 1 && !wallH[cy][cx]
+                    3 -> cx > 0 && !wallV[cy][cx - 1]
+                    else -> false
+                }
+                if (passable) {
+                    val ni = ny * cols + nx
+                    if (dist[ni] == dist[curr] - 1) {
+                        path.add(ni)
+                        curr = ni
+                        break
+                    }
+                }
+            }
+        }
+        return path.reversed()
+    }
+
+    // ── Main render ─────────────────────────────────────────────────────
+
     override fun renderCanvas(
         canvas: Canvas,
         bitmap: Bitmap,
@@ -72,16 +313,40 @@ class PlotterMeanderMazeGenerator : Generator {
     ) {
         val w = bitmap.width.toFloat()
         val h = bitmap.height.toFloat()
-        val cellSize = (params["cellSize"] as? Number)?.toFloat() ?: 20f
-        val style = (params["style"] as? String) ?: "meander"
-        val lineWidth = (params["lineWidth"] as? Number)?.toFloat() ?: 2f
-
-        val speed = (params["speed"] as? Number)?.toFloat() ?: 0f
-        val colorShift = if (speed > 0f && time > 0f) (time * speed * 3f).toInt() else 0
 
         val rng = SeededRNG(seed)
+        val noise = SimplexNoise(seed)
+
+        // Read parameters
+        val cellSize = max(8f, (params["cellSize"] as? Number)?.toFloat() ?: 30f)
+        val margin = max(0f, (params["margin"] as? Number)?.toFloat() ?: 0.04f)
+        val style = (params["style"] as? String) ?: "maze"
+        val algorithm = (params["algorithm"] as? String) ?: "dfs"
+        val wallStyle = (params["wallStyle"] as? String) ?: "straight"
+        val showSolution = (params["showSolution"] as? Boolean) ?: false
+        val fillCells = (params["fillCells"] as? Boolean) ?: false
+        val lineWidth = (params["lineWidth"] as? Number)?.toFloat() ?: 1.25f
+        val colorMode = (params["colorMode"] as? String) ?: "palette-distance"
+        val background = (params["background"] as? String) ?: "cream"
+        val speed = (params["speed"] as? Number)?.toFloat() ?: 0f
+        val colorShift = if (speed > 0f && time > 0f) (time * speed * 3f).toInt() else 0
+        val isDark = background == "dark"
+
+        // Background
+        canvas.drawColor(bgColor(background))
+
+        // Margin and grid sizing (matching web version)
+        val mx = w * margin
+        val my = h * margin
+        val availW = w - 2f * mx
+        val availH = h - 2f * my
+        val cols = max(2, (availW / cellSize).toInt())
+        val rows = max(2, (availH / cellSize).toInt())
+        val cw = availW / cols
+        val ch = availH / rows
+
+        // Palette colors with optional animation shift
         val basePaletteColors = palette.colorInts()
-        // Rotate palette by colorShift for animation
         val paletteColors = if (colorShift > 0 && basePaletteColors.isNotEmpty()) {
             val shift = colorShift % basePaletteColors.size
             basePaletteColors.drop(shift) + basePaletteColors.take(shift)
@@ -89,239 +354,290 @@ class PlotterMeanderMazeGenerator : Generator {
             basePaletteColors
         }
 
-        canvas.drawColor(Color.BLACK)
+        val maxDist = cols + rows
+
+        // ── Color helpers ───────────────────────────────────────────────
+
+        fun interpColor(t: Float): Int {
+            val ct = t.coerceIn(0f, 1f) * (paletteColors.size - 1)
+            val i0 = ct.toInt().coerceAtMost(paletteColors.size - 2)
+            val i1 = min(paletteColors.size - 1, i0 + 1)
+            val f = ct - i0
+            val c0 = paletteColors[i0]
+            val c1 = paletteColors[i1]
+            val r = (Color.red(c0) + (Color.red(c1) - Color.red(c0)) * f).toInt()
+            val g = (Color.green(c0) + (Color.green(c1) - Color.green(c0)) * f).toInt()
+            val b = (Color.blue(c0) + (Color.blue(c1) - Color.blue(c0)) * f).toInt()
+            return Color.rgb(r, g, b)
+        }
+
+        fun getColor(col: Int, row: Int, dist: Int): Int {
+            val baseColor = when (colorMode) {
+                "monochrome" -> {
+                    if (isDark) Color.rgb(220, 220, 220) else Color.rgb(30, 30, 30)
+                }
+                "palette-distance" -> {
+                    interpColor(dist.toFloat() / maxDist)
+                }
+                "palette-zone" -> {
+                    interpColor(col.toFloat() / cols * 0.5f + row.toFloat() / rows * 0.5f)
+                }
+                "palette-noise" -> {
+                    val nv = noise.fbm(
+                        col.toFloat() / cols * 3f + 5f,
+                        row.toFloat() / rows * 3f + 5f,
+                        3, 2f, 0.5f
+                    )
+                    interpColor(max(0f, nv * 0.5f + 0.5f))
+                }
+                else -> interpColor(dist.toFloat() / maxDist)
+            }
+            // Apply alpha matching web: isDark ? 0.85 : 0.82
+            val alpha = if (isDark) 217 else 209 // 0.85*255≈217, 0.82*255≈209
+            return Color.argb(alpha, Color.red(baseColor), Color.green(baseColor), Color.blue(baseColor))
+        }
+
+        // ── Paint setup ─────────────────────────────────────────────────
+
         val paint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
             this.style = Paint.Style.STROKE
             strokeWidth = lineWidth
-            strokeCap = Paint.Cap.ROUND
-            strokeJoin = Paint.Join.ROUND
+            strokeCap = Paint.Cap.SQUARE
+            strokeJoin = Paint.Join.MITER
         }
 
-        when (style) {
-            "meander" -> drawMeander(canvas, paint, w, h, cellSize, paletteColors)
-            "maze" -> drawMaze(canvas, paint, w, h, cellSize, rng, paletteColors)
-            "hilbert" -> drawHilbert(canvas, paint, w, h, cellSize, paletteColors)
+        val fillPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+            this.style = Paint.Style.FILL
         }
-    }
 
-    private fun drawMeander(canvas: Canvas, paint: Paint, w: Float, h: Float, cellSize: Float, colors: List<Int>) {
-        val cols = (w / cellSize).toInt()
-        val rows = (h / cellSize).toInt()
-        val halfCell = cellSize / 2f
+        // ── Wall drawing helper ─────────────────────────────────────────
 
-        var colorIdx = 0
-        for (row in 0 until rows) {
-            val path = Path()
-            val y = row * cellSize + halfCell
+        fun drawWall(x1: Float, y1: Float, x2: Float, y2: Float, col: Int, row: Int, dist: Int) {
+            paint.color = getColor(col, row, dist)
 
-            if (row % 2 == 0) {
-                path.moveTo(0f, y)
+            when (wallStyle) {
+                "rounded" -> {
+                    // Slight curve through a noise-offset midpoint
+                    val midX = (x1 + x2) / 2f
+                    val midY = (y1 + y2) / 2f
+                    val n1 = noise.noise2D(col * 0.7f + row * 0.3f, row * 0.7f + col * 0.3f)
+                    val off = lineWidth * 1.5f
+                    // Perpendicular offset
+                    val ddx = x2 - x1
+                    val ddy = y2 - y1
+                    val len = sqrt(ddx * ddx + ddy * ddy).coerceAtLeast(1f)
+                    val px = -ddy / len
+                    val py = ddx / len
+
+                    val path = Path()
+                    path.moveTo(x1, y1)
+                    path.quadTo(
+                        midX + px * n1 * off,
+                        midY + py * n1 * off,
+                        x2, y2
+                    )
+                    canvas.drawPath(path, paint)
+                }
+                "wobbly" -> {
+                    // Multi-point wobbly line
+                    val steps = 6
+                    val ddx = x2 - x1
+                    val ddy = y2 - y1
+                    val len = sqrt(ddx * ddx + ddy * ddy).coerceAtLeast(1f)
+                    val px = -ddy / len
+                    val py = ddx / len
+
+                    val path = Path()
+                    path.moveTo(x1, y1)
+                    for (s in 1..steps) {
+                        val t = s.toFloat() / steps
+                        val bx = x1 + ddx * t
+                        val by = y1 + ddy * t
+                        val n1 = noise.noise2D(bx * 0.03f + seed * 0.001f, by * 0.03f)
+                        val wobble = n1 * cellSize * 0.15f
+                        if (s < steps) {
+                            path.lineTo(bx + px * wobble, by + py * wobble)
+                        } else {
+                            path.lineTo(x2, y2)
+                        }
+                    }
+                    canvas.drawPath(path, paint)
+                }
+                else -> {
+                    // Straight
+                    canvas.drawLine(x1, y1, x2, y2, paint)
+                }
+            }
+        }
+
+        // ── Rendering ───────────────────────────────────────────────────
+
+        if (style == "maze") {
+            val (wallH, wallV) = generateMaze(cols, rows, rng, algorithm)
+            val dist = bfs(cols, rows, wallH, wallV)
+            var maxBFS = 1
+            for (d in dist) {
+                if (d > maxBFS) maxBFS = d
+            }
+
+            // Fill cells with color heatmap
+            if (fillCells) {
+                for (r in 0 until rows) {
+                    for (c in 0 until cols) {
+                        val d = dist[r * cols + c]
+                        if (d < 0) continue
+                        val t = d.toFloat() / maxBFS
+                        val baseColor = interpColor(t)
+                        val alpha = if (isDark) 64 else 46 // 0.25*255≈64, 0.18*255≈46
+                        fillPaint.color = Color.argb(
+                            alpha,
+                            Color.red(baseColor),
+                            Color.green(baseColor),
+                            Color.blue(baseColor)
+                        )
+                        canvas.drawRect(
+                            mx + c * cw,
+                            my + r * ch,
+                            mx + (c + 1) * cw,
+                            my + (r + 1) * ch,
+                            fillPaint
+                        )
+                    }
+                }
+            }
+
+            // Outer border
+            paint.color = getColor(0, 0, 0)
+            paint.style = Paint.Style.STROKE
+            canvas.drawRect(mx, my, mx + availW, my + availH, paint)
+
+            // Horizontal walls (wallH has rows-1 rows)
+            for (row in 0 until rows - 1) {
                 for (col in 0 until cols) {
-                    val x = col * cellSize + halfCell
-                    if (col % 2 == 0) {
-                        path.lineTo(x, y - halfCell * 0.7f)
-                        path.lineTo(x + halfCell * 0.7f, y - halfCell * 0.7f)
-                        path.lineTo(x + halfCell * 0.7f, y + halfCell * 0.7f)
-                        path.lineTo(x + cellSize, y)
-                    } else {
-                        path.lineTo(x, y + halfCell * 0.7f)
-                        path.lineTo(x + halfCell * 0.7f, y + halfCell * 0.7f)
-                        path.lineTo(x + halfCell * 0.7f, y - halfCell * 0.7f)
-                        path.lineTo(x + cellSize, y)
-                    }
-                }
-            } else {
-                path.moveTo(w, y)
-                for (col in cols - 1 downTo 0) {
-                    val x = col * cellSize + halfCell
-                    if (col % 2 == 0) {
-                        path.lineTo(x, y + halfCell * 0.7f)
-                        path.lineTo(x - halfCell * 0.7f, y + halfCell * 0.7f)
-                        path.lineTo(x - halfCell * 0.7f, y - halfCell * 0.7f)
-                        path.lineTo(x - cellSize, y)
-                    } else {
-                        path.lineTo(x, y - halfCell * 0.7f)
-                        path.lineTo(x - halfCell * 0.7f, y - halfCell * 0.7f)
-                        path.lineTo(x - halfCell * 0.7f, y + halfCell * 0.7f)
-                        path.lineTo(x - cellSize, y)
+                    if (wallH[row][col]) {
+                        val d = dist[row * cols + col]
+                        drawWall(
+                            mx + col * cw, my + (row + 1) * ch,
+                            mx + (col + 1) * cw, my + (row + 1) * ch,
+                            col, row, if (d >= 0) d else 0
+                        )
                     }
                 }
             }
 
-            paint.color = colors[colorIdx % colors.size]
-            canvas.drawPath(path, paint)
-            colorIdx++
-        }
-    }
-
-    private fun drawMaze(canvas: Canvas, paint: Paint, w: Float, h: Float, cellSize: Float, rng: SeededRNG, colors: List<Int>) {
-        val cols = (w / cellSize).toInt()
-        val rows = (h / cellSize).toInt()
-        val totalCells = cols * rows
-
-        // Recursive backtracker maze generation
-        val visited = BooleanArray(totalCells)
-        // Walls: bit 0=N, 1=E, 2=S, 3=W
-        val walls = IntArray(totalCells) { 0b1111 }
-        val stack = mutableListOf<Int>()
-
-        val dx = intArrayOf(0, 1, 0, -1)
-        val dy = intArrayOf(-1, 0, 1, 0)
-        val opposite = intArrayOf(2, 3, 0, 1)
-
-        var current = rng.integer(0, totalCells - 1)
-        visited[current] = true
-        stack.add(current)
-
-        while (stack.isNotEmpty()) {
-            val cx = current % cols
-            val cy = current / cols
-            val neighbors = mutableListOf<Int>()
-            for (d in 0..3) {
-                val nx = cx + dx[d]
-                val ny = cy + dy[d]
-                if (nx in 0 until cols && ny in 0 until rows) {
-                    val ni = ny * cols + nx
-                    if (!visited[ni]) neighbors.add(d)
+            // Vertical walls (wallV has rows rows, cols-1 cols)
+            for (row in 0 until rows) {
+                for (col in 0 until cols - 1) {
+                    if (wallV[row][col]) {
+                        val d = dist[row * cols + col]
+                        drawWall(
+                            mx + (col + 1) * cw, my + row * ch,
+                            mx + (col + 1) * cw, my + (row + 1) * ch,
+                            col, row, if (d >= 0) d else 0
+                        )
+                    }
                 }
             }
-            if (neighbors.isNotEmpty()) {
-                val dir = rng.pick(neighbors)
-                val nx = cx + dx[dir]
-                val ny = cy + dy[dir]
-                val ni = ny * cols + nx
-                walls[current] = walls[current] and (1 shl dir).inv()
-                walls[ni] = walls[ni] and (1 shl opposite[dir]).inv()
-                visited[ni] = true
-                stack.add(current)
-                current = ni
-            } else {
-                current = stack.removeAt(stack.size - 1)
-            }
-        }
 
-        // Draw maze walls
-        val wallPaint = Paint(paint).apply {
-            color = colors[0]
-            alpha = 200
-        }
-
-        for (cy in 0 until rows) {
-            for (cx in 0 until cols) {
-                val idx = cy * cols + cx
-                val x = cx * cellSize
-                val y = cy * cellSize
-
-                if (walls[idx] and 0b0001 != 0) { // North
-                    canvas.drawLine(x, y, x + cellSize, y, wallPaint)
-                }
-                if (walls[idx] and 0b0010 != 0) { // East
-                    canvas.drawLine(x + cellSize, y, x + cellSize, y + cellSize, wallPaint)
-                }
-                if (walls[idx] and 0b0100 != 0) { // South
-                    canvas.drawLine(x, y + cellSize, x + cellSize, y + cellSize, wallPaint)
-                }
-                if (walls[idx] and 0b1000 != 0) { // West
-                    canvas.drawLine(x, y, x, y + cellSize, wallPaint)
+            // Solution path overlay
+            if (showSolution) {
+                val target = (rows - 1) * cols + (cols - 1)
+                if (dist[target] >= 0) {
+                    val path = solvePath(cols, rows, wallH, wallV, dist, target)
+                    val solPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+                        this.style = Paint.Style.STROKE
+                        strokeWidth = lineWidth * 2.5f
+                        strokeCap = Paint.Cap.ROUND
+                        strokeJoin = Paint.Join.ROUND
+                        color = if (isDark)
+                            Color.argb(179, 255, 100, 100)  // rgba(255,100,100,0.7)
+                        else
+                            Color.argb(140, 220, 40, 40)    // rgba(220,40,40,0.55)
+                    }
+                    val solPath = Path()
+                    for (i in path.indices) {
+                        val px = mx + (path[i] % cols + 0.5f) * cw
+                        val py = my + (path[i] / cols + 0.5f) * ch
+                        if (i == 0) solPath.moveTo(px, py) else solPath.lineTo(px, py)
+                    }
+                    canvas.drawPath(solPath, solPaint)
                 }
             }
-        }
+        } else {
+            // Meander: boustrophedon serpentine path
+            // Total path length for proper distance normalization
+            val totalPathLen = rows * cols
 
-        // Draw the path visiting all cells (DFS path coloured)
-        val pathPaint = Paint(paint).apply {
-            strokeWidth = paint.strokeWidth * 0.5f
-        }
-        val pathVisited = BooleanArray(totalCells)
-        val pathStack = mutableListOf(0)
-        pathVisited[0] = true
-        var step = 0
-
-        while (pathStack.isNotEmpty()) {
-            val cell = pathStack.last()
-            val cx = cell % cols
-            val cy = cell / cols
-            var found = false
-
-            for (d in 0..3) {
-                if (walls[cell] and (1 shl d) != 0) continue
-                val nx = cx + dx[d]
-                val ny = cy + dy[d]
-                if (nx < 0 || nx >= cols || ny < 0 || ny >= rows) continue
-                val ni = ny * cols + nx
-                if (pathVisited[ni]) continue
-
-                pathVisited[ni] = true
-                pathStack.add(ni)
-
-                val t = step.toFloat() / totalCells.coerceAtLeast(1)
-                pathPaint.color = colors[(step / 3) % colors.size]
-                pathPaint.alpha = 120
-                val x1 = cx * cellSize + cellSize / 2f
-                val y1 = cy * cellSize + cellSize / 2f
-                val x2 = nx * cellSize + cellSize / 2f
-                val y2 = ny * cellSize + cellSize / 2f
-                canvas.drawLine(x1, y1, x2, y2, pathPaint)
-                step++
-                found = true
-                break
+            // Fill cells with color heatmap (same as maze mode)
+            if (fillCells) {
+                for (r in 0 until rows) {
+                    for (c in 0 until cols) {
+                        // Path distance: serpentine order
+                        val d = if (r % 2 == 0) r * cols + c else r * cols + (cols - 1 - c)
+                        val t = d.toFloat() / totalPathLen
+                        val baseColor = interpColor(t)
+                        val alpha = if (isDark) 64 else 46
+                        fillPaint.color = Color.argb(
+                            alpha,
+                            Color.red(baseColor),
+                            Color.green(baseColor),
+                            Color.blue(baseColor)
+                        )
+                        canvas.drawRect(
+                            mx + c * cw,
+                            my + r * ch,
+                            mx + (c + 1) * cw,
+                            my + (r + 1) * ch,
+                            fillPaint
+                        )
+                    }
+                }
             }
-            if (!found) pathStack.removeAt(pathStack.size - 1)
+
+            for (row in 0 until rows) {
+                val y = my + (row + 0.5f) * ch
+
+                if (row % 2 == 0) {
+                    // Left to right
+                    var prevX = mx
+                    var prevY = y
+                    for (col in 0..cols) {
+                        val x = mx + col * cw
+                        val c = min(col, cols - 1)
+                        val dist = row * cols + c
+                        drawWall(prevX, prevY, x, y, c, row, dist * maxDist / totalPathLen)
+                        prevX = x
+                        prevY = y
+                    }
+                    // Connector down to next row
+                    if (row < rows - 1) {
+                        val x = mx + cols * cw
+                        val nextY = my + (row + 1.5f) * ch
+                        val dist = row * cols + (cols - 1)
+                        drawWall(x, y, x, nextY, cols - 1, row, dist * maxDist / totalPathLen)
+                    }
+                } else {
+                    // Right to left
+                    var prevX = mx + cols * cw
+                    var prevY = y
+                    for (col in cols downTo 0) {
+                        val x = mx + col * cw
+                        val c = max(col, 0)
+                        val dist = row * cols + (cols - 1 - c)
+                        drawWall(prevX, prevY, x, y, c, row, dist * maxDist / totalPathLen)
+                        prevX = x
+                        prevY = y
+                    }
+                    // Connector down to next row
+                    if (row < rows - 1) {
+                        val x = mx
+                        val nextY = my + (row + 1.5f) * ch
+                        val dist = (row + 1) * cols
+                        drawWall(x, y, x, nextY, 0, row, dist * maxDist / totalPathLen)
+                    }
+                }
+            }
         }
-    }
-
-    private fun drawHilbert(canvas: Canvas, paint: Paint, w: Float, h: Float, cellSize: Float, colors: List<Int>) {
-        val cols = (w / cellSize).toInt()
-        val rows = (h / cellSize).toInt()
-        val size = minOf(cols, rows)
-
-        // Find largest power of 2 that fits
-        var order = 1
-        var n = 2
-        while (n * 2 <= size) {
-            n *= 2
-            order++
-        }
-
-        val points = mutableListOf<Pair<Float, Float>>()
-        hilbert(0, 0, n, 0, 1, points)
-
-        val scaleX = w / n
-        val scaleY = h / n
-
-        if (points.size < 2) return
-
-        val path = Path()
-        path.moveTo(points[0].first * scaleX + scaleX / 2f, points[0].second * scaleY + scaleY / 2f)
-        for (i in 1 until points.size) {
-            path.lineTo(points[i].first * scaleX + scaleX / 2f, points[i].second * scaleY + scaleY / 2f)
-        }
-
-        // Draw segments with color gradient
-        val segmentCount = points.size - 1
-        val segPaint = Paint(paint)
-        for (i in 0 until segmentCount) {
-            val t = i.toFloat() / segmentCount
-            segPaint.color = colors[(i * colors.size / segmentCount.coerceAtLeast(1)) % colors.size]
-            canvas.drawLine(
-                points[i].first * scaleX + scaleX / 2f,
-                points[i].second * scaleY + scaleY / 2f,
-                points[i + 1].first * scaleX + scaleX / 2f,
-                points[i + 1].second * scaleY + scaleY / 2f,
-                segPaint
-            )
-        }
-    }
-
-    private fun hilbert(x: Int, y: Int, size: Int, dx: Int, dy: Int, points: MutableList<Pair<Float, Float>>) {
-        if (size <= 1) {
-            points.add(x.toFloat() to y.toFloat())
-            return
-        }
-        val half = size / 2
-        hilbert(x, y, half, dy, dx, points)
-        hilbert(x + dx * half, y + dy * half, half, dx, dy, points)
-        hilbert(x + dx * half + dy * half, y + dy * half + dx * half, half, dx, dy, points)
-        hilbert(x + dx * (size - 1), y + dy * (size - 1), half, -dy, -dx, points)
     }
 
     override fun estimateCost(params: Map<String, Any>, quality: Quality): Float {
