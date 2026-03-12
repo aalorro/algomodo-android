@@ -11,8 +11,6 @@ import com.artmondo.algomodo.generators.Generator
 import com.artmondo.algomodo.generators.ParamGroup
 import com.artmondo.algomodo.generators.Parameter
 import com.artmondo.algomodo.generators.Quality
-import com.artmondo.algomodo.rendering.SvgPath
-import kotlin.math.PI
 import kotlin.math.cos
 import kotlin.math.floor
 import kotlin.math.min
@@ -68,6 +66,15 @@ class PlotterGuillocheGenerator : Generator {
     )
 
     companion object {
+        private const val TWO_PI = 2f * Math.PI.toFloat()
+        private const val PI_F = Math.PI.toFloat()
+
+        // Curve type constants to avoid string comparison in hot loop
+        private const val CURVE_HYPOTROCHOID = 0
+        private const val CURVE_EPITROCHOID = 1
+        private const val CURVE_ROSE = 2
+        private const val CURVE_LISSAJOUS = 3
+
         private val BG = mapOf(
             "white" to Color.rgb(248, 248, 245),
             "cream" to Color.rgb(242, 234, 216),
@@ -95,12 +102,20 @@ class PlotterGuillocheGenerator : Generator {
         val spread = (params["ringSpread"] as? Number)?.toFloat() ?: 0.09f
         val spinSpeed = (params["spinSpeed"] as? Number)?.toFloat() ?: 0.12f
         val colorMode = (params["colorMode"] as? String) ?: "palette-rings"
-        val curveType = (params["curveType"] as? String) ?: "hypotrochoid"
+        val curveTypeStr = (params["curveType"] as? String) ?: "hypotrochoid"
         val linesPerRing = ((params["linesPerRing"] as? Number)?.toInt() ?: 1).coerceIn(1, 6)
         val waveMod = (params["waveModulation"] as? Number)?.toFloat() ?: 0f
         val lineWidth = (params["lineWidth"] as? Number)?.toFloat() ?: 0.75f
         val background = (params["background"] as? String) ?: "cream"
         val isDark = background == "dark"
+
+        // Resolve curve type to int constant once (avoid string comparison per point)
+        val curveType = when (curveTypeStr) {
+            "epitrochoid" -> CURVE_EPITROCHOID
+            "rose" -> CURVE_ROSE
+            "lissajous" -> CURVE_LISSAJOUS
+            else -> CURVE_HYPOTROCHOID
+        }
 
         // Background
         canvas.drawColor(BG[background] ?: BG["cream"]!!)
@@ -117,49 +132,91 @@ class PlotterGuillocheGenerator : Generator {
         }
 
         val steps = when (quality) {
-            Quality.DRAFT -> 900
-            Quality.BALANCED -> 1800
-            Quality.ULTRA -> 3600
+            Quality.DRAFT -> 720
+            Quality.BALANCED -> 1200
+            Quality.ULTRA -> 2400
         }
+
+        // Pre-allocate path and point buffer — avoids GC pressure from
+        // creating new Path + Pair<Float,Float> objects every frame.
+        val path = Path()
+        val kf = k.toFloat()
+        val invSteps = 1f / steps
 
         for (ri in 0 until ringCount) {
             val ecc = eccBase * (0.78f + ri * 0.06f + rng.range(0f, 0.08f))
             val ringRadius = halfSize * (0.3f + ri * spread)
+
+            // Pre-compute per-ring curve constants
+            val d = kf * ecc
+            val curveScale: Float
+            val lissPhase: Float
+            when (curveType) {
+                CURVE_EPITROCHOID -> {
+                    curveScale = ringRadius / (k + 1 + d)
+                    lissPhase = 0f
+                }
+                CURVE_HYPOTROCHOID -> {
+                    curveScale = ringRadius / (kf + d)
+                    lissPhase = 0f
+                }
+                CURVE_LISSAJOUS -> {
+                    curveScale = ringRadius
+                    lissPhase = ecc * PI_F
+                }
+                else -> { // ROSE
+                    curveScale = ringRadius
+                    lissPhase = 0f
+                }
+            }
+            val waveFreq = k * 3
+            val useWave = waveMod > 0f
+            val waveFactor = waveMod * 0.3f
 
             // Alternating rotation direction per ring
             val direction = if (ri % 2 == 0) 1f else -1f
             val phase = time * spinSpeed * direction
 
             for (li in 0 until linesPerRing) {
-                // Phase offset per sub-line — creates weave
-                val linePhase = phase + (li.toFloat() / linesPerRing) * (2f * PI.toFloat()) / k
+                val linePhase = phase + (li.toFloat() / linesPerRing) * TWO_PI / kf
 
-                // Determine color
                 val baseAlpha = if (isDark) 0.85f else 0.80f
                 val lineAlpha = if (linesPerRing > 1) baseAlpha * (0.5f + 0.5f / linesPerRing) else baseAlpha
                 val alphaInt = (lineAlpha * 255).toInt().coerceIn(0, 255)
 
                 if (colorMode == "gradient-sweep") {
-                    drawGradientSweepCurve(
-                        canvas, paint, paletteColors, alphaInt,
-                        steps, linePhase, k, ecc, ringRadius, waveMod, curveType,
+                    drawGradientSweepInline(
+                        canvas, paint, path, paletteColors, alphaInt,
+                        steps, invSteps, linePhase, k, kf, curveType, d, curveScale,
+                        lissPhase, ringRadius, useWave, waveFreq, waveFactor,
                         cxc, cyc
                     )
                 } else {
                     val color = when (colorMode) {
                         "palette-rings" -> paletteColors[ri % paletteColors.size]
                         "interference" -> if (ri % 2 == 0) paletteColors[0] else paletteColors[paletteColors.size - 1]
-                        else -> if (isDark) Color.rgb(220, 220, 220) else Color.rgb(30, 30, 30) // monochrome
+                        else -> if (isDark) Color.rgb(220, 220, 220) else Color.rgb(30, 30, 30)
                     }
                     paint.color = color
                     paint.alpha = alphaInt
 
-                    val path = Path()
+                    path.reset()
                     for (step in 0..steps) {
-                        val t01 = step.toFloat() / steps
-                        val (px, py) = curvePoint(t01, linePhase, k, ecc, ringRadius, waveMod, curveType)
-                        if (step == 0) path.moveTo(cxc + px, cyc + py)
-                        else path.lineTo(cxc + px, cyc + py)
+                        val t = step * invSteps * TWO_PI + linePhase
+                        val px = curvePointX(t, curveType, k, kf, d, curveScale, lissPhase, ringRadius)
+                        val py = curvePointY(t, curveType, k, kf, d, curveScale, lissPhase, ringRadius)
+                        val wx: Float
+                        val wy: Float
+                        if (useWave) {
+                            val wave = 1f + waveFactor * sin(waveFreq * t)
+                            wx = px * wave
+                            wy = py * wave
+                        } else {
+                            wx = px
+                            wy = py
+                        }
+                        if (step == 0) path.moveTo(cxc + wx, cyc + wy)
+                        else path.lineTo(cxc + wx, cyc + wy)
                     }
                     path.close()
                     canvas.drawPath(path, paint)
@@ -168,10 +225,34 @@ class PlotterGuillocheGenerator : Generator {
         }
     }
 
-    private fun drawGradientSweepCurve(
-        canvas: Canvas, paint: Paint, colors: List<Int>, alphaInt: Int,
-        steps: Int, linePhase: Float, k: Int, ecc: Float,
-        ringRadius: Float, waveMod: Float, curveType: String,
+    // Inline X coordinate computation — avoids Pair allocation
+    private fun curvePointX(
+        t: Float, curveType: Int, k: Int, kf: Float, d: Float,
+        s: Float, lissPhase: Float, ringRadius: Float
+    ): Float = when (curveType) {
+        CURVE_EPITROCHOID -> s * ((k + 1) * cos(t) - d * cos((k + 1) * t))
+        CURVE_ROSE -> ringRadius * cos(kf * t) * cos(t)
+        CURVE_LISSAJOUS -> s * sin(kf * t + lissPhase)
+        else -> s * (kf * cos(t) + d * cos(kf * t)) // HYPOTROCHOID
+    }
+
+    private fun curvePointY(
+        t: Float, curveType: Int, k: Int, kf: Float, d: Float,
+        s: Float, lissPhase: Float, ringRadius: Float
+    ): Float = when (curveType) {
+        CURVE_EPITROCHOID -> s * ((k + 1) * sin(t) - d * sin((k + 1) * t))
+        CURVE_ROSE -> ringRadius * cos(kf * t) * sin(t)
+        CURVE_LISSAJOUS -> s * sin((kf + 1f) * t)
+        else -> s * (kf * sin(t) - d * sin(kf * t)) // HYPOTROCHOID
+    }
+
+    private fun drawGradientSweepInline(
+        canvas: Canvas, paint: Paint, path: Path,
+        colors: List<Int>, alphaInt: Int,
+        steps: Int, invSteps: Float, linePhase: Float,
+        k: Int, kf: Float, curveType: Int, d: Float, curveScale: Float,
+        lissPhase: Float, ringRadius: Float,
+        useWave: Boolean, waveFreq: Int, waveFactor: Float,
         cxc: Float, cyc: Float
     ) {
         val segLen = (steps + 59) / 60
@@ -190,63 +271,27 @@ class PlotterGuillocheGenerator : Generator {
 
             paint.color = Color.argb(alphaInt, cr, cg, cb)
 
-            val path = Path()
+            path.reset()
             for (step in segStart..segEnd) {
-                val t01 = step.toFloat() / steps
-                val (px, py) = curvePoint(t01, linePhase, k, ecc, ringRadius, waveMod, curveType)
-                if (step == segStart) path.moveTo(cxc + px, cyc + py)
-                else path.lineTo(cxc + px, cyc + py)
+                val t = step * invSteps * TWO_PI + linePhase
+                val px = curvePointX(t, curveType, k, kf, d, curveScale, lissPhase, ringRadius)
+                val py = curvePointY(t, curveType, k, kf, d, curveScale, lissPhase, ringRadius)
+                val wx: Float
+                val wy: Float
+                if (useWave) {
+                    val wave = 1f + waveFactor * sin(waveFreq * t)
+                    wx = px * wave
+                    wy = py * wave
+                } else {
+                    wx = px
+                    wy = py
+                }
+                if (step == segStart) path.moveTo(cxc + wx, cyc + wy)
+                else path.lineTo(cxc + wx, cyc + wy)
             }
             canvas.drawPath(path, paint)
             segStart += segLen
         }
-    }
-
-    private fun curvePoint(
-        t01: Float, phase: Float, k: Int, ecc: Float,
-        ringRadius: Float, waveMod: Float, curveType: String
-    ): Pair<Float, Float> {
-        val t = t01 * 2f * PI.toFloat() + phase
-        val d = k * ecc
-        var x: Float
-        var y: Float
-
-        when (curveType) {
-            "epitrochoid" -> {
-                val kp1 = k + 1
-                val maxRad = kp1 + d
-                val s = ringRadius / maxRad
-                x = s * (kp1 * cos(t) - d * cos(kp1 * t))
-                y = s * (kp1 * sin(t) - d * sin(kp1 * t))
-            }
-            "rose" -> {
-                val r = cos(k * t)
-                x = ringRadius * r * cos(t)
-                y = ringRadius * r * sin(t)
-            }
-            "lissajous" -> {
-                val lissPhase = ecc * PI.toFloat()
-                x = ringRadius * sin(k * t + lissPhase)
-                y = ringRadius * sin((k + 1) * t)
-            }
-            else -> {
-                // hypotrochoid (default)
-                val maxRad = k + d
-                val s = ringRadius / maxRad
-                x = s * (k * cos(t) + d * cos(k * t))
-                y = s * (k * sin(t) - d * sin(k * t))
-            }
-        }
-
-        // Wave modulation: sinusoidal breathing on the radius
-        if (waveMod > 0f) {
-            val waveFreq = k * 3
-            val wave = 1f + waveMod * 0.3f * sin(waveFreq * t)
-            x *= wave
-            y *= wave
-        }
-
-        return Pair(x, y)
     }
 
     override fun estimateCost(params: Map<String, Any>, quality: Quality): Float {
