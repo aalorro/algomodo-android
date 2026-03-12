@@ -30,7 +30,7 @@ data class ExportUiState(
     val gifDuration: Int = 5,
     val gifResolution: Int = 600,
     val gifBoomerang: Boolean = false,
-    val gifEndless: Boolean = false,
+    val gifEndless: Boolean = true,
     val videoDuration: Int = 15,
     val lastExportUri: Uri? = null,
     val error: String? = null
