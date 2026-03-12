@@ -14,8 +14,12 @@ import com.artmondo.algomodo.generators.Quality
 import com.artmondo.algomodo.rendering.SvgBuilder
 import com.artmondo.algomodo.rendering.SvgPath
 import kotlin.math.PI
+import kotlin.math.ceil
 import kotlin.math.cos
+import kotlin.math.floor
+import kotlin.math.max
 import kotlin.math.min
+import kotlin.math.pow
 import kotlin.math.sin
 import kotlin.math.sqrt
 
@@ -23,7 +27,8 @@ import kotlin.math.sqrt
  * Halftone dots pattern with SVG vector support.
  *
  * Dots are laid out on a rotated grid and sized according to a simplex noise
- * luminance field. Supports circle, square, and diamond dot shapes.
+ * luminance field. Supports circle, square, diamond, and line dot shapes.
+ * Grid types include square, hex (offset rows), and diamond (45-degree rotated).
  */
 class PlotterHalftoneDotsGenerator : Generator {
 
@@ -35,7 +40,7 @@ class PlotterHalftoneDotsGenerator : Generator {
     override val algorithmNotes =
         "A regular grid (optionally rotated) covers the canvas. At each grid point, " +
         "simplex noise determines a 'luminance' value that scales the dot radius. " +
-        "Dot shapes include circles, squares, and diamonds. The generator also produces " +
+        "Dot shapes include circles, squares, diamonds, and lines. The generator also produces " +
         "SVG output for pen-plotter compatibility."
     override val supportsVector = true
     override val supportsAnimation = true
@@ -77,69 +82,171 @@ class PlotterHalftoneDotsGenerator : Generator {
     ) {
         val w = bitmap.width.toFloat()
         val h = bitmap.height.toFloat()
-        val gridSize = (params["gridSpacing"] as? Number)?.toFloat() ?: 22f
-        val maxDotSize = (params["maxRadius"] as? Number)?.toFloat() ?: 10f
-        val angleDeg = (params["gridAngle"] as? Number)?.toFloat() ?: 0f
-        val style = (params["dotShape"] as? String) ?: "circle"
 
+        // Read all parameters
+        val spacing = max(4f, (params["gridSpacing"] as? Number)?.toFloat() ?: 22f)
+        val maxR = min(spacing * 0.5f, (params["maxRadius"] as? Number)?.toFloat() ?: 10f)
+        val dScale = (params["densityScale"] as? Number)?.toFloat() ?: 2.5f
+        val dContrast = (params["densityContrast"] as? Number)?.toFloat() ?: 2.0f
+        val colorMode = (params["colorMode"] as? String) ?: "palette-density"
+        val gridType = (params["gridType"] as? String) ?: "square"
+        val gridAngle = ((params["gridAngle"] as? Number)?.toFloat() ?: 0f) * PI.toFloat() / 180f
+        val dotShape = (params["dotShape"] as? String) ?: "circle"
         val animSpeed = (params["animSpeed"] as? Number)?.toFloat() ?: 0f
-        val timeOff = time * animSpeed
+        val background = (params["background"] as? String) ?: "cream"
+
+        // Background color
+        val bgColor = when (background) {
+            "white" -> Color.rgb(248, 248, 245)
+            "cream" -> Color.rgb(242, 234, 216)
+            "dark" -> Color.rgb(14, 14, 14)
+            else -> Color.rgb(242, 234, 216)
+        }
+        val isDark = background == "dark"
+
+        canvas.drawColor(bgColor)
 
         val noise = SimplexNoise(seed)
         val paletteColors = palette.colorInts()
 
-        canvas.drawColor(Color.BLACK)
-        val paint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
-            this.style = Paint.Style.FILL
+        // Time-based density field offset
+        val timeOff = time * animSpeed * 0.5f
+
+        // Density function matching web: centered FBM + contrast exponent
+        val densityFn = { x: Float, y: Float ->
+            val n = noise.fbm(
+                (x / w - 0.5f) * dScale + 5f + timeOff,
+                (y / h - 0.5f) * dScale + 5f + timeOff * 0.7f,
+                4, 2f, 0.5f
+            )
+            max(0f, n * 0.5f + 0.5f).pow(dContrast)
         }
 
-        val angleRad = angleDeg * PI.toFloat() / 180f
-        val cosA = cos(angleRad)
-        val sinA = sin(angleRad)
-        val diagonal = sqrt(w * w + h * h)
-        val halfDiag = diagonal / 2f
-        val cx = w / 2f
-        val cy = h / 2f
+        val paint = Paint(Paint.ANTI_ALIAS_FLAG)
 
-        var gy = -halfDiag
-        while (gy <= halfDiag) {
-            var gx = -halfDiag
-            while (gx <= halfDiag) {
-                // Rotate grid point
-                val px = cx + gx * cosA - gy * sinA
-                val py = cy + gx * sinA + gy * cosA
+        // Grid rotation
+        val cosA = cos(gridAngle)
+        val sinA = sin(gridAngle)
+        val hcx = w / 2f
+        val hcy = h / 2f
 
-                if (px < -maxDotSize || px > w + maxDotSize || py < -maxDotSize || py > h + maxDotSize) {
-                    gx += gridSize
-                    continue
-                }
+        // Expand bounds to cover canvas after rotation
+        val diag = sqrt(w * w + h * h)
+        val margin = spacing
+        val startX = -diag / 2f - margin
+        val startY = -diag / 2f - margin
+        val endX = diag / 2f + margin
+        val endY = diag / 2f + margin
 
-                // Noise-based size
-                val nv = (noise.fbm(px / w * 4f + timeOff, py / h * 4f, 3) + 1f) * 0.5f
-                val dotR = maxDotSize * nv * 0.5f
+        val cols = ceil((endX - startX) / spacing).toInt() + 1
+        val rows = ceil((endY - startY) / spacing).toInt() + 1
 
-                if (dotR > 0.3f) {
-                    val t = nv
-                    paint.color = palette.lerpColor(t)
+        // Alpha for dots
+        val alpha = if (isDark) 224 else 217 // 0.88*255 ~ 224, 0.85*255 ~ 217
 
-                    when (style) {
-                        "square" -> canvas.drawRect(px - dotR, py - dotR, px + dotR, py + dotR, paint)
-                        "diamond" -> {
-                            val path = Path()
-                            path.moveTo(px, py - dotR)
-                            path.lineTo(px + dotR, py)
-                            path.lineTo(px, py + dotR)
-                            path.lineTo(px - dotR, py)
-                            path.close()
-                            canvas.drawPath(path, paint)
-                        }
-                        else -> canvas.drawCircle(px, py, dotR, paint)
+        for (row in 0 until rows) {
+            for (col in 0 until cols) {
+                var gx = startX + col * spacing
+                var gy = startY + row * spacing
+
+                // Grid type transforms
+                when (gridType) {
+                    "hex" -> {
+                        if (row % 2 == 1) gx += spacing * 0.5f
+                        gy *= 0.866f // sin(60 deg) vertical compression
+                    }
+                    "diamond" -> {
+                        val dx = gx
+                        val dy = gy
+                        gx = (dx - dy) * 0.7071f
+                        gy = (dx + dy) * 0.7071f
                     }
                 }
 
-                gx += gridSize
+                // Apply user grid angle rotation
+                val rx = gx * cosA - gy * sinA + hcx
+                val ry = gx * sinA + gy * cosA + hcy
+
+                // Skip dots outside canvas
+                if (rx < -maxR || rx > w + maxR || ry < -maxR || ry > h + maxR) continue
+
+                var density = densityFn(rx, ry)
+                if (colorMode == "invert") density = 1f - density
+                val r = density * maxR
+                if (r < 0.3f) continue
+
+                // Determine color based on colorMode
+                val cr: Int
+                val cg: Int
+                val cb: Int
+                when (colorMode) {
+                    "monochrome" -> {
+                        if (isDark) {
+                            cr = 220; cg = 220; cb = 220
+                        } else {
+                            cr = 30; cg = 30; cb = 30
+                        }
+                    }
+                    "palette-position" -> {
+                        val t = (rx / w) * 0.6f + (ry / h) * 0.4f
+                        val ci = min(
+                            floor(max(0f, t) * paletteColors.size).toInt(),
+                            paletteColors.size - 1
+                        )
+                        val c = paletteColors[ci]
+                        cr = Color.red(c)
+                        cg = Color.green(c)
+                        cb = Color.blue(c)
+                    }
+                    else -> {
+                        // palette-density and invert: interpolate by raw density
+                        val rawDensity = densityFn(rx, ry)
+                        val ci = rawDensity * (paletteColors.size - 1)
+                        val i0 = floor(ci).toInt()
+                        val i1 = min(paletteColors.size - 1, i0 + 1)
+                        val f = ci - i0
+                        val c0 = paletteColors[i0.coerceIn(0, paletteColors.size - 1)]
+                        val c1 = paletteColors[i1]
+                        cr = (Color.red(c0) + (Color.red(c1) - Color.red(c0)) * f).toInt()
+                        cg = (Color.green(c0) + (Color.green(c1) - Color.green(c0)) * f).toInt()
+                        cb = (Color.blue(c0) + (Color.blue(c1) - Color.blue(c0)) * f).toInt()
+                    }
+                }
+
+                val dotColor = Color.argb(alpha, cr, cg, cb)
+
+                when (dotShape) {
+                    "square" -> {
+                        paint.style = Paint.Style.FILL
+                        paint.color = dotColor
+                        canvas.drawRect(rx - r, ry - r, rx + r, ry + r, paint)
+                    }
+                    "diamond" -> {
+                        paint.style = Paint.Style.FILL
+                        paint.color = dotColor
+                        val path = Path()
+                        path.moveTo(rx, ry - r)
+                        path.lineTo(rx + r, ry)
+                        path.lineTo(rx, ry + r)
+                        path.lineTo(rx - r, ry)
+                        path.close()
+                        canvas.drawPath(path, paint)
+                    }
+                    "line" -> {
+                        // Vertical stroke whose thickness = density
+                        paint.style = Paint.Style.STROKE
+                        paint.color = dotColor
+                        paint.strokeWidth = max(0.5f, r * 0.8f)
+                        canvas.drawLine(rx, ry - r, rx, ry + r, paint)
+                    }
+                    else -> {
+                        // circle (default)
+                        paint.style = Paint.Style.FILL
+                        paint.color = dotColor
+                        canvas.drawCircle(rx, ry, r, paint)
+                    }
+                }
             }
-            gy += gridSize
         }
     }
 
@@ -148,60 +255,131 @@ class PlotterHalftoneDotsGenerator : Generator {
         seed: Int,
         palette: Palette
     ): List<SvgPath> {
-        val w = 1080
-        val h = 1080
-        val gridSize = (params["gridSpacing"] as? Number)?.toFloat() ?: 22f
-        val maxDotSize = (params["maxRadius"] as? Number)?.toFloat() ?: 10f
-        val angleDeg = (params["gridAngle"] as? Number)?.toFloat() ?: 0f
-        val style = (params["dotShape"] as? String) ?: "circle"
+        val viewW = 1080f
+        val viewH = 1080f
+
+        val spacing = max(4f, (params["gridSpacing"] as? Number)?.toFloat() ?: 22f)
+        val maxR = min(spacing * 0.5f, (params["maxRadius"] as? Number)?.toFloat() ?: 10f)
+        val dScale = (params["densityScale"] as? Number)?.toFloat() ?: 2.5f
+        val dContrast = (params["densityContrast"] as? Number)?.toFloat() ?: 2.0f
+        val colorMode = (params["colorMode"] as? String) ?: "palette-density"
+        val gridType = (params["gridType"] as? String) ?: "square"
+        val gridAngle = ((params["gridAngle"] as? Number)?.toFloat() ?: 0f) * PI.toFloat() / 180f
+        val dotShape = (params["dotShape"] as? String) ?: "circle"
 
         val noise = SimplexNoise(seed)
+        val paletteColors = palette.colorInts()
         val paths = mutableListOf<SvgPath>()
 
-        val angleRad = angleDeg * PI.toFloat() / 180f
-        val cosA = cos(angleRad)
-        val sinA = sin(angleRad)
-        val diagonal = sqrt(w.toFloat() * w + h.toFloat() * h)
-        val halfDiag = diagonal / 2f
-        val cx = w / 2f
-        val cy = h / 2f
+        val densityFn = { x: Float, y: Float ->
+            val n = noise.fbm(
+                (x / viewW - 0.5f) * dScale + 5f,
+                (y / viewH - 0.5f) * dScale + 5f,
+                4, 2f, 0.5f
+            )
+            max(0f, n * 0.5f + 0.5f).pow(dContrast)
+        }
 
-        var gy = -halfDiag
-        while (gy <= halfDiag) {
-            var gx = -halfDiag
-            while (gx <= halfDiag) {
-                val px = cx + gx * cosA - gy * sinA
-                val py = cy + gx * sinA + gy * cosA
+        val cosA = cos(gridAngle)
+        val sinA = sin(gridAngle)
+        val hcx = viewW / 2f
+        val hcy = viewH / 2f
 
-                if (px < -maxDotSize || px > w + maxDotSize || py < -maxDotSize || py > h + maxDotSize) {
-                    gx += gridSize
-                    continue
+        val diag = sqrt(viewW * viewW + viewH * viewH)
+        val margin = spacing
+        val startX = -diag / 2f - margin
+        val startY = -diag / 2f - margin
+        val endX = diag / 2f + margin
+        val endY = diag / 2f + margin
+
+        val cols = ceil((endX - startX) / spacing).toInt() + 1
+        val rows = ceil((endY - startY) / spacing).toInt() + 1
+
+        for (row in 0 until rows) {
+            for (col in 0 until cols) {
+                var gx = startX + col * spacing
+                var gy = startY + row * spacing
+
+                when (gridType) {
+                    "hex" -> {
+                        if (row % 2 == 1) gx += spacing * 0.5f
+                        gy *= 0.866f
+                    }
+                    "diamond" -> {
+                        val dx = gx
+                        val dy = gy
+                        gx = (dx - dy) * 0.7071f
+                        gy = (dx + dy) * 0.7071f
+                    }
                 }
 
-                val nv = (noise.fbm(px / w * 4f, py / h * 4f, 3) + 1f) * 0.5f
-                val dotR = maxDotSize * nv * 0.5f
+                val rx = gx * cosA - gy * sinA + hcx
+                val ry = gx * sinA + gy * cosA + hcy
 
-                if (dotR > 0.3f) {
-                    val colorInt = palette.lerpColor(nv)
-                    val hex = String.format("#%06X", 0xFFFFFF and colorInt)
+                if (rx < -maxR || rx > viewW + maxR || ry < -maxR || ry > viewH + maxR) continue
 
-                    val d = when (style) {
-                        "square" -> SvgBuilder.rect(px - dotR, py - dotR, dotR * 2, dotR * 2)
-                        "diamond" -> SvgBuilder.polygon(listOf(
-                            px to (py - dotR),
-                            (px + dotR) to py,
-                            px to (py + dotR),
-                            (px - dotR) to py
-                        ))
-                        else -> SvgBuilder.circle(px, py, dotR)
+                var density = densityFn(rx, ry)
+                if (colorMode == "invert") density = 1f - density
+                val r = density * maxR
+                if (r < 0.3f) continue
+
+                val cr: Int
+                val cg: Int
+                val cb: Int
+                when (colorMode) {
+                    "monochrome" -> {
+                        cr = 30; cg = 30; cb = 30
                     }
+                    "palette-position" -> {
+                        val t = (rx / viewW) * 0.6f + (ry / viewH) * 0.4f
+                        val ci = min(
+                            floor(max(0f, t) * paletteColors.size).toInt(),
+                            paletteColors.size - 1
+                        )
+                        val c = paletteColors[ci]
+                        cr = Color.red(c)
+                        cg = Color.green(c)
+                        cb = Color.blue(c)
+                    }
+                    else -> {
+                        val rawDensity = densityFn(rx, ry)
+                        val ci = rawDensity * (paletteColors.size - 1)
+                        val i0 = floor(ci).toInt()
+                        val i1 = min(paletteColors.size - 1, i0 + 1)
+                        val f = ci - i0
+                        val c0 = paletteColors[i0.coerceIn(0, paletteColors.size - 1)]
+                        val c1 = paletteColors[i1]
+                        cr = (Color.red(c0) + (Color.red(c1) - Color.red(c0)) * f).toInt()
+                        cg = (Color.green(c0) + (Color.green(c1) - Color.green(c0)) * f).toInt()
+                        cb = (Color.blue(c0) + (Color.blue(c1) - Color.blue(c0)) * f).toInt()
+                    }
+                }
 
+                val hex = String.format("#%02X%02X%02X", cr, cg, cb)
+
+                val d = when (dotShape) {
+                    "square" -> SvgBuilder.rect(rx - r, ry - r, r * 2, r * 2)
+                    "diamond" -> SvgBuilder.polygon(listOf(
+                        rx to (ry - r),
+                        (rx + r) to ry,
+                        rx to (ry + r),
+                        (rx - r) to ry
+                    ))
+                    "line" -> {
+                        // Vertical line as SVG path
+                        val lw = max(0.5f, r * 0.8f)
+                        "M ${String.format("%.2f", rx)} ${String.format("%.2f", ry - r)} L ${String.format("%.2f", rx)} ${String.format("%.2f", ry + r)}"
+                    }
+                    else -> SvgBuilder.circle(rx, ry, r)
+                }
+
+                if (dotShape == "line") {
+                    val lw = max(0.5f, r * 0.8f)
+                    paths.add(SvgPath(d = d, fill = "none", stroke = hex, strokeWidth = lw))
+                } else {
                     paths.add(SvgPath(d = d, fill = hex, strokeWidth = 0f))
                 }
-
-                gx += gridSize
             }
-            gy += gridSize
         }
 
         return paths
