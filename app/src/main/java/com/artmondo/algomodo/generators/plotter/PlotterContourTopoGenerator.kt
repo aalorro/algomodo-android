@@ -5,6 +5,7 @@ import android.graphics.Canvas
 import android.graphics.Color
 import android.graphics.Paint
 import android.graphics.Path
+import com.artmondo.algomodo.core.rng.SeededRNG
 import com.artmondo.algomodo.core.rng.SimplexNoise
 import com.artmondo.algomodo.data.palettes.Palette
 import com.artmondo.algomodo.generators.Generator
@@ -12,13 +13,17 @@ import com.artmondo.algomodo.generators.ParamGroup
 import com.artmondo.algomodo.generators.Parameter
 import com.artmondo.algomodo.generators.Quality
 import com.artmondo.algomodo.rendering.SvgPath
+import kotlin.math.abs
+import kotlin.math.ceil
+import kotlin.math.floor
+import kotlin.math.max
+import kotlin.math.min
 
 /**
  * Topographic map contour generator.
  *
- * Produces a filled topographic map with contour lines derived from simplex
- * noise. Optionally fills the bands between contours with palette colours and
- * labels contour elevations.
+ * Extracts elevation iso-contours from an FBM noise height field using
+ * Marching Squares, producing clean topographic map line art.
  */
 class PlotterContourTopoGenerator : Generator {
 
@@ -26,12 +31,11 @@ class PlotterContourTopoGenerator : Generator {
     override val family = "plotter"
     override val styleName = "Topographic Contours"
     override val definition =
-        "Filled topographic map with contour lines from a simplex noise elevation field."
+        "Extracts elevation iso-contours from an FBM noise height field using Marching Squares, producing clean topographic map line art"
     override val algorithmNotes =
-        "A simplex noise field generates an 'elevation' map. The canvas is first filled " +
-        "pixel-by-pixel with palette colours mapped to elevation bands. Contour lines are " +
-        "then traced at each level boundary using marching squares. Optional labels show " +
-        "the elevation value along each contour."
+        "A multi-octave SimplexNoise FBM field is sampled on a uniform grid. Marching Squares " +
+        "walks each cell to produce linearly-interpolated contour segments at each iso-level. " +
+        "Optional wobble displaces endpoints for a hand-drawn plotter aesthetic."
     override val supportsVector = false
     override val supportsAnimation = true
 
@@ -59,6 +63,55 @@ class PlotterContourTopoGenerator : Generator {
         "animSpeed" to 0.1f
     )
 
+    // Marching squares lookup: case index = TL*8|TR*4|BR*2|BL*1
+    // Each entry is a list of [edgeA, edgeB] pairs to connect.
+    // Edges: 0=top, 1=right, 2=bottom, 3=left
+    private val MS: Array<IntArray> = arrayOf(
+        intArrayOf(),                // 0000
+        intArrayOf(3, 2),            // 0001 BL
+        intArrayOf(2, 1),            // 0010 BR
+        intArrayOf(3, 1),            // 0011 BL+BR
+        intArrayOf(0, 1),            // 0100 TR
+        intArrayOf(0, 1, 3, 2),      // 0101 TR+BL saddle
+        intArrayOf(0, 2),            // 0110 TR+BR
+        intArrayOf(3, 0),            // 0111 (not TL)
+        intArrayOf(3, 0),            // 1000 TL
+        intArrayOf(0, 2),            // 1001 TL+BL
+        intArrayOf(3, 0, 2, 1),      // 1010 TL+BR saddle
+        intArrayOf(0, 1),            // 1011 (not TR)
+        intArrayOf(3, 1),            // 1100 TL+TR
+        intArrayOf(2, 1),            // 1101 (not BR)
+        intArrayOf(3, 2),            // 1110 (not BL)
+        intArrayOf()                 // 1111
+    )
+
+    /** Background color map matching the web version. */
+    private val BG = mapOf(
+        "white" to Color.rgb(248, 248, 245),
+        "cream" to Color.rgb(242, 234, 216),
+        "dark"  to Color.rgb(14, 14, 14)
+    )
+
+    /** Linearly interpolated position along a cell edge. */
+    private fun edgePt(
+        cx: Float, cy: Float, cs: Float,
+        edge: Int,
+        vTL: Float, vTR: Float, vBR: Float, vBL: Float,
+        thr: Float,
+        result: FloatArray // reusable [x, y] output
+    ) {
+        fun t(a: Float, b: Float): Float {
+            return if (abs(b - a) < 1e-9f) 0.5f else ((thr - a) / (b - a)).coerceIn(0f, 1f)
+        }
+        when (edge) {
+            0 -> { result[0] = cx + t(vTL, vTR) * cs; result[1] = cy }
+            1 -> { result[0] = cx + cs;               result[1] = cy + t(vTR, vBR) * cs }
+            2 -> { result[0] = cx + t(vBL, vBR) * cs; result[1] = cy + cs }
+            3 -> { result[0] = cx;                     result[1] = cy + t(vTL, vBL) * cs }
+            else -> { result[0] = cx + cs / 2f; result[1] = cy + cs / 2f }
+        }
+    }
+
     override fun renderCanvas(
         canvas: Canvas,
         bitmap: Bitmap,
@@ -70,135 +123,150 @@ class PlotterContourTopoGenerator : Generator {
     ) {
         val w = bitmap.width
         val h = bitmap.height
-        val levels = (params["contourCount"] as? Number)?.toInt() ?: 14
-        val noiseScale = (params["noiseScale"] as? Number)?.toFloat() ?: 2.5f
-        val fillBetween = true
-        val labelContours = false
 
+        // Read parameters
+        val background = params["background"] as? String ?: "cream"
+        val colorMode = params["colorMode"] as? String ?: "elevation-palette"
+        val nLevels = max(2, (params["contourCount"] as? Number)?.toInt() ?: 14)
+        val scale = (params["noiseScale"] as? Number)?.toFloat() ?: 2.5f
+        val oct = (params["octaves"] as? Number)?.toInt() ?: 5
+        val cs = max(2, (params["cellSize"] as? Number)?.toInt() ?: 4)
+        val lineWidth = (params["lineWidth"] as? Number)?.toFloat() ?: 0.7f
+        val wobble = (params["wobble"] as? Number)?.toFloat() ?: 0.4f
         val animSpeed = (params["animSpeed"] as? Number)?.toFloat() ?: 0.1f
-        val timeOff = time * animSpeed
+        val isDark = background == "dark"
+        val tOff = time * animSpeed * 0.25f
+
+        // Fill background
+        val bgColor = BG[background] ?: BG["cream"]!!
+        canvas.drawColor(bgColor)
 
         val noise = SimplexNoise(seed)
+        val rng = SeededRNG(seed)
+
+        val cols = (ceil(w.toFloat() / cs).toInt()) + 1
+        val rows = (ceil(h.toFloat() / cs).toInt()) + 1
+
+        // Sample height field (centered + time-translated for animation)
+        val field = Array(rows) { FloatArray(cols) }
+        for (r in 0 until rows) {
+            for (c in 0 until cols) {
+                field[r][c] = noise.fbm(
+                    (c.toFloat() / (cols - 1) - 0.5f) * scale + tOff,
+                    (r.toFloat() / (rows - 1) - 0.5f) * scale + tOff * 0.6f,
+                    oct, 2f, 0.5f
+                )
+            }
+        }
+
+        // Global min/max for normalisation
+        var fMin = Float.MAX_VALUE
+        var fMax = -Float.MAX_VALUE
+        for (r in 0 until rows) {
+            for (c in 0 until cols) {
+                if (field[r][c] < fMin) fMin = field[r][c]
+                if (field[r][c] > fMax) fMax = field[r][c]
+            }
+        }
+        val fRange = max(fMax - fMin, 1e-6f)
+
+        // Extract palette colors as RGB triples for manual interpolation
         val paletteColors = palette.colorInts()
-
-        // Build elevation field
-        val step = when (quality) {
-            Quality.DRAFT -> 2
-            Quality.BALANCED -> 1
-            Quality.ULTRA -> 1
-        }
-        val cols = w / step
-        val rows = h / step
-        val field = FloatArray(cols * rows)
-
-        for (iy in 0 until rows) {
-            for (ix in 0 until cols) {
-                val nx = ix.toFloat() / cols * noiseScale
-                val ny = iy.toFloat() / rows * noiseScale
-                field[iy * cols + ix] = (noise.fbm(nx + timeOff, ny, 5) + 1f) * 0.5f
-            }
+        val colorTriples = paletteColors.map { c ->
+            intArrayOf(Color.red(c), Color.green(c), Color.blue(c))
         }
 
-        // Fill between contours
-        if (fillBetween) {
-            val pixels = IntArray(w * h)
-            for (py in 0 until h) {
-                val fy = (py / step).coerceAtMost(rows - 1)
-                for (px in 0 until w) {
-                    val fx = (px / step).coerceAtMost(cols - 1)
-                    val elev = field[fy * cols + fx]
-                    val band = (elev * levels).toInt().coerceIn(0, levels - 1)
-                    val t = band.toFloat() / (levels - 1).coerceAtLeast(1)
-                    pixels[py * w + px] = palette.lerpColor(t)
-                }
-            }
-            bitmap.setPixels(pixels, 0, w, 0, 0, w, h)
-            canvas.drawBitmap(bitmap, 0f, 0f, null)
-        } else {
-            canvas.drawColor(Color.BLACK)
-        }
-
-        // Draw contour lines
-        val linePaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+        val paint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
             style = Paint.Style.STROKE
-            strokeWidth = 1.5f
-            color = if (fillBetween) Color.argb(180, 0, 0, 0) else Color.WHITE
+            strokeWidth = lineWidth
             strokeCap = Paint.Cap.ROUND
         }
 
-        val textPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
-            textSize = 10f
-            color = if (fillBetween) Color.argb(200, 0, 0, 0) else Color.WHITE
-        }
+        // Reusable arrays for edge point computation
+        val ptA = FloatArray(2)
+        val ptB = FloatArray(2)
 
-        for (level in 0 until levels) {
-            val threshold = (level + 1).toFloat() / (levels + 1)
-            if (!fillBetween) {
-                linePaint.color = paletteColors[level % paletteColors.size]
+        for (lvl in 0 until nLevels) {
+            val t = (lvl + 0.5f) / nLevels // 0->1 across all levels
+            val threshold = fMin + t * fRange
+
+            // Compute line color for this level
+            val r: Int
+            val g: Int
+            val b: Int
+            when (colorMode) {
+                "monochrome" -> {
+                    val v = if (isDark) (220 - lvl * 8).coerceIn(0, 255)
+                            else (40 + lvl * 8).coerceIn(0, 255)
+                    r = v; g = v; b = v
+                }
+                "alternating" -> {
+                    val col = colorTriples[if (lvl % 2 == 0) 0 else colorTriples.size - 1]
+                    r = col[0]; g = col[1]; b = col[2]
+                }
+                else -> {
+                    // elevation-palette: interpolate across palette
+                    val ci = t * (colorTriples.size - 1)
+                    val i0 = floor(ci).toInt()
+                    val i1 = min(colorTriples.size - 1, i0 + 1)
+                    val f = ci - i0
+                    r = (colorTriples[i0][0] + (colorTriples[i1][0] - colorTriples[i0][0]) * f).toInt().coerceIn(0, 255)
+                    g = (colorTriples[i0][1] + (colorTriples[i1][1] - colorTriples[i0][1]) * f).toInt().coerceIn(0, 255)
+                    b = (colorTriples[i0][2] + (colorTriples[i1][2] - colorTriples[i0][2]) * f).toInt().coerceIn(0, 255)
+                }
             }
 
+            val alpha = if (isDark) 217 else 204 // ~0.85 and ~0.8
+            paint.color = Color.argb(alpha, r, g, b)
+
             val path = Path()
-            var labelPlaced = false
 
-            for (iy in 0 until rows - 1) {
-                for (ix in 0 until cols - 1) {
-                    val v0 = field[iy * cols + ix]
-                    val v1 = field[iy * cols + ix + 1]
-                    val v2 = field[(iy + 1) * cols + ix + 1]
-                    val v3 = field[(iy + 1) * cols + ix]
+            for (row in 0 until rows - 1) {
+                for (col in 0 until cols - 1) {
+                    val vTL = field[row][col]
+                    val vTR = field[row][col + 1]
+                    val vBR = field[row + 1][col + 1]
+                    val vBL = field[row + 1][col]
 
-                    val b0 = if (v0 >= threshold) 1 else 0
-                    val b1 = if (v1 >= threshold) 1 else 0
-                    val b2 = if (v2 >= threshold) 1 else 0
-                    val b3 = if (v3 >= threshold) 1 else 0
-                    val caseIndex = b0 or (b1 shl 1) or (b2 shl 2) or (b3 shl 3)
-                    if (caseIndex == 0 || caseIndex == 15) continue
+                    val caseIdx =
+                        (if (vTL >= threshold) 8 else 0) or
+                        (if (vTR >= threshold) 4 else 0) or
+                        (if (vBR >= threshold) 2 else 0) or
+                        (if (vBL >= threshold) 1 else 0)
 
-                    val x0 = (ix * step).toFloat()
-                    val y0 = (iy * step).toFloat()
-                    val x1 = ((ix + 1) * step).toFloat()
-                    val y1 = ((iy + 1) * step).toFloat()
+                    val segments = MS[caseIdx]
+                    if (segments.isEmpty()) continue
 
-                    fun lerp(va: Float, vb: Float): Float {
-                        return if (va != vb) ((threshold - va) / (vb - va)).coerceIn(0f, 1f) else 0.5f
-                    }
+                    val cx = (col * cs).toFloat()
+                    val cy = (row * cs).toFloat()
 
-                    val topX = x0 + (x1 - x0) * lerp(v0, v1)
-                    val rightY = y0 + (y1 - y0) * lerp(v1, v2)
-                    val bottomX = x0 + (x1 - x0) * lerp(v3, v2)
-                    val leftY = y0 + (y1 - y0) * lerp(v0, v3)
+                    // Iterate pairs: segments stored as [eA, eB, eA, eB, ...]
+                    var i = 0
+                    while (i < segments.size) {
+                        val eA = segments[i]
+                        val eB = segments[i + 1]
+                        edgePt(cx, cy, cs.toFloat(), eA, vTL, vTR, vBR, vBL, threshold, ptA)
+                        edgePt(cx, cy, cs.toFloat(), eB, vTL, vTR, vBR, vBL, threshold, ptB)
 
-                    fun seg(ax: Float, ay: Float, bx: Float, by: Float) {
-                        path.moveTo(ax, ay)
-                        path.lineTo(bx, by)
+                        // Wobble: hand-drawn jitter on endpoints
+                        val wx = (rng.random() - 0.5f) * wobble
+                        val wy = (rng.random() - 0.5f) * wobble
 
-                        // Place label near the middle of the first segment
-                        if (labelContours && !labelPlaced && ix > cols / 4 && ix < cols * 3 / 4) {
-                            val labelText = "${(threshold * 100).toInt()}m"
-                            canvas.drawText(labelText, (ax + bx) / 2f, (ay + by) / 2f - 3f, textPaint)
-                            labelPlaced = true
-                        }
-                    }
+                        path.moveTo(ptA[0] + wx, ptA[1] + wy)
+                        path.lineTo(ptB[0] + wx, ptB[1] + wy)
 
-                    when (caseIndex) {
-                        1, 14 -> seg(x0, leftY, topX, y0)
-                        2, 13 -> seg(topX, y0, x1, rightY)
-                        3, 12 -> seg(x0, leftY, x1, rightY)
-                        4, 11 -> seg(x1, rightY, bottomX, y1)
-                        5 -> { seg(x0, leftY, topX, y0); seg(x1, rightY, bottomX, y1) }
-                        6, 9 -> seg(topX, y0, bottomX, y1)
-                        7, 8 -> seg(x0, leftY, bottomX, y1)
-                        10 -> { seg(topX, y0, x1, rightY); seg(x0, leftY, bottomX, y1) }
+                        i += 2
                     }
                 }
             }
 
-            canvas.drawPath(path, linePaint)
+            canvas.drawPath(path, paint)
         }
     }
 
     override fun estimateCost(params: Map<String, Any>, quality: Quality): Float {
+        val cs = (params["cellSize"] as? Number)?.toInt() ?: 4
         val levels = (params["contourCount"] as? Number)?.toInt() ?: 14
-        return (levels / 30f).coerceIn(0.3f, 1f)
+        return (levels * (1080f / cs) * (1080f / cs) * 0.002f).coerceIn(0.3f, 1f)
     }
 }
