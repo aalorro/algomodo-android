@@ -192,10 +192,15 @@ class PlotterContourLinesGenerator : Generator {
             }
         }
 
+        // ── Background ─────────────────────────────────────────────────────
+        val bgColor = Color.BLACK // base background behind alpha-blended fill
+        val bgR = Color.red(bgColor)
+        val bgG = Color.green(bgColor)
+        val bgB = Color.blue(bgColor)
+
         // ── Filled bands via pixel loop ─────────────────────────────────────
         val pixels = IntArray(w * h)
         val bandSize = 1f / levels
-        val fillAlpha = (fillOp * 255f).toInt().coerceIn(0, 255)
 
         // Bilinear sample of field at pixel position
         fun fieldAt(px: Int, py: Int): Float {
@@ -215,29 +220,27 @@ class PlotterContourLinesGenerator : Generator {
                    v01 * (1 - tf) * tr + v11 * tf * tr
         }
 
+        // Pre-blend fill color at fillOpacity over the black background,
+        // producing fully opaque pixels. This avoids the canvas.drawColor()
+        // overwrite bug (canvas is backed by the same bitmap).
         for (py in 0 until h) {
             for (px in 0 until w) {
                 val v = fieldAt(px, py)
                 val band = (v / bandSize).toInt().coerceIn(0, levels - 1)
                 val tPalette = if (levels > 1) band.toFloat() / (levels - 1) else 0.5f
                 val baseColor = palette.lerpColor(tPalette)
-                val r = Color.red(baseColor)
-                val g = Color.green(baseColor)
-                val b = Color.blue(baseColor)
-                pixels[py * w + px] = Color.argb(fillAlpha, r, g, b)
+                val fr = Color.red(baseColor)
+                val fg = Color.green(baseColor)
+                val fb = Color.blue(baseColor)
+                // Alpha-blend fill over background
+                val outR = (fr * fillOp + bgR * (1f - fillOp)).toInt()
+                val outG = (fg * fillOp + bgG * (1f - fillOp)).toInt()
+                val outB = (fb * fillOp + bgB * (1f - fillOp)).toInt()
+                pixels[py * w + px] = Color.rgb(outR, outG, outB)
             }
         }
 
         bitmap.setPixels(pixels, 0, w, 0, 0, w, h)
-
-        // Draw background first, then composite fill on top
-        // Since we set pixels directly with alpha, we need the background behind them.
-        // Strategy: draw a black background on canvas, then draw the bitmap on top.
-        canvas.drawColor(Color.BLACK)
-        val bitmapPaint = Paint().apply {
-            isAntiAlias = true
-        }
-        canvas.drawBitmap(bitmap, 0f, 0f, bitmapPaint)
 
         // ── Contour lines via marching squares ──────────────────────────────
         if (showLines) {
