@@ -9,6 +9,7 @@ import androidx.compose.animation.core.RepeatMode
 import androidx.compose.animation.core.animateFloat
 import androidx.compose.animation.core.infiniteRepeatable
 import androidx.compose.animation.core.rememberInfiniteTransition
+import androidx.compose.animation.core.animateFloatAsState
 import androidx.compose.animation.core.tween
 import androidx.compose.foundation.Canvas as ComposeCanvas
 import androidx.compose.foundation.Image
@@ -125,6 +126,14 @@ private fun StaticCanvas(
         onDispose { renderedBitmap?.recycle() }
     }
 
+    // Instant transition: clear stale bitmap when generator changes (surprise me)
+    var prevGenId by remember { mutableStateOf(generator.id) }
+    if (generator.id != prevGenId) {
+        prevGenId = generator.id
+        renderedBitmap?.recycle()
+        renderedBitmap = null
+    }
+
     LaunchedEffect(generator.id, params, seed, palette, quality, postFX, staticTime, renderTrigger) {
         val myGeneration = renderGeneration.incrementAndGet()
         isRendering = true
@@ -197,7 +206,40 @@ private fun StaticCanvas(
             )
         }
 
-        if (isRendering) {
+        // Milestone progress bar for long renders (> 1s)
+        var milestoneProgress by remember { mutableFloatStateOf(0f) }
+        var showMilestoneBar by remember { mutableStateOf(false) }
+
+        LaunchedEffect(isRendering) {
+            if (isRendering) {
+                showMilestoneBar = false
+                milestoneProgress = 0f
+                kotlinx.coroutines.delay(1000)
+                if (!isRendering) return@LaunchedEffect
+                showMilestoneBar = true
+                milestoneProgress = 0.25f
+                kotlinx.coroutines.delay(1500)
+                if (!isRendering) { showMilestoneBar = false; return@LaunchedEffect }
+                milestoneProgress = 0.60f
+                kotlinx.coroutines.delay(1500)
+                if (!isRendering) { showMilestoneBar = false; return@LaunchedEffect }
+                milestoneProgress = 0.90f
+            } else {
+                showMilestoneBar = false
+            }
+        }
+
+        if (showMilestoneBar) {
+            MilestoneProgressBar(
+                progress = milestoneProgress,
+                modifier = Modifier
+                    .align(Alignment.BottomCenter)
+                    .padding(bottom = 25.dp)
+                    .fillMaxWidth()
+                    .padding(horizontal = 25.dp)
+                    .height(3.dp)
+            )
+        } else if (isRendering) {
             NeonProgressBar(
                 modifier = Modifier
                     .align(Alignment.BottomCenter)
@@ -233,7 +275,13 @@ private fun AnimationCanvas(
             @Volatile var currentQuality: Quality = quality
             @Volatile var currentShowFps: Boolean = showFps
             @Volatile var resetRequested: Boolean = false
+            @Volatile var clearRequested: Boolean = false
         }
+    }
+
+    // Instant transition: flash surface black when generator changes
+    LaunchedEffect(generator.id) {
+        stateHolder.clearRequested = true
     }
 
     // Update the holder whenever compose state changes
@@ -293,6 +341,17 @@ private fun AnimationCanvas(
                             if (stateHolder.resetRequested) {
                                 stateHolder.resetRequested = false
                                 startTime = System.nanoTime()
+                            }
+
+                            // Instant transition: flash black when generator changes
+                            if (stateHolder.clearRequested) {
+                                stateHolder.clearRequested = false
+                                startTime = System.nanoTime()
+                                val c = holder.lockCanvas()
+                                if (c != null) {
+                                    c.drawColor(android.graphics.Color.BLACK)
+                                    holder.unlockCanvasAndPost(c)
+                                }
                             }
 
                             val frameStart = System.nanoTime()
@@ -394,14 +453,47 @@ private fun NeonProgressBar(modifier: Modifier = Modifier) {
     }
 }
 
+@Composable
+private fun MilestoneProgressBar(progress: Float, modifier: Modifier = Modifier) {
+    val neonGreen = Color(0xFF39FF14)
+    val glowGreen = Color(0x6639FF14)
+    val trackColor = Color(0x3339FF14)
+    val animatedProgress by animateFloatAsState(
+        targetValue = progress,
+        animationSpec = tween(400, easing = androidx.compose.animation.core.FastOutSlowInEasing),
+        label = "milestoneProgress"
+    )
+
+    ComposeCanvas(modifier = modifier) {
+        // Track background
+        drawRect(color = trackColor, size = size)
+        // Glow behind filled portion
+        val filledWidth = size.width * animatedProgress
+        drawRect(
+            color = glowGreen,
+            topLeft = Offset(-2f, -2f),
+            size = Size(filledWidth + 4f, size.height + 4f)
+        )
+        // Bright filled bar
+        drawRect(
+            color = neonGreen,
+            size = Size(filledWidth, size.height)
+        )
+    }
+}
+
 /** Spot-check whether a bitmap is nearly all-black by sampling pixels. */
 private fun isBitmapBlank(bitmap: Bitmap, size: Int): Boolean {
     val step = (size / 8).coerceAtLeast(1)
+    // Bulk read — avoids per-pixel JNI overhead of getPixel()
+    val pixels = IntArray(size * size)
+    bitmap.getPixels(pixels, 0, size, 0, 0, size, size)
     var totalBrightness = 0L
     var samples = 0
     for (y in step until size step step) {
+        val rowOff = y * size
         for (x in step until size step step) {
-            val px = bitmap.getPixel(x, y)
+            val px = pixels[rowOff + x]
             val r = (px shr 16) and 0xFF
             val g = (px shr 8) and 0xFF
             val b = px and 0xFF
@@ -410,7 +502,5 @@ private fun isBitmapBlank(bitmap: Bitmap, size: Int): Boolean {
         }
     }
     if (samples == 0) return true
-    // Average brightness per sample across R+G+B (max 765)
-    // Threshold: if average < 3 (~0.4% brightness), consider blank
     return (totalBrightness / samples) < 3
 }

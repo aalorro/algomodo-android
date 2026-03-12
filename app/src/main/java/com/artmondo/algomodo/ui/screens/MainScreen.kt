@@ -46,6 +46,13 @@ import androidx.compose.foundation.gestures.awaitEachGesture
 import androidx.compose.foundation.gestures.awaitFirstDown
 import androidx.compose.ui.input.pointer.pointerInput
 import kotlin.math.abs
+import androidx.compose.animation.core.LinearEasing
+import androidx.compose.animation.core.RepeatMode
+import androidx.compose.animation.core.animateFloat
+import androidx.compose.animation.core.infiniteRepeatable
+import androidx.compose.animation.core.rememberInfiniteTransition
+import androidx.compose.animation.core.tween
+import androidx.compose.ui.graphics.lerp
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
@@ -318,7 +325,7 @@ fun MainScreen(
             }
             CanvasButton(Icons.Filled.Casino, "Rand") { viewModel.randomize() }
             CanvasButton(Icons.Filled.Redo, "Redo", enabled = canRedo) { viewModel.redo() }
-            CanvasButton(Icons.Filled.AutoAwesome, "Surprise") { viewModel.surpriseMe() }
+            ShinyCanvasButton { viewModel.surpriseMe() }
             CanvasButton(Icons.Filled.Refresh, "Reload") { viewModel.reload() }
             CanvasButton(Icons.Filled.Clear, "Clear") { viewModel.clearCanvas() }
             CanvasButton(Icons.Filled.Save, "Save") {
@@ -600,6 +607,69 @@ fun MainScreen(
             shareFile(context, uri)
             exportViewModel.clearLastExport()
         }
+    }
+}
+
+@Composable
+private fun ShinyCanvasButton(onClick: () -> Unit) {
+    val infiniteTransition = rememberInfiniteTransition(label = "shine")
+    val shimmerProgress by infiniteTransition.animateFloat(
+        initialValue = 0f,
+        targetValue = 1f,
+        animationSpec = infiniteRepeatable(
+            animation = tween(2400, easing = LinearEasing),
+            repeatMode = RepeatMode.Restart
+        ),
+        label = "shimmer"
+    )
+
+    // Sweep a highlight through the icon tint
+    val gold = Color(0xFFFFD700)
+    val white = Color(0xFFFFFFFF)
+    val base = MaterialTheme.colorScheme.primary
+    val tint = when {
+        shimmerProgress < 0.3f -> {
+            val t = shimmerProgress / 0.3f
+            lerp(base, gold, t)
+        }
+        shimmerProgress < 0.5f -> {
+            val t = (shimmerProgress - 0.3f) / 0.2f
+            lerp(gold, white, t)
+        }
+        shimmerProgress < 0.7f -> {
+            val t = (shimmerProgress - 0.5f) / 0.2f
+            lerp(white, gold, t)
+        }
+        else -> {
+            val t = (shimmerProgress - 0.7f) / 0.3f
+            lerp(gold, base, t)
+        }
+    }
+
+    // Glow alpha pulses with the shimmer
+    val glowAlpha = if (shimmerProgress in 0.25f..0.75f)
+        ((1f - abs(shimmerProgress - 0.5f) * 4f).coerceIn(0f, 0.4f))
+    else 0f
+
+    Column(horizontalAlignment = Alignment.CenterHorizontally) {
+        IconButton(onClick = onClick, modifier = Modifier.size(44.dp)) {
+            Box(contentAlignment = Alignment.Center) {
+                // Glow halo behind icon
+                if (glowAlpha > 0f) {
+                    Icon(
+                        Icons.Filled.AutoAwesome, contentDescription = null,
+                        modifier = Modifier.size(36.dp),
+                        tint = gold.copy(alpha = glowAlpha)
+                    )
+                }
+                Icon(
+                    Icons.Filled.AutoAwesome, contentDescription = "Surprise",
+                    modifier = Modifier.size(28.dp),
+                    tint = tint
+                )
+            }
+        }
+        Text("Surprise", fontSize = 8.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
     }
 }
 
