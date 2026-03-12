@@ -40,6 +40,7 @@ import com.artmondo.algomodo.ui.components.*
 import com.artmondo.algomodo.ui.dialogs.*
 import com.artmondo.algomodo.viewmodel.ExportViewModel
 import com.artmondo.algomodo.viewmodel.MainViewModel
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import androidx.compose.foundation.gestures.awaitEachGesture
 import androidx.compose.foundation.gestures.awaitFirstDown
@@ -290,11 +291,28 @@ fun MainScreen(
             verticalAlignment = Alignment.CenterVertically
         ) {
             CanvasButton(Icons.Filled.Undo, "Undo", enabled = canUndo) { viewModel.undo() }
-            CanvasButton(
-                if (state.isAnimating) Icons.Filled.Pause else Icons.Filled.PlayArrow,
-                if (state.isAnimating) "Pause" else "Play",
-                enabled = state.generator?.supportsAnimation == true
-            ) { viewModel.toggleAnimation() }
+
+            // Play button with one-time tooltip
+            val playTooltipState = rememberTooltipState()
+            var playTooltipShown by remember { mutableStateOf(false) }
+            LaunchedEffect(Unit) {
+                if (!playTooltipShown) {
+                    delay(800)
+                    playTooltipShown = true
+                    playTooltipState.show()
+                }
+            }
+            TooltipBox(
+                positionProvider = TooltipDefaults.rememberPlainTooltipPositionProvider(),
+                tooltip = { PlainTooltip { Text("Press play to animate") } },
+                state = playTooltipState
+            ) {
+                CanvasButton(
+                    if (state.isAnimating) Icons.Filled.Pause else Icons.Filled.PlayArrow,
+                    if (state.isAnimating) "Pause" else "Play",
+                    enabled = state.generator?.supportsAnimation == true
+                ) { viewModel.toggleAnimation() }
+            }
             CanvasButton(Icons.Filled.Casino, "Rand") { viewModel.randomize() }
             CanvasButton(Icons.Filled.Redo, "Redo", enabled = canRedo) { viewModel.redo() }
             CanvasButton(Icons.Filled.AutoAwesome, "Surprise") { viewModel.surpriseMe() }
