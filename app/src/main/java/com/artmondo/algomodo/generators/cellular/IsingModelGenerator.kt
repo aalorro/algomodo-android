@@ -70,13 +70,7 @@ class IsingModelGenerator : Generator {
             if (rng.boolean()) 1 else -1
         }
 
-        // Precompute acceptance probabilities for Metropolis
-        // dE can be -8, -4, 0, 4, 8 for 2D Ising
         val beta = 1f / temperature
-        val acceptProb = FloatArray(17) // index = dE + 8
-        for (de in -8..8) {
-            acceptProb[de + 8] = if (de <= 0) 1f else exp(-beta * de).coerceAtMost(1f)
-        }
 
         // Track flip-age for flip-age display mode (step when each cell was last flipped)
         val flipAge = IntArray(totalCells) { -1 }
@@ -153,16 +147,19 @@ class IsingModelGenerator : Generator {
                         palette.lerpColor(mag.coerceIn(0f, 1f))
                     }
                     "flip-age" -> {
-                        // Recently flipped cells glow brightly
+                        // Color by how recently the cell was last flipped
                         if (flipAge[idx] < 0) {
                             Color.BLACK
                         } else {
-                            val recency = (flipAge[idx].toFloat() / sweeps.coerceAtLeast(1)).coerceIn(0f, 1f)
+                            // Use time-since-last-flip relative to a window, not total sweeps
+                            val window = (sweeps * 0.15f).toInt().coerceAtLeast(5)
+                            val timeSinceFlip = sweeps - flipAge[idx]
+                            val recency = (1f - timeSinceFlip.toFloat() / window).coerceIn(0f, 1f)
                             palette.lerpColor(recency)
                         }
                     }
                     else /* spin */ -> {
-                        if (spin[idx] == 1) Color.WHITE else Color.BLACK
+                        if (spin[idx] == 1) colorUp else colorDown
                     }
                 }
             }

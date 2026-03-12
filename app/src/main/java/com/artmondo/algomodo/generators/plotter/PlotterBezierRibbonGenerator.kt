@@ -161,7 +161,7 @@ class PlotterBezierRibbonGenerator : Generator {
 
         fun strandColor(isHoriz: Boolean, index: Int): Int {
             return when (colorMode) {
-                "monochrome" -> if (isDark) Color.rgb(220, 220, 220) else Color.rgb(30, 30, 30)
+                "monochrome" -> palette.lerpColor(0.5f)
                 "palette-pair" -> {
                     if (isHoriz) {
                         colors[index % halfLen]
