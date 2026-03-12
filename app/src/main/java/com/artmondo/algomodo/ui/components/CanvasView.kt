@@ -125,6 +125,14 @@ private fun StaticCanvas(
         onDispose { renderedBitmap?.recycle() }
     }
 
+    // Instant transition: clear stale bitmap when generator changes (surprise me)
+    var prevGenId by remember { mutableStateOf(generator.id) }
+    if (generator.id != prevGenId) {
+        prevGenId = generator.id
+        renderedBitmap?.recycle()
+        renderedBitmap = null
+    }
+
     LaunchedEffect(generator.id, params, seed, palette, quality, postFX, staticTime, renderTrigger) {
         val myGeneration = renderGeneration.incrementAndGet()
         isRendering = true
