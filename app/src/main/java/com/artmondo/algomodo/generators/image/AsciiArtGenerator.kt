@@ -73,6 +73,9 @@ class AsciiArtGenerator : Generator {
         val cellSize = (params["cellSize"] as? Number)?.toInt() ?: 8
         val charSet = (params["charSet"] as? String) ?: "standard"
         val colored = params["colored"] as? Boolean ?: true
+        val invertBrightness = params["invert"] as? Boolean ?: false
+        val contrast = (params["contrast"] as? Number)?.toFloat() ?: 1f
+        val background = (params["background"] as? String) ?: "black"
 
         val source = params["_sourceImage"] as? Bitmap
         if (source == null) {
@@ -88,7 +91,12 @@ class AsciiArtGenerator : Generator {
         val speed = (params["speed"] as? Number)?.toFloat() ?: 0f
         val rampShift = if (speed > 0f && time > 0f) (time * speed * 3f).toInt() % ramp.length else 0
 
-        canvas.drawColor(Color.BLACK)
+        val bgColor = when (background) {
+            "white" -> Color.WHITE
+            "source" -> Color.DKGRAY  // will be overwritten per-cell if needed
+            else -> Color.BLACK
+        }
+        canvas.drawColor(bgColor)
         val paint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
             typeface = Typeface.MONOSPACE
             textSize = cellSize.toFloat() * 1.0f
@@ -125,15 +133,36 @@ class AsciiArtGenerator : Generator {
                 val avgR = (rSum / count).toInt()
                 val avgG = (gSum / count).toInt()
                 val avgB = (bSum / count).toInt()
-                val luma = (0.299f * avgR + 0.587f * avgG + 0.114f * avgB) / 255f
+                var luma = (0.299f * avgR + 0.587f * avgG + 0.114f * avgB) / 255f
+                // Apply contrast
+                luma = ((luma - 0.5f) * contrast + 0.5f).coerceIn(0f, 1f)
+                // Apply invert
+                if (invertBrightness) luma = 1f - luma
 
                 val charIdx = ((luma * (ramp.length - 1)).toInt() + rampShift).coerceIn(0, ramp.length - 1)
                 val ch = ramp[charIdx].toString()
 
+                // Draw background source colour per cell if background == "source"
+                if (background == "source") {
+                    val bgPaint = Paint().apply {
+                        color = Color.rgb(
+                            (avgR * 0.3f).toInt().coerceIn(0, 255),
+                            (avgG * 0.3f).toInt().coerceIn(0, 255),
+                            (avgB * 0.3f).toInt().coerceIn(0, 255)
+                        )
+                        style = Paint.Style.FILL
+                    }
+                    canvas.drawRect(
+                        (col * cellSize).toFloat(), (row * cellSize).toFloat(),
+                        ((col + 1) * cellSize).toFloat(), ((row + 1) * cellSize).toFloat(),
+                        bgPaint
+                    )
+                }
+
                 if (colored) {
                     paint.color = Color.rgb(avgR, avgG, avgB)
                 } else {
-                    val gray = (luma * 255).toInt()
+                    val gray = (luma * 255).toInt().coerceIn(0, 255)
                     paint.color = Color.rgb(gray, gray, gray)
                 }
 

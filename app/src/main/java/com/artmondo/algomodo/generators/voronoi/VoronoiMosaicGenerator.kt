@@ -71,6 +71,11 @@ class VoronoiMosaicGenerator : Generator {
         val gap = (params["groutWidth"] as? Number)?.toFloat() ?: 3f
         val groutColor = (params["groutColor"] as? String) ?: "grey"
         val cellShading = (params["tileStyle"] as? String) ?: "flat"
+        val colorMode = (params["colorMode"] as? String) ?: "palette-cycle"
+        val distanceMetric = (params["distanceMetric"] as? String) ?: "Euclidean"
+        val relaxed = params["relaxed"] as? Boolean ?: true
+        val animSpeed = (params["animSpeed"] as? Number)?.toFloat() ?: 0.4f
+        val animAmp = (params["animAmp"] as? Number)?.toFloat() ?: 0.2f
 
         val rng = SeededRNG(seed)
         val noise = SimplexNoise(seed)
@@ -82,11 +87,37 @@ class VoronoiMosaicGenerator : Generator {
             py[i] = rng.random() * h
         }
 
+        // Lloyd relaxation for more uniform tiles
+        if (relaxed) {
+            val relaxStep = 4
+            for (pass in 0 until 3) {
+                val sumX = FloatArray(numPoints)
+                val sumY = FloatArray(numPoints)
+                val count = IntArray(numPoints)
+                for (sy in 0 until h step relaxStep) {
+                    for (sx in 0 until w step relaxStep) {
+                        val nearest = findNearestWithMetric(sx.toFloat(), sy.toFloat(), px, py, numPoints, distanceMetric)
+                        sumX[nearest] += sx.toFloat()
+                        sumY[nearest] += sy.toFloat()
+                        count[nearest]++
+                    }
+                }
+                for (i in 0 until numPoints) {
+                    if (count[i] > 0) {
+                        px[i] = sumX[i] / count[i]
+                        py[i] = sumY[i] / count[i]
+                    }
+                }
+            }
+        }
+
         // Animate
         if (time > 0f) {
+            val speed = animSpeed / 0.4f
+            val amp = animAmp / 0.2f
             for (i in 0 until numPoints) {
-                px[i] += noise.noise2D(i * 0.3f + 80f, time * 0.12f) * w * 0.03f
-                py[i] += noise.noise2D(i * 0.3f + 180f, time * 0.12f) * h * 0.03f
+                px[i] += noise.noise2D(i * 0.3f + 80f, time * 0.12f * speed) * w * 0.03f * amp
+                py[i] += noise.noise2D(i * 0.3f + 180f, time * 0.12f * speed) * h * 0.03f * amp
                 px[i] = px[i].coerceIn(0f, w.toFloat() - 1f)
                 py[i] = py[i].coerceIn(0f, h.toFloat() - 1f)
             }
@@ -107,7 +138,7 @@ class VoronoiMosaicGenerator : Generator {
         for (s in 0 until 60) {
             val sx = rng.random() * w
             val sy = rng.random() * h
-            val (f1, f2) = findF1F2BruteForce(sx, sy, px, py, numPoints)
+            val (f1, f2) = findF1F2BruteForce(sx, sy, px, py, numPoints, distanceMetric)
             val ed = f2 - f1
             if (ed > maxEdgeDist) maxEdgeDist = ed
         }
@@ -123,7 +154,7 @@ class VoronoiMosaicGenerator : Generator {
         for (row in 0 until h step step) {
             for (col in 0 until w step step) {
                 val (f1, f2, nearestIdx) = findF1F2WithIndexBruteForce(
-                    col.toFloat(), row.toFloat(), px, py, numPoints
+                    col.toFloat(), row.toFloat(), px, py, numPoints, distanceMetric
                 )
                 val edgeDist = f2 - f1
 
@@ -132,7 +163,23 @@ class VoronoiMosaicGenerator : Generator {
                 val color = if (isGrout) {
                     groutColorInt
                 } else {
-                    val baseColor = colors[nearestIdx % colors.size]
+                    val baseColor = when (colorMode) {
+                        "palette-angle" -> {
+                            // Color by angle from cell seed to canvas centre
+                            val angle = kotlin.math.atan2(py[nearestIdx] - h / 2f, px[nearestIdx] - w / 2f)
+                            val t = ((angle + Math.PI.toFloat()) / (2f * Math.PI.toFloat())).coerceIn(0f, 1f)
+                            palette.lerpColor(t)
+                        }
+                        "palette-distance" -> {
+                            // Color by distance of seed from canvas centre
+                            val dx = px[nearestIdx] - w / 2f
+                            val dy = py[nearestIdx] - h / 2f
+                            val maxDist = sqrt((w * w + h * h).toFloat()) / 2f
+                            val t = (sqrt(dx * dx + dy * dy) / maxDist).coerceIn(0f, 1f)
+                            palette.lerpColor(t)
+                        }
+                        else -> colors[nearestIdx % colors.size] // "palette-cycle"
+                    }
                     when (cellShading) {
                         "raised" -> {
                             // Lighten towards cell centre to simulate raised tile
@@ -176,16 +223,42 @@ class VoronoiMosaicGenerator : Generator {
 
     private data class F1F2Result(val f1: Float, val f2: Float, val nearestIdx: Int)
 
+    private fun computeDistance(dx: Float, dy: Float, metric: String): Float = when (metric) {
+        "Manhattan" -> kotlin.math.abs(dx) + kotlin.math.abs(dy)
+        "Chebyshev" -> maxOf(kotlin.math.abs(dx), kotlin.math.abs(dy))
+        else -> sqrt(dx * dx + dy * dy)
+    }
+
+    private fun findNearestWithMetric(
+        x: Float, y: Float,
+        px: FloatArray, py: FloatArray, numPoints: Int,
+        metric: String
+    ): Int {
+        var bestDist = Float.MAX_VALUE
+        var bestIdx = 0
+        for (i in 0 until numPoints) {
+            val dx = x - px[i]
+            val dy = y - py[i]
+            val d = computeDistance(dx, dy, metric)
+            if (d < bestDist) {
+                bestDist = d
+                bestIdx = i
+            }
+        }
+        return bestIdx
+    }
+
     private fun findF1F2BruteForce(
         x: Float, y: Float,
-        px: FloatArray, py: FloatArray, numPoints: Int
+        px: FloatArray, py: FloatArray, numPoints: Int,
+        metric: String = "Euclidean"
     ): Pair<Float, Float> {
         var f1 = Float.MAX_VALUE
         var f2 = Float.MAX_VALUE
         for (i in 0 until numPoints) {
             val dx = x - px[i]
             val dy = y - py[i]
-            val d = sqrt(dx * dx + dy * dy)
+            val d = computeDistance(dx, dy, metric)
             if (d < f1) {
                 f2 = f1
                 f1 = d
@@ -198,7 +271,8 @@ class VoronoiMosaicGenerator : Generator {
 
     private fun findF1F2WithIndexBruteForce(
         x: Float, y: Float,
-        px: FloatArray, py: FloatArray, numPoints: Int
+        px: FloatArray, py: FloatArray, numPoints: Int,
+        metric: String = "Euclidean"
     ): F1F2Result {
         var f1 = Float.MAX_VALUE
         var f2 = Float.MAX_VALUE
@@ -206,7 +280,7 @@ class VoronoiMosaicGenerator : Generator {
         for (i in 0 until numPoints) {
             val dx = x - px[i]
             val dy = y - py[i]
-            val d = sqrt(dx * dx + dy * dy)
+            val d = computeDistance(dx, dy, metric)
             if (d < f1) {
                 f2 = f1
                 f1 = d

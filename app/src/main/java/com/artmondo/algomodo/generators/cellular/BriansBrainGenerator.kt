@@ -53,11 +53,13 @@ class BriansBrainGenerator : Generator {
     ) {
         val gridSize = (params["gridSize"] as? Number)?.toInt() ?: 80
         val initialDensity = (params["initialDensity"] as? Number)?.toFloat() ?: 0.15f
+        val warmupSteps = (params["warmupSteps"] as? Number)?.toInt() ?: 30
         val stepsPerFrame = (params["stepsPerFrame"] as? Number)?.toFloat() ?: 1f
+        val colorMode = (params["colorMode"] as? String) ?: "classic"
 
         val w = bitmap.width
         val h = bitmap.height
-        val steps = (time * stepsPerFrame).toInt()
+        val steps = warmupSteps + (time * stepsPerFrame).toInt()
         val totalCells = gridSize * gridSize
 
         // Initialize from seed
@@ -99,8 +101,24 @@ class BriansBrainGenerator : Generator {
         val cellH = h.toFloat() / gridSize
         val pixels = IntArray(w * h)
         val paletteColors = palette.colorInts()
-        val onColor = paletteColors[0]
-        val dyingColor = paletteColors[paletteColors.size / 2]
+
+        // Determine colors based on colorMode
+        val onColor: Int
+        val dyingColor: Int
+        val offColor: Int
+        when (colorMode) {
+            "palette" -> {
+                // last / mid / first palette colours for ON / DYING / OFF
+                onColor = paletteColors[paletteColors.size - 1]
+                dyingColor = paletteColors[paletteColors.size / 2]
+                offColor = paletteColors[0]
+            }
+            else /* classic */ -> {
+                onColor = Color.WHITE
+                dyingColor = Color.rgb(60, 100, 200) // blue
+                offColor = Color.rgb(20, 20, 30) // dark
+            }
+        }
 
         for (py in 0 until h) {
             val gy = (py / cellH).toInt().coerceAtMost(gridSize - 1)
@@ -110,7 +128,7 @@ class BriansBrainGenerator : Generator {
                 pixels[py * w + px] = when (grid[idx]) {
                     ON -> onColor
                     DYING -> dyingColor
-                    else -> Color.BLACK
+                    else -> offColor
                 }
             }
         }

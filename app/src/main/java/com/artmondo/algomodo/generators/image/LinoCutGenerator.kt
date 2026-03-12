@@ -74,7 +74,11 @@ class LinoCutGenerator : Generator {
         val timeShift = if (speed > 0f && time > 0f) sin(time * speed * 2f) * 30f else 0f
         val threshold = (baseThreshold + timeShift).coerceIn(30f, 220f)
         val lineWidth = (params["lineWidth"] as? Number)?.toFloat() ?: 2f
+        val lineSpacing = (params["lineSpacing"] as? Number)?.toFloat() ?: 6f
         val style = (params["style"] as? String) ?: "horizontal"
+        val contrast = (params["contrast"] as? Number)?.toFloat() ?: 1f
+        val inkColorMode = (params["inkColor"] as? String) ?: "black"
+        val paperColorMode = (params["paperColor"] as? String) ?: "white"
 
         val source = params["_sourceImage"] as? Bitmap
         if (source == null) {
@@ -84,17 +88,28 @@ class LinoCutGenerator : Generator {
 
         val rng = SeededRNG(seed)
         val paletteColors = palette.colorInts()
-        val inkColor = paletteColors[0]
-        val paperColor = paletteColors[paletteColors.size - 1]
+        val inkColor = when (inkColorMode) {
+            "palette-first" -> paletteColors[0]
+            "palette-dark" -> paletteColors.minByOrNull {
+                0.299f * Color.red(it) + 0.587f * Color.green(it) + 0.114f * Color.blue(it)
+            } ?: Color.BLACK
+            else -> Color.BLACK
+        }
+        val paperColor = when (paperColorMode) {
+            "cream" -> Color.rgb(255, 253, 240)
+            "palette-last" -> paletteColors[paletteColors.size - 1]
+            else -> Color.WHITE
+        }
 
         val scaled = if (source.width == w && source.height == h) source else Bitmap.createScaledBitmap(source, w, h, true)
         val srcPixels = IntArray(w * h)
         scaled.getPixels(srcPixels, 0, w, 0, 0, w, h)
 
-        // Convert to grayscale luminance
+        // Convert to grayscale luminance with contrast adjustment
         val gray = FloatArray(w * h) { i ->
             val p = srcPixels[i]
-            0.299f * Color.red(p) + 0.587f * Color.green(p) + 0.114f * Color.blue(p)
+            val luma = 0.299f * Color.red(p) + 0.587f * Color.green(p) + 0.114f * Color.blue(p)
+            ((luma - 128f) * contrast + 128f).coerceIn(0f, 255f)
         }
 
         // Base layer: threshold to black or white
@@ -115,7 +130,7 @@ class LinoCutGenerator : Generator {
             strokeCap = Paint.Cap.ROUND
         }
 
-        val spacing = (lineWidth * 3f).coerceAtLeast(3f).toInt()
+        val spacing = lineSpacing.toInt().coerceAtLeast(2)
 
         when (style) {
             "horizontal" -> {

@@ -183,31 +183,104 @@ class MstWebGenerator : Generator {
         val w = bitmap.width.toFloat()
         val h = bitmap.height.toFloat()
         val numPoints = (params["pointCount"] as? Number)?.toInt() ?: 400
+        val prunePercent = (params["prunePercent"] as? Number)?.toFloat() ?: 0f
         val lineWidth = (params["edgeWidth"] as? Number)?.toFloat() ?: 4f
         val pointSize = (params["nodeSize"] as? Number)?.toFloat() ?: 8f
+        val distribution = (params["distribution"] as? String) ?: "uniform"
+        val colorMode = (params["colorMode"] as? String) ?: "palette-cycle"
+        val background = (params["background"] as? String) ?: "dark"
+        val drift = (params["drift"] as? Number)?.toFloat() ?: 12f
+        val driftSpeed = (params["driftSpeed"] as? Number)?.toFloat() ?: 0.1f
 
-        canvas.drawColor(Color.BLACK)
+        canvas.drawColor(if (background == "light") Color.rgb(240, 240, 235) else Color.BLACK)
 
         val rng = SeededRNG(seed)
         val margin = w * 0.05f
 
-        // Generate random base positions
-        val baseXs = FloatArray(numPoints) { rng.range(margin, w - margin) }
-        val baseYs = FloatArray(numPoints) { rng.range(margin, h - margin) }
+        // Generate base positions based on distribution
+        val baseXs = FloatArray(numPoints)
+        val baseYs = FloatArray(numPoints)
+        when (distribution) {
+            "gaussian" -> {
+                for (i in 0 until numPoints) {
+                    // Box-Muller approximation via averaging randoms
+                    val gx = ((rng.random() + rng.random() + rng.random()) / 3f - 0.5f) * 2f
+                    val gy = ((rng.random() + rng.random() + rng.random()) / 3f - 0.5f) * 2f
+                    baseXs[i] = (w / 2f + gx * w * 0.35f).coerceIn(margin, w - margin)
+                    baseYs[i] = (h / 2f + gy * h * 0.35f).coerceIn(margin, h - margin)
+                }
+            }
+            "clustered" -> {
+                val numClusters = (numPoints / 8).coerceIn(3, 20)
+                val clusterX = FloatArray(numClusters) { rng.range(margin, w - margin) }
+                val clusterY = FloatArray(numClusters) { rng.range(margin, h - margin) }
+                for (i in 0 until numPoints) {
+                    val ci = i % numClusters
+                    baseXs[i] = (clusterX[ci] + (rng.random() - 0.5f) * w * 0.15f).coerceIn(margin, w - margin)
+                    baseYs[i] = (clusterY[ci] + (rng.random() - 0.5f) * h * 0.15f).coerceIn(margin, h - margin)
+                }
+            }
+            "ring" -> {
+                val cx = w / 2f; val cy = h / 2f
+                val radius = kotlin.math.min(w, h) * 0.35f
+                for (i in 0 until numPoints) {
+                    val angle = rng.random() * 2f * kotlin.math.PI.toFloat()
+                    val r = radius * (0.7f + rng.random() * 0.3f)
+                    baseXs[i] = (cx + r * kotlin.math.cos(angle)).coerceIn(margin, w - margin)
+                    baseYs[i] = (cy + r * kotlin.math.sin(angle)).coerceIn(margin, h - margin)
+                }
+            }
+            "fibonacci" -> {
+                val goldenAngle = (kotlin.math.PI * (3.0 - kotlin.math.sqrt(5.0))).toFloat()
+                val cx = w / 2f; val cy = h / 2f
+                for (i in 0 until numPoints) {
+                    val t = i.toFloat() / numPoints
+                    val r = kotlin.math.sqrt(t) * kotlin.math.min(w, h) * 0.42f
+                    val theta = i * goldenAngle
+                    baseXs[i] = (cx + r * kotlin.math.cos(theta)).coerceIn(margin, w - margin)
+                    baseYs[i] = (cy + r * kotlin.math.sin(theta)).coerceIn(margin, h - margin)
+                }
+            }
+            else -> { // "uniform"
+                for (i in 0 until numPoints) {
+                    baseXs[i] = rng.range(margin, w - margin)
+                    baseYs[i] = rng.range(margin, h - margin)
+                }
+            }
+        }
 
-        // Animate: drift points with sinusoidal offsets
+        // Animate: drift points with sinusoidal offsets using drift/driftSpeed params
         val xs = FloatArray(numPoints)
         val ys = FloatArray(numPoints)
         for (i in 0 until numPoints) {
             val phase = i * 0.37f
-            xs[i] = baseXs[i] + kotlin.math.sin(time * 0.3f + phase) * 8f
-            ys[i] = baseYs[i] + kotlin.math.cos(time * 0.25f + phase * 1.3f) * 8f
+            xs[i] = baseXs[i] + kotlin.math.sin(time * driftSpeed * 3f + phase) * drift
+            ys[i] = baseYs[i] + kotlin.math.cos(time * driftSpeed * 2.5f + phase * 1.3f) * drift
         }
 
         // Compute MST
-        val edges = primMST(xs, ys, numPoints)
+        var edges = primMST(xs, ys, numPoints)
+
+        // Prune: remove the longest X% of edges
+        if (prunePercent > 0f && edges.isNotEmpty()) {
+            val edgesWithLength = edges.map { (a, b) ->
+                val dx = xs[a] - xs[b]
+                val dy = ys[a] - ys[b]
+                Triple(a, b, dx * dx + dy * dy)
+            }.sortedBy { it.third }
+            val keepCount = ((edges.size * (1f - prunePercent / 100f)).toInt()).coerceAtLeast(1)
+            edges = edgesWithLength.take(keepCount).map { Pair(it.first, it.second) }
+        }
 
         val paletteColors = palette.colorInts()
+
+        // Compute max edge length for edge-length color mode
+        val maxEdgeLen = if (colorMode == "edge-length" && edges.isNotEmpty()) {
+            edges.maxOf { (a, b) ->
+                val dx = xs[a] - xs[b]; val dy = ys[a] - ys[b]
+                kotlin.math.sqrt(dx * dx + dy * dy)
+            }
+        } else 1f
 
         val linePaint = Paint().apply {
             style = Paint.Style.STROKE
@@ -221,14 +294,33 @@ class MstWebGenerator : Generator {
             isAntiAlias = quality != Quality.DRAFT
         }
 
-        // Draw edges
-        for ((a, b) in edges) {
-            val t = a.toFloat() / numPoints
-            linePaint.color = palette.lerpColor(t)
+        // Draw edges with colorMode
+        for ((idx, edge) in edges.withIndex()) {
+            val (a, b) = edge
+            linePaint.color = when (colorMode) {
+                "edge-length" -> {
+                    val dx = xs[a] - xs[b]; val dy = ys[a] - ys[b]
+                    val len = kotlin.math.sqrt(dx * dx + dy * dy)
+                    palette.lerpColor((len / maxEdgeLen).coerceIn(0f, 1f))
+                }
+                "depth" -> {
+                    palette.lerpColor(idx.toFloat() / edges.size.coerceAtLeast(1))
+                }
+                "radial" -> {
+                    val mx = (xs[a] + xs[b]) / 2f
+                    val my = (ys[a] + ys[b]) / 2f
+                    val dx = mx - w / 2f; val dy = my - h / 2f
+                    val t = kotlin.math.sqrt(dx * dx + dy * dy) / (w * 0.6f)
+                    palette.lerpColor(t.coerceIn(0f, 1f))
+                }
+                else -> { // "palette-cycle"
+                    palette.lerpColor(a.toFloat() / numPoints)
+                }
+            }
             canvas.drawLine(xs[a], ys[a], xs[b], ys[b], linePaint)
         }
 
-        // Draw points (nodeSize > 0 means visible)
+        // Draw points
         if (pointSize > 0f) {
             for (i in 0 until numPoints) {
                 pointPaint.color = paletteColors[i % paletteColors.size]

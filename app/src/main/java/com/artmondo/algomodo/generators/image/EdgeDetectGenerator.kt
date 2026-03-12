@@ -72,6 +72,9 @@ class EdgeDetectGenerator : Generator {
         val timeShift = if (speed > 0f && time > 0f) kotlin.math.sin(time * speed * 2f) * 30f else 0f
         val threshold = (baseThreshold + timeShift).coerceIn(5f, 200f)
         val invert = params["invert"] as? Boolean ?: false
+        val colorMode = (params["colorMode"] as? String) ?: "mono"
+        val edgeWidth = (params["edgeWidth"] as? Number)?.toFloat() ?: 0f
+        val showSource = params["showSource"] as? Boolean ?: false
 
         val source = params["_sourceImage"] as? Bitmap
         if (source == null) {
@@ -144,6 +147,27 @@ class EdgeDetectGenerator : Generator {
             }
         }
 
+        // Dilate edges if edgeWidth > 0
+        if (edgeWidth > 0f) {
+            val dilateR = edgeWidth.toInt().coerceAtLeast(1)
+            val dilated = FloatArray(w * h)
+            for (y in 0 until h) {
+                for (x in 0 until w) {
+                    var maxMag = edgeMag[y * w + x]
+                    for (dy in -dilateR..dilateR) {
+                        for (dx in -dilateR..dilateR) {
+                            val ny = (y + dy).coerceIn(0, h - 1)
+                            val nx = (x + dx).coerceIn(0, w - 1)
+                            val m = edgeMag[ny * w + nx]
+                            if (m > maxMag) maxMag = m
+                        }
+                    }
+                    dilated[y * w + x] = maxMag
+                }
+            }
+            System.arraycopy(dilated, 0, edgeMag, 0, w * h)
+        }
+
         // Render edges
         val outPixels = IntArray(w * h)
         val paletteColors = palette.colorInts()
@@ -152,13 +176,28 @@ class EdgeDetectGenerator : Generator {
             val mag = edgeMag[i]
             if (mag > threshold) {
                 val t = ((mag - threshold) / (255f - threshold)).coerceIn(0f, 1f)
-                val edgeColor = palette.lerpColor(t)
+                val edgeColor = when (colorMode) {
+                    "palette" -> palette.lerpColor(t)
+                    "source" -> srcPixels[i]
+                    else -> { // "mono"
+                        val v = (t * 255f).toInt().coerceIn(0, 255)
+                        Color.rgb(v, v, v)
+                    }
+                }
                 outPixels[i] = if (invert) {
-                    val inv = 255 - ((mag / 255f * 255).toInt().coerceIn(0, 255))
-                    Color.rgb(inv, inv, inv)
+                    Color.rgb(255 - Color.red(edgeColor), 255 - Color.green(edgeColor), 255 - Color.blue(edgeColor))
                 } else edgeColor
             } else {
-                outPixels[i] = if (invert) Color.WHITE else Color.BLACK
+                if (showSource) {
+                    // Dim the source image for background
+                    val p = srcPixels[i]
+                    val r = (Color.red(p) * 0.3f).toInt()
+                    val g = (Color.green(p) * 0.3f).toInt()
+                    val b = (Color.blue(p) * 0.3f).toInt()
+                    outPixels[i] = if (invert) Color.rgb(255 - r, 255 - g, 255 - b) else Color.rgb(r, g, b)
+                } else {
+                    outPixels[i] = if (invert) Color.WHITE else Color.BLACK
+                }
             }
         }
 

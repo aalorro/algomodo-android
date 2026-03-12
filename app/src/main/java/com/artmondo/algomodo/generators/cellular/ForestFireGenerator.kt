@@ -58,6 +58,7 @@ class ForestFireGenerator : Generator {
         val pGrow = (params["growthProb"] as? Number)?.toFloat() ?: 0.01f
         val pBurn = (params["lightningProb"] as? Number)?.toFloat() ?: 0.0005f
         val stepsPerFrame = (params["stepsPerFrame"] as? Number)?.toFloat() ?: 3f
+        val colorMode = (params["colorMode"] as? String) ?: "classic"
 
         val w = bitmap.width
         val h = bitmap.height
@@ -110,10 +111,23 @@ class ForestFireGenerator : Generator {
         val pixels = IntArray(w * h)
         val paletteColors = palette.colorInts()
 
-        // Use palette colors for tree/fire
-        val treeColor = paletteColors[paletteColors.size - 1]  // last color for trees
-        val fireColor1 = paletteColors[0]                       // first color for fire
-        val fireColor2 = if (paletteColors.size > 1) paletteColors[1] else fireColor1
+        // Determine colors based on colorMode
+        val treeColor: Int
+        val fireColor: Int
+        val emptyColor: Int
+        when (colorMode) {
+            "palette" -> {
+                // first / mid / last palette colours for EMPTY / BURNING / TREE
+                treeColor = paletteColors[paletteColors.size - 1]
+                fireColor = paletteColors[paletteColors.size / 2]
+                emptyColor = paletteColors[0]
+            }
+            else /* classic */ -> {
+                treeColor = Color.rgb(34, 139, 34)   // forest green
+                fireColor = Color.rgb(255, 69, 0)     // orange-red
+                emptyColor = Color.rgb(30, 20, 10)    // dark brown
+            }
+        }
 
         for (py in 0 until h) {
             val gy = (py / cellH).toInt().coerceAtMost(gridSize - 1)
@@ -122,8 +136,8 @@ class ForestFireGenerator : Generator {
                 val idx = gy * gridSize + gx
                 pixels[py * w + px] = when (grid[idx]) {
                     TREE -> treeColor
-                    BURNING -> fireColor1
-                    else -> Color.BLACK
+                    BURNING -> fireColor
+                    else -> emptyColor
                 }
             }
         }

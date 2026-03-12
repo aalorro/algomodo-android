@@ -10,6 +10,7 @@ import com.artmondo.algomodo.generators.Generator
 import com.artmondo.algomodo.generators.ParamGroup
 import com.artmondo.algomodo.generators.Parameter
 import com.artmondo.algomodo.generators.Quality
+import kotlin.math.abs
 import kotlin.math.floor
 import kotlin.math.sqrt
 
@@ -72,6 +73,12 @@ class VoronoiContoursGenerator : Generator {
         val numPoints = (params["cellCount"] as? Number)?.toInt() ?: 25
         val bands = (params["bandCount"] as? Number)?.toInt() ?: 8
         val bandMode = (params["bandMode"] as? String) ?: "hard"
+        val contourLineWidth = (params["contourLineWidth"] as? Number)?.toFloat() ?: 1f
+        val colorMode = (params["colorMode"] as? String) ?: "palette-cycle"
+        val distanceMetric = (params["distanceMetric"] as? String) ?: "Euclidean"
+        val relaxed = params["relaxed"] as? Boolean ?: false
+        val animSpeed = (params["animSpeed"] as? Number)?.toFloat() ?: 0.4f
+        val animAmp = (params["animAmp"] as? Number)?.toFloat() ?: 0.2f
 
         val rng = SeededRNG(seed)
         val noise = SimplexNoise(seed)
@@ -84,11 +91,43 @@ class VoronoiContoursGenerator : Generator {
             py[i] = rng.random() * h
         }
 
-        // Animate
-        if (time > 0f) {
+        // Lloyd's relaxation: iteratively move seeds towards their cell centroids
+        if (relaxed) {
+            val relaxSteps = 3
+            val sampleStep = when (quality) {
+                Quality.DRAFT -> 6
+                Quality.BALANCED -> 4
+                Quality.ULTRA -> 3
+            }
+            for (step in 0 until relaxSteps) {
+                val sumX = FloatArray(numPoints)
+                val sumY = FloatArray(numPoints)
+                val count = IntArray(numPoints)
+                for (sy in 0 until h step sampleStep) {
+                    for (sx in 0 until w step sampleStep) {
+                        val nearest = findNearestIndex(
+                            sx.toFloat(), sy.toFloat(), px, py, numPoints, distanceMetric
+                        )
+                        sumX[nearest] += sx.toFloat()
+                        sumY[nearest] += sy.toFloat()
+                        count[nearest]++
+                    }
+                }
+                for (i in 0 until numPoints) {
+                    if (count[i] > 0) {
+                        px[i] = sumX[i] / count[i]
+                        py[i] = sumY[i] / count[i]
+                    }
+                }
+            }
+        }
+
+        // Animate: displace points with noise using animSpeed and animAmp
+        if (time > 0f && animAmp > 0f) {
+            val avgCellSize = sqrt((w.toFloat() * h.toFloat()) / numPoints)
             for (i in 0 until numPoints) {
-                px[i] += noise.noise2D(i * 0.3f + 30f, time * 0.18f) * w * 0.04f
-                py[i] += noise.noise2D(i * 0.3f + 130f, time * 0.18f) * h * 0.04f
+                px[i] += noise.noise2D(i * 0.3f + 30f, time * 0.18f * animSpeed) * avgCellSize * animAmp
+                py[i] += noise.noise2D(i * 0.3f + 130f, time * 0.18f * animSpeed) * avgCellSize * animAmp
                 px[i] = px[i].coerceIn(0f, w.toFloat() - 1f)
                 py[i] = py[i].coerceIn(0f, h.toFloat() - 1f)
             }
@@ -102,10 +141,13 @@ class VoronoiContoursGenerator : Generator {
         for (s in 0 until sampleCount) {
             val sx = rng.random() * w
             val sy = rng.random() * h
-            val (f1, f2) = findF1F2BruteForce(sx, sy, px, py, numPoints)
+            val (f1, f2) = findF1F2BruteForce(sx, sy, px, py, numPoints, distanceMetric)
             val edgeDist = f2 - f1
             if (edgeDist > maxEdgeDist) maxEdgeDist = edgeDist
         }
+
+        // Pre-compute palette color ints for palette-cycle mode
+        val paletteColors = palette.colorInts()
 
         val step = when (quality) {
             Quality.DRAFT -> 2
@@ -113,9 +155,18 @@ class VoronoiContoursGenerator : Generator {
             Quality.ULTRA -> 1
         }
 
+        // Band index array for contour line detection (only needed when contourLineWidth > 0
+        // and mode is not smooth)
+        val drawContourLines = contourLineWidth > 0f && bandMode != "smooth"
+        val bandMap = if (drawContourLines) IntArray(w * h) { -1 } else null
+
         for (row in 0 until h step step) {
             for (col in 0 until w step step) {
-                val (f1, f2) = findF1F2BruteForce(col.toFloat(), row.toFloat(), px, py, numPoints)
+                val xf = col.toFloat()
+                val yf = row.toFloat()
+                val (f1, f2, nearestIdx) = findF1F2WithIndex(
+                    xf, yf, px, py, numPoints, distanceMetric
+                )
                 val edgeDist = (f2 - f1) / maxEdgeDist
                 val normalized = edgeDist.coerceIn(0f, 1f)
 
@@ -125,7 +176,7 @@ class VoronoiContoursGenerator : Generator {
 
                 val t = when (bandMode) {
                     "smooth" -> {
-                        // Smooth transition between bands
+                        // Smooth continuous gradient across bands
                         val frac = bandFloat - floor(bandFloat)
                         val smoothFrac = if (frac < 1f / bands) {
                             frac / (1f / bands)
@@ -142,17 +193,73 @@ class VoronoiContoursGenerator : Generator {
                     }
                 }
 
-                val color = palette.lerpColor(t.coerceIn(0f, 1f))
+                // Color based on colorMode
+                val color = when (colorMode) {
+                    "palette-gradient" -> {
+                        // Continuous gradient mapping: use t directly across the full palette
+                        palette.lerpColor(t.coerceIn(0f, 1f))
+                    }
+                    "monochrome" -> {
+                        // Map band value to grayscale intensity
+                        val gray = (t.coerceIn(0f, 1f) * 255f).toInt().coerceIn(0, 255)
+                        Color.rgb(gray, gray, gray)
+                    }
+                    else -> {
+                        // "palette-cycle": cycle through discrete palette colors by band index
+                        paletteColors[bandIndex % paletteColors.size]
+                    }
+                }
 
                 if (step == 1) {
                     pixels[row * w + col] = color
+                    bandMap?.set(row * w + col, bandIndex)
                 } else {
                     for (dy in 0 until step) {
                         for (dx in 0 until step) {
                             val fx = col + dx
                             val fy = row + dy
-                            if (fx < w && fy < h) pixels[fy * w + fx] = color
+                            if (fx < w && fy < h) {
+                                pixels[fy * w + fx] = color
+                                bandMap?.set(fy * w + fx, bandIndex)
+                            }
                         }
+                    }
+                }
+            }
+        }
+
+        // Draw contour lines at band boundaries
+        if (drawContourLines && bandMap != null) {
+            val lineRadius = contourLineWidth.toInt().coerceAtLeast(1)
+            for (row in 0 until h) {
+                for (col in 0 until w) {
+                    val idx = row * w + col
+                    val myBand = bandMap[idx]
+                    if (myBand < 0) continue
+                    // Check neighbors within lineRadius for band boundary
+                    var isBoundary = false
+                    for (dr in -lineRadius..lineRadius) {
+                        if (isBoundary) break
+                        for (dc in -lineRadius..lineRadius) {
+                            if (dr == 0 && dc == 0) continue
+                            val nr = row + dr
+                            val nc = col + dc
+                            if (nr in 0 until h && nc in 0 until w) {
+                                val neighborBand = bandMap[nr * w + nc]
+                                if (neighborBand >= 0 && neighborBand != myBand) {
+                                    isBoundary = true
+                                    break
+                                }
+                            }
+                        }
+                    }
+                    if (isBoundary) {
+                        // Darken the existing pixel color for the contour line
+                        val base = pixels[idx]
+                        val r = (Color.red(base) * 0.25f).toInt()
+                        val g = (Color.green(base) * 0.25f).toInt()
+                        val b = (Color.blue(base) * 0.25f).toInt()
+                        pixels[idx] = Color.rgb(r, g, b)
                     }
                 }
             }
@@ -163,19 +270,42 @@ class VoronoiContoursGenerator : Generator {
     }
 
     /**
+     * Find the index of the nearest seed point.
+     */
+    private fun findNearestIndex(
+        x: Float, y: Float,
+        px: FloatArray, py: FloatArray, numPoints: Int,
+        metric: String
+    ): Int {
+        var bestDist = Float.MAX_VALUE
+        var bestIdx = 0
+        for (i in 0 until numPoints) {
+            val dx = x - px[i]
+            val dy = y - py[i]
+            val d = distanceFor(dx, dy, metric)
+            if (d < bestDist) {
+                bestDist = d
+                bestIdx = i
+            }
+        }
+        return bestIdx
+    }
+
+    /**
      * Find the first and second nearest distances (F1, F2) from a point to the seed set
-     * using brute-force search over all points.
+     * using brute-force search over all points, with configurable distance metric.
      */
     private fun findF1F2BruteForce(
         x: Float, y: Float,
-        px: FloatArray, py: FloatArray, numPoints: Int
+        px: FloatArray, py: FloatArray, numPoints: Int,
+        metric: String
     ): Pair<Float, Float> {
         var f1 = Float.MAX_VALUE
         var f2 = Float.MAX_VALUE
         for (i in 0 until numPoints) {
             val dx = x - px[i]
             val dy = y - py[i]
-            val d = sqrt(dx * dx + dy * dy)
+            val d = distanceFor(dx, dy, metric)
             if (d < f1) {
                 f2 = f1
                 f1 = d
@@ -184,6 +314,43 @@ class VoronoiContoursGenerator : Generator {
             }
         }
         return Pair(f1, f2)
+    }
+
+    /**
+     * Find F1, F2, and the index of the nearest seed point.
+     */
+    private fun findF1F2WithIndex(
+        x: Float, y: Float,
+        px: FloatArray, py: FloatArray, numPoints: Int,
+        metric: String
+    ): Triple<Float, Float, Int> {
+        var f1 = Float.MAX_VALUE
+        var f2 = Float.MAX_VALUE
+        var nearestIdx = 0
+        for (i in 0 until numPoints) {
+            val dx = x - px[i]
+            val dy = y - py[i]
+            val d = distanceFor(dx, dy, metric)
+            if (d < f1) {
+                f2 = f1
+                f1 = d
+                nearestIdx = i
+            } else if (d < f2) {
+                f2 = d
+            }
+        }
+        return Triple(f1, f2, nearestIdx)
+    }
+
+    /**
+     * Compute distance from delta components using the selected metric.
+     */
+    private fun distanceFor(dx: Float, dy: Float, metric: String): Float {
+        return when (metric.lowercase()) {
+            "manhattan" -> abs(dx) + abs(dy)
+            "chebyshev" -> maxOf(abs(dx), abs(dy))
+            else -> sqrt(dx * dx + dy * dy)
+        }
     }
 
     override fun estimateCost(params: Map<String, Any>, quality: Quality): Float {

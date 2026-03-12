@@ -71,6 +71,10 @@ class VoronoiCellsGenerator : Generator {
         val edgeWidth = (params["borderWidth"] as? Number)?.toFloat() ?: 1f
         val showEdges = edgeWidth > 0f
         val metric = (params["distanceMetric"] as? String) ?: "Euclidean"
+        val colorMode = (params["colorMode"] as? String) ?: "By Index"
+        val relaxed = params["relaxed"] as? Boolean ?: false
+        val animSpeed = (params["animSpeed"] as? Number)?.toFloat() ?: 0.4f
+        val animAmp = (params["animAmp"] as? Number)?.toFloat() ?: 0.2f
 
         val rng = SeededRNG(seed)
         val noise = SimplexNoise(seed)
@@ -83,11 +87,51 @@ class VoronoiCellsGenerator : Generator {
             py[i] = rng.random() * h
         }
 
+        // Lloyd relaxation for more uniform cells
+        if (relaxed) {
+            val relaxStep = 4
+            for (pass in 0 until 3) {
+                val sumX = FloatArray(numPoints)
+                val sumY = FloatArray(numPoints)
+                val count = IntArray(numPoints)
+                for (sy in 0 until h step relaxStep) {
+                    for (sx in 0 until w step relaxStep) {
+                        var bestDist2 = Float.MAX_VALUE
+                        var bestIdx2 = 0
+                        for (i in 0 until numPoints) {
+                            val ddx = sx.toFloat() - px[i]
+                            val ddy = sy.toFloat() - py[i]
+                            val dd = when (metric.lowercase()) {
+                                "manhattan" -> abs(ddx) + abs(ddy)
+                                "chebyshev" -> maxOf(abs(ddx), abs(ddy))
+                                else -> ddx * ddx + ddy * ddy
+                            }
+                            if (dd < bestDist2) {
+                                bestDist2 = dd
+                                bestIdx2 = i
+                            }
+                        }
+                        sumX[bestIdx2] += sx.toFloat()
+                        sumY[bestIdx2] += sy.toFloat()
+                        count[bestIdx2]++
+                    }
+                }
+                for (i in 0 until numPoints) {
+                    if (count[i] > 0) {
+                        px[i] = sumX[i] / count[i]
+                        py[i] = sumY[i] / count[i]
+                    }
+                }
+            }
+        }
+
         // Animate: displace points with noise
         if (time > 0f) {
+            val speed = animSpeed / 0.4f
+            val amp = animAmp / 0.2f
             for (i in 0 until numPoints) {
-                val nx = noise.noise2D(i * 0.3f + 100f, time * 0.2f) * w * 0.05f
-                val ny = noise.noise2D(i * 0.3f + 200f, time * 0.2f) * h * 0.05f
+                val nx = noise.noise2D(i * 0.3f + 100f, time * 0.2f * speed) * w * 0.05f * amp
+                val ny = noise.noise2D(i * 0.3f + 200f, time * 0.2f * speed) * h * 0.05f * amp
                 px[i] = (px[i] + nx).coerceIn(0f, w.toFloat() - 1f)
                 py[i] = (py[i] + ny).coerceIn(0f, h.toFloat() - 1f)
             }
@@ -129,7 +173,28 @@ class VoronoiCellsGenerator : Generator {
                 }
 
                 val isEdge = showEdges && (secondDist - bestDist) < edgeWidth * 2f
-                val color = if (isEdge) Color.BLACK else colors[bestIdx % colors.size]
+                val color = if (isEdge) {
+                    Color.BLACK
+                } else {
+                    when (colorMode) {
+                        "By Distance" -> {
+                            // Color by distance from pixel to nearest seed
+                            val dx2 = x - px[bestIdx]
+                            val dy2 = y - py[bestIdx]
+                            val dist = kotlin.math.sqrt(dx2 * dx2 + dy2 * dy2)
+                            val avgCellSize = kotlin.math.sqrt((w.toFloat() * h.toFloat()) / numPoints)
+                            val t = (dist / avgCellSize).coerceIn(0f, 1f)
+                            palette.lerpColor(t)
+                        }
+                        "By Angle" -> {
+                            // Color by angle of seed relative to canvas centre
+                            val angle = kotlin.math.atan2(py[bestIdx] - h / 2f, px[bestIdx] - w / 2f)
+                            val t = ((angle + Math.PI.toFloat()) / (2f * Math.PI.toFloat())).coerceIn(0f, 1f)
+                            palette.lerpColor(t)
+                        }
+                        else -> colors[bestIdx % colors.size] // "By Index"
+                    }
+                }
 
                 if (step == 1) {
                     pixels[row * w + col] = color

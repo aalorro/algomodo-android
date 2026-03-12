@@ -75,6 +75,10 @@ class FeedbackLoopGenerator : Generator {
         val rotation = if (speed > 0f && time > 0f) baseRotation + kotlin.math.sin(time * speed) * 3f else baseRotation
         val brightnessDecay = (params["brightness"] as? Number)?.toFloat() ?: 0.99f
         val blend = (params["blend"] as? Number)?.toFloat() ?: 0.9f
+        val xOffset = (params["xOffset"] as? Number)?.toFloat() ?: 0f
+        val yOffset = (params["yOffset"] as? Number)?.toFloat() ?: 0f
+        val colorShift = (params["colorShift"] as? String) ?: "none"
+        val iterParam = (params["iterations"] as? Number)?.toInt() ?: 20
 
         val source = params["_sourceImage"] as? Bitmap
         if (source == null) {
@@ -82,11 +86,12 @@ class FeedbackLoopGenerator : Generator {
             return
         }
 
-        val iterations = when (quality) {
+        val maxIter = when (quality) {
             Quality.DRAFT -> 15
             Quality.BALANCED -> 30
             Quality.ULTRA -> 60
         }
+        val iterations = iterParam.coerceAtMost(maxIter)
 
         val scaled = if (source.width == w && source.height == h) source else Bitmap.createScaledBitmap(source, w, h, true)
 
@@ -112,7 +117,7 @@ class FeedbackLoopGenerator : Generator {
             matrix.postTranslate(-cx, -cy)
             matrix.postScale(scale, scale)
             matrix.postRotate(rotation)
-            matrix.postTranslate(cx, cy)
+            matrix.postTranslate(cx + xOffset, cy + yOffset)
 
             tempCanvas.drawBitmap(current, matrix, blendPaint)
 
@@ -127,9 +132,29 @@ class FeedbackLoopGenerator : Generator {
                 val dst = tempPixels[i]
                 val srcA = Color.alpha(dst) / 255f
 
-                val r = ((Color.red(src) * (1f - srcA * blend) + Color.red(dst) * srcA * blend) * brightnessDecay).toInt().coerceIn(0, 255)
-                val g = ((Color.green(src) * (1f - srcA * blend) + Color.green(dst) * srcA * blend) * brightnessDecay).toInt().coerceIn(0, 255)
-                val b = ((Color.blue(src) * (1f - srcA * blend) + Color.blue(dst) * srcA * blend) * brightnessDecay).toInt().coerceIn(0, 255)
+                var r = ((Color.red(src) * (1f - srcA * blend) + Color.red(dst) * srcA * blend) * brightnessDecay).toInt().coerceIn(0, 255)
+                var g = ((Color.green(src) * (1f - srcA * blend) + Color.green(dst) * srcA * blend) * brightnessDecay).toInt().coerceIn(0, 255)
+                var b = ((Color.blue(src) * (1f - srcA * blend) + Color.blue(dst) * srcA * blend) * brightnessDecay).toInt().coerceIn(0, 255)
+
+                when (colorShift) {
+                    "hue-rotate" -> {
+                        val hsv = FloatArray(3)
+                        Color.colorToHSV(Color.rgb(r, g, b), hsv)
+                        hsv[0] = (hsv[0] + iter * 5f) % 360f
+                        val shifted = Color.HSVToColor(hsv)
+                        r = Color.red(shifted)
+                        g = Color.green(shifted)
+                        b = Color.blue(shifted)
+                    }
+                    "channel-swap" -> {
+                        val cycle = iter % 3
+                        val tmp = r
+                        when (cycle) {
+                            1 -> { r = g; g = b; b = tmp }
+                            2 -> { r = b; b = g; g = tmp }
+                        }
+                    }
+                }
 
                 currentPixels[i] = Color.rgb(r, g, b)
             }

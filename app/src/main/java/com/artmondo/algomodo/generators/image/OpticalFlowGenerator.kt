@@ -71,6 +71,9 @@ class OpticalFlowGenerator : Generator {
         val lineLength = (params["lineLength"] as? Number)?.toFloat() ?: 15f
         val noiseScale = (params["noiseScale"] as? Number)?.toFloat() ?: 3f
         val lineWidth = (params["lineWidth"] as? Number)?.toFloat() ?: 1f
+        val colorMode = (params["colorMode"] as? String) ?: "palette"
+        val backgroundDim = (params["backgroundDim"] as? Number)?.toFloat() ?: 0.3f
+        val arrows = params["arrows"] as? Boolean ?: false
         val speed = (params["speed"] as? Number)?.toFloat() ?: 0.2f
 
         val source = params["_sourceImage"] as? Bitmap
@@ -89,9 +92,9 @@ class OpticalFlowGenerator : Generator {
         for (i in 0 until w * h) {
             val p = srcPixels[i]
             bgPixels[i] = Color.rgb(
-                (Color.red(p) * 0.3f).toInt(),
-                (Color.green(p) * 0.3f).toInt(),
-                (Color.blue(p) * 0.3f).toInt()
+                (Color.red(p) * backgroundDim).toInt().coerceIn(0, 255),
+                (Color.green(p) * backgroundDim).toInt().coerceIn(0, 255),
+                (Color.blue(p) * backgroundDim).toInt().coerceIn(0, 255)
             )
         }
         bitmap.setPixels(bgPixels, 0, w, 0, 0, w, h)
@@ -140,10 +143,25 @@ class OpticalFlowGenerator : Generator {
                     val y2 = gy + normDy * len * 0.5f
 
                     val t = gray[gy * w + gx]
-                    paint.color = palette.lerpColor(t)
+                    paint.color = when (colorMode) {
+                        "source" -> srcPixels[gy * w + gx]
+                        "mono" -> Color.WHITE
+                        else -> palette.lerpColor(t) // "palette"
+                    }
                     paint.alpha = (150 + mag * 300).toInt().coerceAtMost(255)
 
                     canvas.drawLine(x1, y1, x2, y2, paint)
+
+                    // Draw arrowhead
+                    if (arrows && len > 3f) {
+                        val arrowSize = lineWidth * 2.5f
+                        val ax1 = x2 - normDx * arrowSize - normDy * arrowSize * 0.5f
+                        val ay1 = y2 - normDy * arrowSize + normDx * arrowSize * 0.5f
+                        val ax2 = x2 - normDx * arrowSize + normDy * arrowSize * 0.5f
+                        val ay2 = y2 - normDy * arrowSize - normDx * arrowSize * 0.5f
+                        canvas.drawLine(x2, y2, ax1, ay1, paint)
+                        canvas.drawLine(x2, y2, ax2, ay2, paint)
+                    }
                 }
 
                 idx++

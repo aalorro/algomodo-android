@@ -67,6 +67,9 @@ class DataMoshGenerator : Generator {
         val intensity = (params["intensity"] as? Number)?.toFloat() ?: 0.5f
         val blockSize = (params["blockSize"] as? Number)?.toInt() ?: 16
         val mode = (params["mode"] as? String) ?: "shift"
+        val regionCount = (params["regionCount"] as? Number)?.toInt() ?: 8
+        val channelSeparate = params["channelSeparate"] as? Boolean ?: false
+        val direction = (params["direction"] as? String) ?: "horizontal"
 
         val source = params["_sourceImage"] as? Bitmap
         if (source == null) {
@@ -81,68 +84,115 @@ class DataMoshGenerator : Generator {
         val pixels = IntArray(w * h)
         scaled.getPixels(pixels, 0, w, 0, 0, w, h)
 
-        when (mode) {
-            "shift" -> {
-                val maxShift = (w * intensity * 0.3f).toInt().coerceAtLeast(1)
-                var y = 0
-                while (y < h) {
-                    val bh = rng.integer(blockSize / 2, blockSize * 2).coerceAtMost(h - y)
-                    if (rng.random() < intensity) {
-                        val shift = rng.integer(-maxShift, maxShift)
-                        for (row in y until (y + bh).coerceAtMost(h)) {
-                            val rowStart = row * w
-                            val temp = pixels.copyOfRange(rowStart, rowStart + w)
-                            for (x in 0 until w) {
-                                val sx = ((x - shift) % w + w) % w
-                                pixels[rowStart + x] = temp[sx]
+        // Helper to apply glitch to a single channel array or full pixel array
+        fun applyGlitch(px: IntArray, channelMask: Int = 0, channelOnly: Boolean = false) {
+            when (mode) {
+                "shift" -> {
+                    val doHorizontal = direction == "horizontal" || direction == "both"
+                    val doVertical = direction == "vertical" || direction == "both"
+                    if (doHorizontal) {
+                        val maxShift = (w * intensity * 0.3f).toInt().coerceAtLeast(1)
+                        var y = 0
+                        var regionsPlaced = 0
+                        while (y < h && regionsPlaced < regionCount) {
+                            val bh = rng.integer(blockSize / 2, blockSize * 2).coerceAtMost(h - y)
+                            if (rng.random() < intensity) {
+                                val shift = rng.integer(-maxShift, maxShift)
+                                for (row in y until (y + bh).coerceAtMost(h)) {
+                                    val rowStart = row * w
+                                    val temp = px.copyOfRange(rowStart, rowStart + w)
+                                    for (x in 0 until w) {
+                                        val sx = ((x - shift) % w + w) % w
+                                        px[rowStart + x] = temp[sx]
+                                    }
+                                }
+                                regionsPlaced++
                             }
+                            y += bh
                         }
                     }
-                    y += bh
+                    if (doVertical) {
+                        val maxShift = (h * intensity * 0.3f).toInt().coerceAtLeast(1)
+                        var x = 0
+                        var regionsPlaced = 0
+                        while (x < w && regionsPlaced < regionCount) {
+                            val bw = rng.integer(blockSize / 2, blockSize * 2).coerceAtMost(w - x)
+                            if (rng.random() < intensity) {
+                                val shift = rng.integer(-maxShift, maxShift)
+                                for (col in x until (x + bw).coerceAtMost(w)) {
+                                    val temp = IntArray(h) { px[it * w + col] }
+                                    for (row in 0 until h) {
+                                        val sy = ((row - shift) % h + h) % h
+                                        px[row * w + col] = temp[sy]
+                                    }
+                                }
+                                regionsPlaced++
+                            }
+                            x += bw
+                        }
+                    }
                 }
-            }
-            "sort" -> {
-                val threshold = (intensity * 255).toInt()
-                for (y in 0 until h) {
-                    val rowStart = y * w
-                    var x = 0
-                    while (x < w) {
-                        // Find span of pixels above threshold
-                        val start = x
+                "sort" -> {
+                    val threshold = (intensity * 255).toInt()
+                    for (y in 0 until h) {
+                        val rowStart = y * w
+                        var x = 0
                         while (x < w) {
-                            val pixel = pixels[rowStart + x]
-                            val luma = (0.299f * Color.red(pixel) + 0.587f * Color.green(pixel) + 0.114f * Color.blue(pixel))
-                            if (luma < threshold) break
+                            val start = x
+                            while (x < w) {
+                                val pixel = px[rowStart + x]
+                                val luma = (0.299f * Color.red(pixel) + 0.587f * Color.green(pixel) + 0.114f * Color.blue(pixel))
+                                if (luma < threshold) break
+                                x++
+                            }
+                            if (x > start + 1) {
+                                val span = px.copyOfRange(rowStart + start, rowStart + x)
+                                span.sortedArray().also { sorted ->
+                                    System.arraycopy(sorted, 0, span, 0, sorted.size)
+                                }
+                                System.arraycopy(span, 0, px, rowStart + start, span.size)
+                            }
                             x++
                         }
-                        if (x > start + 1) {
-                            val span = pixels.copyOfRange(rowStart + start, rowStart + x)
-                            span.sortedArray().also { sorted ->
-                                System.arraycopy(sorted, 0, span, 0, sorted.size)
-                            }
-                            System.arraycopy(span, 0, pixels, rowStart + start, span.size)
-                        }
-                        x++
                     }
                 }
-            }
-            "corrupt" -> {
-                val numCorruptions = (w * h * intensity * 0.001f).toInt().coerceIn(1, 10000)
-                for (i in 0 until numCorruptions) {
-                    val bx = rng.integer(0, w - blockSize)
-                    val by = rng.integer(0, h - blockSize)
-                    val xorVal = rng.integer(0, 0xFFFFFF)
+                "corrupt" -> {
+                    val numCorruptions = regionCount.coerceIn(1, 30)
+                    for (i in 0 until numCorruptions) {
+                        val bx = rng.integer(0, (w - blockSize).coerceAtLeast(1))
+                        val by = rng.integer(0, (h - blockSize).coerceAtLeast(1))
+                        val xorVal = rng.integer(0, 0xFFFFFF)
 
-                    for (dy in 0 until blockSize.coerceAtMost(h - by)) {
-                        for (dx in 0 until blockSize.coerceAtMost(w - bx)) {
-                            val idx = (by + dy) * w + (bx + dx)
-                            if (rng.random() < intensity) {
-                                pixels[idx] = pixels[idx] xor xorVal or (0xFF shl 24)
+                        for (dy in 0 until blockSize.coerceAtMost(h - by)) {
+                            for (dx in 0 until blockSize.coerceAtMost(w - bx)) {
+                                val idx = (by + dy) * w + (bx + dx)
+                                if (rng.random() < intensity) {
+                                    px[idx] = px[idx] xor xorVal or (0xFF shl 24)
+                                }
                             }
                         }
                     }
                 }
             }
+        }
+
+        if (channelSeparate) {
+            // Apply glitch independently to each channel
+            val rPixels = IntArray(w * h) { Color.rgb(Color.red(pixels[it]), 0, 0) }
+            val gPixels = IntArray(w * h) { Color.rgb(0, Color.green(pixels[it]), 0) }
+            val bPixels = IntArray(w * h) { Color.rgb(0, 0, Color.blue(pixels[it])) }
+            applyGlitch(rPixels)
+            applyGlitch(gPixels)
+            applyGlitch(bPixels)
+            for (i in 0 until w * h) {
+                pixels[i] = Color.rgb(
+                    Color.red(rPixels[i]),
+                    Color.green(gPixels[i]),
+                    Color.blue(bPixels[i])
+                )
+            }
+        } else {
+            applyGlitch(pixels)
         }
 
         bitmap.setPixels(pixels, 0, w, 0, 0, w, h)

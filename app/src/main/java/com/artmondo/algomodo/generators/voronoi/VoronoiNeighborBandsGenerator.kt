@@ -68,8 +68,13 @@ class VoronoiNeighborBandsGenerator : Generator {
         val h = bitmap.height
         val numPoints = (params["cellCount"] as? Number)?.toInt() ?: 35
         val bandCount = (params["bandCount"] as? Number)?.toInt() ?: 4
+        val bandMode = (params["bandMode"] as? String) ?: "flat"
         val borderWidth = (params["borderWidth"] as? Number)?.toFloat() ?: 1f
         val showEdges = borderWidth > 0f
+        val distanceMetric = (params["distanceMetric"] as? String) ?: "Euclidean"
+        val relaxed = params["relaxed"] as? Boolean ?: false
+        val animSpeed = (params["animSpeed"] as? Number)?.toFloat() ?: 0.4f
+        val animAmp = (params["animAmp"] as? Number)?.toFloat() ?: 0.2f
 
         val rng = SeededRNG(seed)
         val noise = SimplexNoise(seed)
@@ -81,11 +86,37 @@ class VoronoiNeighborBandsGenerator : Generator {
             py[i] = rng.random() * h
         }
 
+        // Lloyd relaxation for more uniform cells
+        if (relaxed) {
+            val relaxStep = 4
+            for (pass in 0 until 3) {
+                val sumX = FloatArray(numPoints)
+                val sumY = FloatArray(numPoints)
+                val count = IntArray(numPoints)
+                for (sy in 0 until h step relaxStep) {
+                    for (sx in 0 until w step relaxStep) {
+                        val nearest = findNearestWithMetric(sx.toFloat(), sy.toFloat(), px, py, numPoints, distanceMetric)
+                        sumX[nearest] += sx.toFloat()
+                        sumY[nearest] += sy.toFloat()
+                        count[nearest]++
+                    }
+                }
+                for (i in 0 until numPoints) {
+                    if (count[i] > 0) {
+                        px[i] = sumX[i] / count[i]
+                        py[i] = sumY[i] / count[i]
+                    }
+                }
+            }
+        }
+
         // Animate
         if (time > 0f) {
+            val speed = animSpeed / 0.4f
+            val amp = animAmp / 0.2f
             for (i in 0 until numPoints) {
-                px[i] += noise.noise2D(i * 0.3f + 60f, time * 0.15f) * w * 0.04f
-                py[i] += noise.noise2D(i * 0.3f + 160f, time * 0.15f) * h * 0.04f
+                px[i] += noise.noise2D(i * 0.3f + 60f, time * 0.15f * speed) * w * 0.04f * amp
+                py[i] += noise.noise2D(i * 0.3f + 160f, time * 0.15f * speed) * h * 0.04f * amp
                 px[i] = px[i].coerceIn(0f, w.toFloat() - 1f)
                 py[i] = py[i].coerceIn(0f, h.toFloat() - 1f)
             }
@@ -105,7 +136,7 @@ class VoronoiNeighborBandsGenerator : Generator {
             for (col in 0 until mw) {
                 val rx = (col * mapStep).toFloat()
                 val ry = (row * mapStep).toFloat()
-                cellMap[row * mw + col] = findNearest(rx, ry, px, py, numPoints)
+                cellMap[row * mw + col] = findNearestWithMetric(rx, ry, px, py, numPoints, distanceMetric)
             }
         }
 
@@ -147,7 +178,7 @@ class VoronoiNeighborBandsGenerator : Generator {
 
         for (row in 0 until h step renderStep) {
             for (col in 0 until w step renderStep) {
-                val nearest = findNearest(col.toFloat(), row.toFloat(), px, py, numPoints)
+                val nearest = findNearestWithMetric(col.toFloat(), row.toFloat(), px, py, numPoints, distanceMetric)
                 val nc = neighborCounts[nearest]
 
                 // Check if on edge
@@ -155,11 +186,11 @@ class VoronoiNeighborBandsGenerator : Generator {
                 if (showEdges) {
                     for (d in 1..borderWidth.toInt().coerceAtLeast(1)) {
                         if (col + d < w) {
-                            val adj = findNearest((col + d).toFloat(), row.toFloat(), px, py, numPoints)
+                            val adj = findNearestWithMetric((col + d).toFloat(), row.toFloat(), px, py, numPoints, distanceMetric)
                             if (adj != nearest) { onEdge = true; break }
                         }
                         if (row + d < h) {
-                            val adj = findNearest(col.toFloat(), (row + d).toFloat(), px, py, numPoints)
+                            val adj = findNearestWithMetric(col.toFloat(), (row + d).toFloat(), px, py, numPoints, distanceMetric)
                             if (adj != nearest) { onEdge = true; break }
                         }
                     }
@@ -168,9 +199,22 @@ class VoronoiNeighborBandsGenerator : Generator {
                 val color = if (onEdge) {
                     Color.BLACK
                 } else {
+                    val colors = palette.colorInts()
                     val range = (maxNeighbors - minNeighbors).coerceAtLeast(1)
                     val t = (nc - minNeighbors).toFloat() / range
-                    palette.lerpColor(t)
+                    when (bandMode) {
+                        "gradient" -> palette.lerpColor(t)
+                        "alternating" -> {
+                            // Alternate between first and last palette colors based on neighbor band
+                            val bandIdx = ((nc - minNeighbors) % bandCount)
+                            if (bandIdx % 2 == 0) colors.first() else colors.last()
+                        }
+                        else -> {
+                            // "flat" - discrete color per neighbor band
+                            val bandIdx = ((nc - minNeighbors) % bandCount)
+                            colors[bandIdx % colors.size]
+                        }
+                    }
                 }
 
                 if (renderStep == 1) {
@@ -189,6 +233,32 @@ class VoronoiNeighborBandsGenerator : Generator {
 
         bitmap.setPixels(pixels, 0, w, 0, 0, w, h)
         canvas.drawBitmap(bitmap, 0f, 0f, null)
+    }
+
+    private fun computeDistance(dx: Float, dy: Float, metric: String): Float = when (metric) {
+        "Manhattan" -> kotlin.math.abs(dx) + kotlin.math.abs(dy)
+        "Chebyshev" -> maxOf(kotlin.math.abs(dx), kotlin.math.abs(dy))
+        else -> dx * dx + dy * dy // Euclidean (squared for comparison)
+    }
+
+    private fun findNearestWithMetric(
+        x: Float, y: Float,
+        px: FloatArray, py: FloatArray,
+        numPoints: Int,
+        metric: String
+    ): Int {
+        var bestDist = Float.MAX_VALUE
+        var bestIdx = 0
+        for (i in 0 until numPoints) {
+            val dx = x - px[i]
+            val dy = y - py[i]
+            val d = computeDistance(dx, dy, metric)
+            if (d < bestDist) {
+                bestDist = d
+                bestIdx = i
+            }
+        }
+        return bestIdx
     }
 
     private fun findNearest(

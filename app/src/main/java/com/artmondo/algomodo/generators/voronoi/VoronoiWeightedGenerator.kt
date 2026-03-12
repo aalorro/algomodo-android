@@ -71,6 +71,10 @@ class VoronoiWeightedGenerator : Generator {
         val weightVariance = (params["weightSpread"] as? Number)?.toFloat() ?: 0.7f
         val metric = (params["distanceMetric"] as? String) ?: "Euclidean"
         val weightMode = (params["weightMode"] as? String) ?: "additive"
+        val borderWidth = (params["borderWidth"] as? Number)?.toFloat() ?: 1f
+        val colorMode = (params["colorMode"] as? String) ?: "By Index"
+        val animSpeed = (params["animSpeed"] as? Number)?.toFloat() ?: 0.4f
+        val animAmp = (params["animAmp"] as? Number)?.toFloat() ?: 0.2f
 
         val rng = SeededRNG(seed)
         val noise = SimplexNoise(seed)
@@ -88,9 +92,11 @@ class VoronoiWeightedGenerator : Generator {
 
         // Animate
         if (time > 0f) {
+            val speed = animSpeed / 0.4f
+            val amp = animAmp / 0.2f
             for (i in 0 until numPoints) {
-                px[i] += noise.noise2D(i * 0.3f + 90f, time * 0.12f) * w * 0.03f
-                py[i] += noise.noise2D(i * 0.3f + 190f, time * 0.12f) * h * 0.03f
+                px[i] += noise.noise2D(i * 0.3f + 90f, time * 0.12f * speed) * w * 0.03f * amp
+                py[i] += noise.noise2D(i * 0.3f + 190f, time * 0.12f * speed) * h * 0.03f * amp
                 px[i] = px[i].coerceIn(0f, w.toFloat() - 1f)
                 py[i] = py[i].coerceIn(0f, h.toFloat() - 1f)
                 // Oscillate weights
@@ -133,12 +139,30 @@ class VoronoiWeightedGenerator : Generator {
                     }
                 }
 
-                // Detect edges
-                val isEdge = (secondDist - bestDist) < 2f
+                // Detect edges using borderWidth
+                val isEdge = borderWidth > 0f && (secondDist - bestDist) < borderWidth * 2f
                 val color = if (isEdge) {
                     Color.BLACK
                 } else {
-                    colors[bestIdx % colors.size]
+                    when (colorMode) {
+                        "By Weight" -> {
+                            // Map weight to palette position
+                            val minW = weights.min()
+                            val maxW = weights.max()
+                            val range = (maxW - minW).coerceAtLeast(0.001f)
+                            val t = ((weights[bestIdx] - minW) / range).coerceIn(0f, 1f)
+                            palette.lerpColor(t)
+                        }
+                        "By Distance" -> {
+                            // Map distance from pixel to seed to palette
+                            val dx2 = x - px[bestIdx]
+                            val dy2 = y - py[bestIdx]
+                            val dist = sqrt(dx2 * dx2 + dy2 * dy2)
+                            val t = (dist / avgCellSize).coerceIn(0f, 1f)
+                            palette.lerpColor(t)
+                        }
+                        else -> colors[bestIdx % colors.size] // "By Index"
+                    }
                 }
 
                 if (step == 1) {

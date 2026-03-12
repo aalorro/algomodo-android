@@ -72,6 +72,9 @@ class LumaMeshGenerator : Generator {
         val displacement = if (speed > 0f && time > 0f) baseDisplacement * (1f + kotlin.math.sin(time * speed * 2f) * 0.3f) else baseDisplacement
         val lineWidth = (params["lineWidth"] as? Number)?.toFloat() ?: 1f
         val showFill = params["showFill"] as? Boolean ?: true
+        val showWireframe = params["showWireframe"] as? Boolean ?: true
+        val colorMode = (params["colorMode"] as? String) ?: "palette"
+        val perspective = (params["perspective"] as? Number)?.toFloat() ?: 0f
 
         val source = params["_sourceImage"] as? Bitmap
         if (source == null) {
@@ -104,18 +107,44 @@ class LumaMeshGenerator : Generator {
             strokeWidth = lineWidth
         }
 
+        // Perspective tilt: apply a simple isometric transform
+        val perspRad = perspective * kotlin.math.PI.toFloat() / 180f
+        val cosTilt = kotlin.math.cos(perspRad)
+        val sinTilt = kotlin.math.sin(perspRad)
+
         // Draw grid quads from back to front (top to bottom gives basic depth)
         for (row in 0 until rows - 1) {
             for (col in 0 until cols - 1) {
                 val x0 = col * gridSize
                 val x1 = (col + 1) * gridSize
-                val y00 = row * gridSize - lumaGrid[row][col] * displacement
-                val y10 = row * gridSize - lumaGrid[row][col + 1] * displacement
-                val y01 = (row + 1) * gridSize - lumaGrid[row + 1][col] * displacement
-                val y11 = (row + 1) * gridSize - lumaGrid[row + 1][col + 1] * displacement
+                // Apply perspective: compress Y and shift by displacement
+                val baseY0 = row * gridSize
+                val baseY1 = (row + 1) * gridSize
+                val d00 = lumaGrid[row][col] * displacement
+                val d10 = lumaGrid[row][col + 1] * displacement
+                val d01 = lumaGrid[row + 1][col] * displacement
+                val d11 = lumaGrid[row + 1][col + 1] * displacement
+                val y00 = baseY0 * cosTilt - d00 * sinTilt + (1f - cosTilt) * h / 2f
+                val y10 = baseY0 * cosTilt - d10 * sinTilt + (1f - cosTilt) * h / 2f
+                val y01 = baseY1 * cosTilt - d01 * sinTilt + (1f - cosTilt) * h / 2f
+                val y11 = baseY1 * cosTilt - d11 * sinTilt + (1f - cosTilt) * h / 2f
 
                 val avgLuma = (lumaGrid[row][col] + lumaGrid[row][col + 1] +
                         lumaGrid[row + 1][col] + lumaGrid[row + 1][col + 1]) / 4f
+
+                // Determine colour based on colorMode
+                val faceColor = when (colorMode) {
+                    "source" -> {
+                        val sx = ((col * gridSize + gridSize / 2f).toInt()).coerceIn(0, scaled.width - 1)
+                        val sy = ((row * gridSize + gridSize / 2f).toInt()).coerceIn(0, scaled.height - 1)
+                        scaled.getPixel(sx, sy)
+                    }
+                    "grayscale" -> {
+                        val v = (avgLuma * 255f).toInt().coerceIn(0, 255)
+                        Color.rgb(v, v, v)
+                    }
+                    else -> palette.lerpColor(avgLuma) // "palette"
+                }
 
                 val path = Path()
                 path.moveTo(x0, y00)
@@ -125,14 +154,16 @@ class LumaMeshGenerator : Generator {
                 path.close()
 
                 if (showFill) {
-                    fillPaint.color = palette.lerpColor(avgLuma)
+                    fillPaint.color = faceColor
                     fillPaint.alpha = 200
                     canvas.drawPath(path, fillPaint)
                 }
 
-                strokePaint.color = palette.lerpColor(avgLuma)
-                strokePaint.alpha = 100
-                canvas.drawPath(path, strokePaint)
+                if (showWireframe) {
+                    strokePaint.color = faceColor
+                    strokePaint.alpha = 100
+                    canvas.drawPath(path, strokePaint)
+                }
             }
         }
 

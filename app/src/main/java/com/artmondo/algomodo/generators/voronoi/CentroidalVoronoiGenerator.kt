@@ -69,6 +69,11 @@ class CentroidalVoronoiGenerator : Generator {
         val numPoints = (params["cellCount"] as? Number)?.toInt() ?: 50
         val relaxSteps = (params["relaxationSteps"] as? Number)?.toInt() ?: 5
         val showCentroids = params["showSeeds"] as? Boolean ?: false
+        val borderWidth = (params["borderWidth"] as? Number)?.toFloat() ?: 1.5f
+        val colorMode = (params["colorMode"] as? String) ?: "By Index"
+        val distanceMetric = (params["distanceMetric"] as? String) ?: "Euclidean"
+        val animSpeed = (params["animSpeed"] as? Number)?.toFloat() ?: 0.4f
+        val animAmp = (params["animAmp"] as? Number)?.toFloat() ?: 0.2f
 
         val rng = SeededRNG(seed)
         val noise = SimplexNoise(seed)
@@ -96,7 +101,7 @@ class CentroidalVoronoiGenerator : Generator {
 
             for (sy in 0 until h step sampleStep) {
                 for (sx in 0 until w step sampleStep) {
-                    val nearest = findNearest(sx.toFloat(), sy.toFloat(), px, py, numPoints)
+                    val nearest = findNearestWithMetric(sx.toFloat(), sy.toFloat(), px, py, numPoints, distanceMetric)
                     sumX[nearest] += sx.toFloat()
                     sumY[nearest] += sy.toFloat()
                     count[nearest]++
@@ -113,9 +118,11 @@ class CentroidalVoronoiGenerator : Generator {
 
         // Animate: small noise displacement after relaxation
         if (time > 0f) {
+            val speed = animSpeed / 0.4f
+            val amp = animAmp / 0.2f
             for (i in 0 until numPoints) {
-                px[i] += noise.noise2D(i * 0.5f + 10f, time * 0.2f) * w * 0.02f
-                py[i] += noise.noise2D(i * 0.5f + 110f, time * 0.2f) * h * 0.02f
+                px[i] += noise.noise2D(i * 0.5f + 10f, time * 0.2f * speed) * w * 0.02f * amp
+                py[i] += noise.noise2D(i * 0.5f + 110f, time * 0.2f * speed) * h * 0.02f * amp
                 px[i] = px[i].coerceIn(0f, w.toFloat() - 1f)
                 py[i] = py[i].coerceIn(0f, h.toFloat() - 1f)
             }
@@ -131,10 +138,47 @@ class CentroidalVoronoiGenerator : Generator {
             Quality.ULTRA -> 1
         }
 
+        val showBorder = borderWidth > 0f
+        val diagonal = sqrt((w * w + h * h).toFloat())
+
         for (row in 0 until h step renderStep) {
             for (col in 0 until w step renderStep) {
-                val nearest = findNearest(col.toFloat(), row.toFloat(), px, py, numPoints)
-                val color = colors[nearest % colors.size]
+                val nearest = findNearestWithMetric(col.toFloat(), row.toFloat(), px, py, numPoints, distanceMetric)
+
+                // Edge detection via border width
+                var onEdge = false
+                if (showBorder) {
+                    for (d in 1..borderWidth.toInt().coerceAtLeast(1)) {
+                        if (col + d < w) {
+                            val adj = findNearestWithMetric((col + d).toFloat(), row.toFloat(), px, py, numPoints, distanceMetric)
+                            if (adj != nearest) { onEdge = true; break }
+                        }
+                        if (row + d < h) {
+                            val adj = findNearestWithMetric(col.toFloat(), (row + d).toFloat(), px, py, numPoints, distanceMetric)
+                            if (adj != nearest) { onEdge = true; break }
+                        }
+                    }
+                }
+
+                val color = if (onEdge) {
+                    Color.BLACK
+                } else {
+                    when (colorMode) {
+                        "By Distance" -> {
+                            val dx = col.toFloat() - px[nearest]
+                            val dy = row.toFloat() - py[nearest]
+                            val dist = sqrt(dx * dx + dy * dy)
+                            val avgCellSize = sqrt((w.toFloat() * h.toFloat()) / numPoints)
+                            val t = (dist / avgCellSize).coerceIn(0f, 1f)
+                            palette.lerpColor(t)
+                        }
+                        "By Position" -> {
+                            val t = (sqrt(px[nearest] * px[nearest] + py[nearest] * py[nearest]) / diagonal).coerceIn(0f, 1f)
+                            palette.lerpColor(t)
+                        }
+                        else -> colors[nearest % colors.size] // "By Index"
+                    }
+                }
 
                 if (renderStep == 1) {
                     pixels[row * w + col] = color
@@ -163,6 +207,27 @@ class CentroidalVoronoiGenerator : Generator {
                 canvas.drawCircle(px[i], py[i], 3f, paint)
             }
         }
+    }
+
+    private fun computeDistance(dx: Float, dy: Float, metric: String): Float = when (metric) {
+        "Manhattan" -> kotlin.math.abs(dx) + kotlin.math.abs(dy)
+        "Chebyshev" -> maxOf(kotlin.math.abs(dx), kotlin.math.abs(dy))
+        else -> dx * dx + dy * dy // Euclidean (squared for comparison)
+    }
+
+    private fun findNearestWithMetric(x: Float, y: Float, px: FloatArray, py: FloatArray, n: Int, metric: String): Int {
+        var bestDist = Float.MAX_VALUE
+        var bestIdx = 0
+        for (i in 0 until n) {
+            val dx = x - px[i]
+            val dy = y - py[i]
+            val d = computeDistance(dx, dy, metric)
+            if (d < bestDist) {
+                bestDist = d
+                bestIdx = i
+            }
+        }
+        return bestIdx
     }
 
     private fun findNearest(x: Float, y: Float, px: FloatArray, py: FloatArray, n: Int): Int {

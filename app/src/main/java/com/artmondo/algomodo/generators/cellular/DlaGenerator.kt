@@ -57,6 +57,10 @@ class DlaGenerator : Generator {
         val stickiness = (params["stickProbability"] as? Number)?.toFloat() ?: 1.0f
         val seedCount = (params["scatterSeeds"] as? Number)?.toInt() ?: 5
         val particlesPerFrame = (params["particlesPerFrame"] as? Number)?.toFloat() ?: 8f
+        val seedMode = (params["seedMode"] as? String) ?: "center"
+        val walkBias = (params["walkBias"] as? Number)?.toFloat() ?: 0.0f
+        val tipBias = (params["tipBias"] as? Number)?.toFloat() ?: 0.0f
+        val colorMode = (params["colorMode"] as? String) ?: "arrival"
 
         val w = bitmap.width
         val h = bitmap.height
@@ -72,14 +76,39 @@ class DlaGenerator : Generator {
         val order = IntArray(totalCells) { -1 }
         var placed = 0
 
-        // Place seed(s) at center
-        for (s in 0 until seedCount) {
-            val sx = cx + (s - seedCount / 2)
-            val sy = cy
-            if (sx in 0 until gridSize && sy in 0 until gridSize) {
-                val idx = sy * gridSize + sx
-                aggregate[idx] = true
-                order[idx] = placed++
+        // Place seed(s) based on seedMode
+        when (seedMode) {
+            "line-bottom" -> {
+                // Full bottom row as seed
+                val sy = gridSize - 1
+                for (sx in 0 until gridSize) {
+                    val idx = sy * gridSize + sx
+                    aggregate[idx] = true
+                    order[idx] = placed++
+                }
+            }
+            "scatter" -> {
+                // N random seeds scattered across the grid
+                for (s in 0 until seedCount) {
+                    val sx = rng.integer(0, gridSize - 1)
+                    val sy = rng.integer(0, gridSize - 1)
+                    val idx = sy * gridSize + sx
+                    if (!aggregate[idx]) {
+                        aggregate[idx] = true
+                        order[idx] = placed++
+                    }
+                }
+            }
+            else /* center */ -> {
+                for (s in 0 until seedCount) {
+                    val sx = cx + (s - seedCount / 2)
+                    val sy = cy
+                    if (sx in 0 until gridSize && sy in 0 until gridSize) {
+                        val idx = sy * gridSize + sx
+                        aggregate[idx] = true
+                        order[idx] = placed++
+                    }
+                }
             }
         }
 
@@ -114,17 +143,38 @@ class DlaGenerator : Generator {
                     }
                 }
 
-                if (adjacent && rng.random() < stickiness) {
-                    val idx = py * gridSize + px
-                    if (!aggregate[idx]) {
-                        aggregate[idx] = true
-                        order[idx] = placed++
+                if (adjacent) {
+                    // tipBias: modulate stick probability by distance from center
+                    val dist = kotlin.math.sqrt(((px - cx) * (px - cx) + (py - cy) * (py - cy)).toFloat())
+                    val maxDist = (gridSize / 2).toFloat()
+                    val normalizedDist = (dist / maxDist).coerceIn(0f, 1f)
+                    // positive tipBias: outer tips stickier; negative: inner positions stickier
+                    val tipFactor = if (tipBias >= 0f) {
+                        1f - tipBias * (1f - normalizedDist)
+                    } else {
+                        1f + tipBias * normalizedDist
+                    }.coerceIn(0.05f, 1f)
+                    val effectiveStick = stickiness * tipFactor
+
+                    if (rng.random() < effectiveStick) {
+                        val idx = py * gridSize + px
+                        if (!aggregate[idx]) {
+                            aggregate[idx] = true
+                            order[idx] = placed++
+                        }
+                        break
                     }
-                    break
                 }
 
-                // Random walk
-                val dir = rng.integer(0, 3)
+                // Random walk with directional bias
+                // walkBias: positive = downward drift, negative = upward
+                val r = rng.random()
+                val dir = when {
+                    r < 0.25f - walkBias.coerceAtLeast(0f) * 0.1f -> 0 // up
+                    r < 0.50f -> 1 // right
+                    r < 0.75f + walkBias.coerceAtLeast(0f) * 0.1f -> 2 // down
+                    else -> 3 // left
+                }
                 px += dx4[dir]
                 py += dy4[dir]
 
@@ -139,14 +189,29 @@ class DlaGenerator : Generator {
         val cellH = h.toFloat() / gridSize
         val maxOrder = placed.coerceAtLeast(1)
 
+        val paletteColors = palette.colorInts()
+        val monoColor = paletteColors[paletteColors.size - 1]
+
         for (ry in 0 until h) {
             val gy = (ry / cellH).toInt().coerceAtMost(gridSize - 1)
             for (rx in 0 until w) {
                 val gx = (rx / cellW).toInt().coerceAtMost(gridSize - 1)
                 val idx = gy * gridSize + gx
                 pixels[ry * w + rx] = if (aggregate[idx]) {
-                    val t = order[idx].toFloat() / maxOrder
-                    palette.lerpColor(t)
+                    when (colorMode) {
+                        "radius" -> {
+                            // Color by distance from origin/seed center
+                            val dist = kotlin.math.sqrt(((gx - cx) * (gx - cx) + (gy - cy) * (gy - cy)).toFloat())
+                            val maxDist = (gridSize / 2).toFloat().coerceAtLeast(1f)
+                            val t = (dist / maxDist).coerceIn(0f, 1f)
+                            palette.lerpColor(t)
+                        }
+                        "monochrome" -> monoColor
+                        else /* arrival */ -> {
+                            val t = order[idx].toFloat() / maxOrder
+                            palette.lerpColor(t)
+                        }
+                    }
                 } else {
                     Color.BLACK
                 }

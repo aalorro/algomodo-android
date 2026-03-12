@@ -73,6 +73,10 @@ class MosaicGenerator : Generator {
         val tileSize = (params["tileSize"] as? Number)?.toInt() ?: 15
         val gap = (params["gap"] as? Number)?.toFloat() ?: 1f
         val shape = (params["shape"] as? String) ?: "square"
+        val groutColorMode = (params["groutColor"] as? String) ?: "dark-gray"
+        val jitter = (params["jitter"] as? Number)?.toFloat() ?: 0f
+        val outline = params["outline"] as? Boolean ?: false
+        val colorMode = (params["colorMode"] as? String) ?: "source"
         val speed = (params["speed"] as? Number)?.toFloat() ?: 0f
         val sampleShift = if (speed > 0f && time > 0f) (kotlin.math.sin(time * speed * 2f) * tileSize * 0.5f).toInt() else 0
 
@@ -86,10 +90,26 @@ class MosaicGenerator : Generator {
         val srcPixels = IntArray(w * h)
         scaled.getPixels(srcPixels, 0, w, 0, 0, w, h)
 
-        canvas.drawColor(Color.DKGRAY) // grout color
+        val paletteColors = palette.colorInts()
+        val groutColor = when (groutColorMode) {
+            "black" -> Color.BLACK
+            "white" -> Color.WHITE
+            "palette-dark" -> paletteColors.minByOrNull {
+                0.299f * Color.red(it) + 0.587f * Color.green(it) + 0.114f * Color.blue(it)
+            } ?: Color.DKGRAY
+            else -> Color.DKGRAY
+        }
+        canvas.drawColor(groutColor)
+
+        val rng = com.artmondo.algomodo.core.rng.SeededRNG(seed)
 
         val paint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
             style = Paint.Style.FILL
+        }
+        val outlinePaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+            style = Paint.Style.STROKE
+            strokeWidth = 1f
+            color = groutColor
         }
 
         if (shape == "hexagon") {
@@ -118,30 +138,69 @@ class MosaicGenerator : Generator {
                     }
 
                     if (count == 0) continue
-                    val avgColor = Color.rgb(
-                        (rSum / count).toInt(),
-                        (gSum / count).toInt(),
-                        (bSum / count).toInt()
-                    )
-                    paint.color = avgColor
+                    val avgR = (rSum / count).toInt()
+                    val avgG = (gSum / count).toInt()
+                    val avgB = (bSum / count).toInt()
+                    val avgColor = Color.rgb(avgR, avgG, avgB)
 
-                    val cx = col * tileSize + tileSize / 2f
-                    val cy = row * tileSize + tileSize / 2f
+                    // Apply colorMode
+                    paint.color = when (colorMode) {
+                        "palette" -> {
+                            val luma = (0.299f * avgR + 0.587f * avgG + 0.114f * avgB) / 255f
+                            palette.lerpColor(luma)
+                        }
+                        "average" -> avgColor
+                        else -> avgColor // "source"
+                    }
+
+                    // Apply jitter offset
+                    val jitterX = if (jitter > 0f) (rng.random() - 0.5f) * tileSize * jitter else 0f
+                    val jitterY = if (jitter > 0f) (rng.random() - 0.5f) * tileSize * jitter else 0f
+                    val cx = col * tileSize + tileSize / 2f + jitterX
+                    val cy = row * tileSize + tileSize / 2f + jitterY
                     val halfGap = gap / 2f
 
                     when (shape) {
                         "circle" -> {
                             val radius = tileSize / 2f - halfGap
                             canvas.drawCircle(cx, cy, radius, paint)
+                            if (outline) canvas.drawCircle(cx, cy, radius, outlinePaint)
+                        }
+                        "diamond" -> {
+                            val r = tileSize / 2f - halfGap
+                            val path = Path()
+                            path.moveTo(cx, cy - r)
+                            path.lineTo(cx + r, cy)
+                            path.lineTo(cx, cy + r)
+                            path.lineTo(cx - r, cy)
+                            path.close()
+                            canvas.drawPath(path, paint)
+                            if (outline) canvas.drawPath(path, outlinePaint)
+                        }
+                        "triangle" -> {
+                            val r = tileSize / 2f - halfGap
+                            val path = Path()
+                            val flip = (row + col) % 2 == 0
+                            if (flip) {
+                                path.moveTo(cx, cy - r)
+                                path.lineTo(cx + r, cy + r)
+                                path.lineTo(cx - r, cy + r)
+                            } else {
+                                path.moveTo(cx - r, cy - r)
+                                path.lineTo(cx + r, cy - r)
+                                path.lineTo(cx, cy + r)
+                            }
+                            path.close()
+                            canvas.drawPath(path, paint)
+                            if (outline) canvas.drawPath(path, outlinePaint)
                         }
                         else -> { // square
-                            canvas.drawRect(
-                                col * tileSize + halfGap,
-                                row * tileSize + halfGap,
-                                (col + 1) * tileSize - halfGap,
-                                (row + 1) * tileSize - halfGap,
-                                paint
-                            )
+                            val left = col * tileSize + halfGap + jitterX
+                            val top = row * tileSize + halfGap + jitterY
+                            val right = (col + 1) * tileSize - halfGap + jitterX
+                            val bottom = (row + 1) * tileSize - halfGap + jitterY
+                            canvas.drawRect(left, top, right, bottom, paint)
+                            if (outline) canvas.drawRect(left, top, right, bottom, outlinePaint)
                         }
                     }
                 }
