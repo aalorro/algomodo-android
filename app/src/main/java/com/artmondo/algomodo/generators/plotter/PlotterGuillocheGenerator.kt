@@ -48,7 +48,7 @@ class PlotterGuillocheGenerator : Generator {
         Parameter.NumberParam("Line Width", "lineWidth", ParamGroup.TEXTURE, null, 0.25f, 3f, 0.25f, 0.75f),
         Parameter.SelectParam("Color Mode", "colorMode", ParamGroup.COLOR, "monochrome: single ink | palette-rings: one color per ring | interference: alternating | gradient-sweep: hue rotates along each curve", listOf("monochrome", "palette-rings", "interference", "gradient-sweep"), "palette-rings"),
         Parameter.SelectParam("Background", "background", ParamGroup.COLOR, null, listOf("white", "cream", "dark"), "cream"),
-        Parameter.NumberParam("Spin Speed", "spinSpeed", ParamGroup.FLOW_MOTION, "Rotation speed (rad/s). Even/odd rings spin in opposite directions.", 0f, 1.0f, 0.05f, 0.12f)
+        Parameter.NumberParam("Spin Speed", "spinSpeed", ParamGroup.FLOW_MOTION, "Rotation speed (rad/s). Each ring spins at a different rate with alternating direction.", 0f, 3.0f, 0.05f, 0.5f)
     )
 
     override fun getDefaultParams(): Map<String, Any> = mapOf(
@@ -62,7 +62,7 @@ class PlotterGuillocheGenerator : Generator {
         "lineWidth" to 0.75f,
         "colorMode" to "palette-rings",
         "background" to "cream",
-        "spinSpeed" to 0.12f
+        "spinSpeed" to 0.5f
     )
 
     companion object {
@@ -144,8 +144,25 @@ class PlotterGuillocheGenerator : Generator {
         val invSteps = 1f / steps
 
         for (ri in 0 until ringCount) {
-            val ecc = eccBase * (0.78f + ri * 0.06f + rng.range(0f, 0.08f))
-            val ringRadius = halfSize * (0.3f + ri * spread)
+            val eccStatic = eccBase * (0.78f + ri * 0.06f + rng.range(0f, 0.08f))
+            val ringRadiusBase = halfSize * (0.3f + ri * spread)
+
+            // Alternating rotation direction; each ring spins at a different rate
+            val direction = if (ri % 2 == 0) 1f else -1f
+            val ringSpeedMult = 1f + ri * 0.18f
+            val phase = time * spinSpeed * direction * ringSpeedMult
+
+            // Breathing: radius oscillates per ring at offset frequencies
+            val breathe = if (spinSpeed > 0f)
+                1f + 0.04f * sin(time * (0.5f + ri * 0.12f) * TWO_PI)
+            else 1f
+            val ringRadius = ringRadiusBase * breathe
+
+            // Eccentricity oscillation: petals gently grow/shrink over time
+            val eccOsc = if (spinSpeed > 0f)
+                0.06f * sin(time * 0.4f * TWO_PI + ri * 0.8f)
+            else 0f
+            val ecc = (eccStatic + eccOsc).coerceIn(0.1f, 0.98f)
 
             // Pre-compute per-ring curve constants
             val d = kf * ecc
@@ -172,10 +189,6 @@ class PlotterGuillocheGenerator : Generator {
             val waveFreq = k * 3
             val useWave = waveMod > 0f
             val waveFactor = waveMod * 0.3f
-
-            // Alternating rotation direction per ring
-            val direction = if (ri % 2 == 0) 1f else -1f
-            val phase = time * spinSpeed * direction
 
             for (li in 0 until linesPerRing) {
                 val linePhase = phase + (li.toFloat() / linesPerRing) * TWO_PI / kf
