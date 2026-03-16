@@ -3,6 +3,9 @@ package com.artmondo.algomodo.generators.animation
 import android.graphics.Bitmap
 import android.graphics.Canvas
 import android.graphics.Color
+import android.graphics.Paint
+import android.graphics.Rect
+import android.graphics.RectF
 import com.artmondo.algomodo.core.rng.SeededRNG
 import com.artmondo.algomodo.data.palettes.Palette
 import com.artmondo.algomodo.generators.Generator
@@ -98,8 +101,17 @@ class AttractorTrailsGenerator : Generator {
         "driftAmp" to 0.15f
     )
 
-    // Attractor type constants — avoids string comparison in hot loop
+    // ── Fast sin/cos lookup table ──
+    // 8192 entries gives max error ~0.0004 — invisible for pixel rendering.
+    // Eliminates ~2M+ Math.sin() calls per frame (the main bottleneck on ARM).
     private companion object {
+        const val TABLE_BITS = 13
+        const val TABLE_SIZE = 1 shl TABLE_BITS          // 8192
+        const val TABLE_MASK = TABLE_SIZE - 1
+        val TWO_PI = (2.0 * PI).toFloat()
+        val INV_TWO_PI_TABLE = (TABLE_SIZE / (2.0 * PI)).toFloat()
+        val QUARTER_TABLE = TABLE_SIZE / 4                 // cos offset
+
         const val TYPE_CLIFFORD = 0
         const val TYPE_DEJONG = 1
         const val TYPE_BEDHEAD = 2
@@ -107,28 +119,50 @@ class AttractorTrailsGenerator : Generator {
         const val TYPE_TINKERBELL = 4
         const val PALETTE_LUT_SIZE = 256
         const val BG_COLOR = 0xFF040408.toInt()
+
+        val SIN_TABLE = FloatArray(TABLE_SIZE) {
+            sin(it.toDouble() / TABLE_SIZE * 2.0 * PI).toFloat()
+        }
+
+        fun fsin(x: Float): Float {
+            // Map x to table index. Handles negative values via (% + mask).
+            val i = (x * INV_TWO_PI_TABLE).toInt()
+            return SIN_TABLE[(i % TABLE_SIZE + TABLE_SIZE) and TABLE_MASK]
+        }
+
+        fun fcos(x: Float): Float {
+            val i = (x * INV_TWO_PI_TABLE).toInt() + QUARTER_TABLE
+            return SIN_TABLE[(i % TABLE_SIZE + TABLE_SIZE) and TABLE_MASK]
+        }
     }
 
-    // Reusable buffers — avoids allocating large arrays every frame
+    // Reusable buffers
     private var histogram: IntArray? = null
     private var pixels: IntArray? = null
     private var auxFloat: FloatArray? = null
-    private var lastBufferSize = 0
+    private var lastBufSize = 0
+    private var renderBitmap: Bitmap? = null
 
     private fun ensureBuffers(size: Int, needAux: Boolean) {
-        if (size != lastBufferSize) {
+        if (size != lastBufSize) {
             histogram = IntArray(size)
             pixels = IntArray(size)
             auxFloat = if (needAux) FloatArray(size) else null
-            lastBufferSize = size
+            lastBufSize = size
         } else {
             histogram!!.fill(0)
-            pixels!!.fill(0)
             if (needAux) {
-                if (auxFloat == null || auxFloat!!.size != size) auxFloat = FloatArray(size)
-                else auxFloat!!.fill(0f)
+                if (auxFloat == null) auxFloat = FloatArray(size) else auxFloat!!.fill(0f)
             }
         }
+    }
+
+    private fun ensureRenderBitmap(rw: Int, rh: Int): Bitmap {
+        val existing = renderBitmap
+        if (existing != null && existing.width == rw && existing.height == rh) return existing
+        val bmp = Bitmap.createBitmap(rw, rh, Bitmap.Config.ARGB_8888)
+        renderBitmap = bmp
+        return bmp
     }
 
     private fun typeId(type: String): Int = when (type) {
@@ -173,7 +207,6 @@ class AttractorTrailsGenerator : Generator {
         else -> 3.0f
     }
 
-    /** Build a 256-entry palette lookup table to avoid per-pixel lerpColor calls. */
     private fun buildPaletteLut(palette: Palette, shift: Float): IntArray {
         val lut = IntArray(PALETTE_LUT_SIZE)
         for (i in 0 until PALETTE_LUT_SIZE) {
@@ -181,43 +214,6 @@ class AttractorTrailsGenerator : Generator {
             lut[i] = palette.lerpColor(t)
         }
         return lut
-    }
-
-    /**
-     * Inline attractor iteration — returns new x,y via the passed FloatArray to avoid
-     * Pair allocation in the hot loop. out[0] = nx, out[1] = ny.
-     */
-    private inline fun iterate(
-        type: Int, x: Float, y: Float,
-        a: Float, b: Float, c: Float, d: Float,
-        out: FloatArray
-    ) {
-        when (type) {
-            TYPE_CLIFFORD -> {
-                out[0] = sin(a * y) + c * cos(a * x)
-                out[1] = sin(b * x) + d * cos(b * y)
-            }
-            TYPE_DEJONG -> {
-                out[0] = sin(a * y) - cos(b * x)
-                out[1] = sin(c * x) - cos(d * y)
-            }
-            TYPE_BEDHEAD -> {
-                out[0] = sin(x * y / b) + cos(a * x - y)
-                out[1] = x + sin(y) / b
-            }
-            TYPE_SVENSSON -> {
-                out[0] = d * sin(a * x) - sin(b * y)
-                out[1] = c * cos(a * x) + cos(b * y)
-            }
-            TYPE_TINKERBELL -> {
-                out[0] = x * x - y * y + a * x + b * y
-                out[1] = 2f * x * y + c * x + d * y
-            }
-            else -> {
-                out[0] = sin(a * y) + c * cos(a * x)
-                out[1] = sin(b * x) + d * cos(b * y)
-            }
-        }
     }
 
     override fun renderCanvas(
@@ -229,20 +225,11 @@ class AttractorTrailsGenerator : Generator {
         quality: Quality,
         time: Float
     ) {
-        val w = bitmap.width
-        val h = bitmap.height
-        val dim = min(w, h)
-        val bufSize = w * h
+        val fullW = bitmap.width
+        val fullH = bitmap.height
 
         val type = typeId((params["attractorType"] as? String) ?: "clifford")
-        val iterationsK = ((params["iterations"] as? Number)?.toInt() ?: 800).let {
-            when (quality) {
-                Quality.DRAFT -> (it * 0.3f).toInt()
-                Quality.BALANCED -> (it * 0.7f).toInt()
-                Quality.ULTRA -> it
-            }
-        }
-        val totalIterations = iterationsK * 1000
+        val iterationsK = ((params["iterations"] as? Number)?.toInt() ?: 800)
         val brightness = (params["brightness"] as? Number)?.toFloat() ?: 1.5f
         val colorMode = (params["colorMode"] as? String) ?: "density"
         val colorShift = (params["colorShift"] as? Number)?.toFloat() ?: 0f
@@ -250,31 +237,45 @@ class AttractorTrailsGenerator : Generator {
         val driftSpeed = (params["driftSpeed"] as? Number)?.toFloat() ?: 0.2f
         val driftAmp = (params["driftAmp"] as? Number)?.toFloat() ?: 0.15f
 
-        val rng = SeededRNG(seed)
+        // Resolution scaling: render at lower res during animation, full res for export
+        val resScale = when (quality) {
+            Quality.DRAFT -> 0.4f
+            Quality.BALANCED -> 0.55f
+            Quality.ULTRA -> 1f
+        }
+        val rw = (fullW * resScale).toInt().coerceAtLeast(200)
+        val rh = (fullH * resScale).toInt().coerceAtLeast(200)
+        val renderDim = min(rw, rh)
 
+        // Iteration count scaled with resolution
+        val totalIterations = when (quality) {
+            Quality.DRAFT -> (iterationsK * 200)       // 200 per K (was 300)
+            Quality.BALANCED -> (iterationsK * 500)    // 500 per K (was 700)
+            Quality.ULTRA -> (iterationsK * 1000)
+        }
+
+        val rng = SeededRNG(seed)
         val bp = baseParams(type, rng)
-        val phases = FloatArray(4) { rng.random().toFloat() * (2f * PI.toFloat()) }
+        val phases = FloatArray(4) { rng.random().toFloat() * TWO_PI }
         val freqs = FloatArray(4) { 0.3f + rng.random().toFloat() * 0.7f }
 
         val tp = time * driftSpeed
-        val a = bp[0] + driftAmp * sin(tp * freqs[0] * 2f * PI.toFloat() + phases[0])
-        val b = bp[1] + driftAmp * sin(tp * freqs[1] * 2f * PI.toFloat() + phases[1])
-        val c = bp[2] + driftAmp * sin(tp * freqs[2] * 2f * PI.toFloat() + phases[2])
-        val d = bp[3] + driftAmp * sin(tp * freqs[3] * 2f * PI.toFloat() + phases[3])
+        val a = bp[0] + driftAmp * fsin(tp * freqs[0] * TWO_PI + phases[0])
+        val b = bp[1] + driftAmp * fsin(tp * freqs[1] * TWO_PI + phases[1])
+        val c = bp[2] + driftAmp * fsin(tp * freqs[2] * TWO_PI + phases[2])
+        val d = bp[3] + driftAmp * fsin(tp * freqs[3] * TWO_PI + phases[3])
 
         val range = coordRange(type)
-        val cx = w * 0.5f
-        val cy = h * 0.5f
-        val scale = dim / (2f * range)
+        val cx = rw * 0.5f
+        val cy = rh * 0.5f
+        val scale = renderDim / (2f * range)
+        val bufSize = rw * rh
 
         val needAux = colorMode == "angle" || colorMode == "velocity"
         ensureBuffers(bufSize, needAux)
         val hist = histogram!!
         val pix = pixels!!
         val aux = auxFloat
-
-        // Reusable output array for inline iteration — zero allocation
-        val out = FloatArray(2)
 
         // Splat precomputation
         val splatOffsets: IntArray?
@@ -283,166 +284,231 @@ class AttractorTrailsGenerator : Generator {
             val ir = ceil(pointRadius).toInt()
             val r2 = pointRadius * pointRadius
             val offsets = mutableListOf<Int>()
-            for (dy in -ir..ir) {
-                for (dx in -ir..ir) {
-                    if (dx == 0 && dy == 0) continue
-                    if (dx * dx + dy * dy <= r2) {
-                        offsets.add(dx)
-                        offsets.add(dy)
-                    }
-                }
+            for (dy in -ir..ir) for (dx in -ir..ir) {
+                if (dx == 0 && dy == 0) continue
+                if (dx * dx + dy * dy <= r2) { offsets.add(dx); offsets.add(dy) }
             }
             splatOffsets = offsets.toIntArray()
             splatCount = offsets.size / 2
         } else {
-            splatOffsets = null
-            splatCount = 0
+            splatOffsets = null; splatCount = 0
         }
 
-        // -- Main iteration loop (hot path) --
-        var x = 0.5f
-        var y = 0.5f
-
-        // Warmup
+        // ── Warmup ──
+        var x = 0.5f; var y = 0.5f
         for (i in 0 until 200) {
-            iterate(type, x, y, a, b, c, d, out)
-            x = out[0]; y = out[1]
+            iterateInline(type, x, y, a, b, c, d) { nx, ny -> x = nx; y = ny }
             if (x.isNaN() || x.isInfinite()) { x = 0.1f; y = 0.1f }
         }
 
-        if (colorMode == "angle") {
-            // Angle mode — track movement direction
-            var prevX = x; var prevY = y
-            for (i in 0 until totalIterations) {
-                iterate(type, x, y, a, b, c, d, out)
-                val nx = out[0]; val ny = out[1]
-                if (nx.isNaN() || nx.isInfinite() || ny.isNaN() || ny.isInfinite()) {
-                    x = 0.1f; y = 0.1f; prevX = x; prevY = y; continue
-                }
-                prevX = x; prevY = y; x = nx; y = ny
-                val px = (cx + x * scale).toInt()
-                val py = (cy + y * scale).toInt()
-                if (px in 0 until w && py in 0 until h) {
-                    val idx = py * w + px
-                    hist[idx]++
-                    aux!![idx] = atan2(y - prevY, x - prevX)
-                    if (splatOffsets != null) {
-                        var si = 0
-                        while (si < splatCount) {
-                            val sx = px + splatOffsets[si * 2]
-                            val sy = py + splatOffsets[si * 2 + 1]
-                            if (sx in 0 until w && sy in 0 until h) hist[sy * w + sx]++
-                            si++
-                        }
-                    }
-                }
-            }
-        } else if (colorMode == "velocity") {
-            // Velocity mode — track speed
-            var prevX = x; var prevY = y
-            for (i in 0 until totalIterations) {
-                iterate(type, x, y, a, b, c, d, out)
-                val nx = out[0]; val ny = out[1]
-                if (nx.isNaN() || nx.isInfinite() || ny.isNaN() || ny.isInfinite()) {
-                    x = 0.1f; y = 0.1f; prevX = x; prevY = y; continue
-                }
-                prevX = x; prevY = y; x = nx; y = ny
-                val px = (cx + x * scale).toInt()
-                val py = (cy + y * scale).toInt()
-                if (px in 0 until w && py in 0 until h) {
-                    val idx = py * w + px
-                    hist[idx]++
-                    val vx = x - prevX; val vy = y - prevY
-                    aux!![idx] = sqrt(vx * vx + vy * vy)
-                    if (splatOffsets != null) {
-                        var si = 0
-                        while (si < splatCount) {
-                            val sx = px + splatOffsets[si * 2]
-                            val sy = py + splatOffsets[si * 2 + 1]
-                            if (sx in 0 until w && sy in 0 until h) hist[sy * w + sx]++
-                            si++
-                        }
-                    }
-                }
-            }
-        } else if (colorMode != "multi") {
-            // Density mode — fastest path, no aux tracking
-            for (i in 0 until totalIterations) {
-                iterate(type, x, y, a, b, c, d, out)
-                val nx = out[0]; val ny = out[1]
-                if (nx.isNaN() || nx.isInfinite() || ny.isNaN() || ny.isInfinite()) {
-                    x = 0.1f; y = 0.1f; continue
-                }
-                x = nx; y = ny
-                val px = (cx + x * scale).toInt()
-                val py = (cy + y * scale).toInt()
-                if (px in 0 until w && py in 0 until h) {
-                    val idx = py * w + px
-                    hist[idx]++
-                    if (splatOffsets != null) {
-                        var si = 0
-                        while (si < splatCount) {
-                            val sx = px + splatOffsets[si * 2]
-                            val sy = py + splatOffsets[si * 2 + 1]
-                            if (sx in 0 until w && sy in 0 until h) hist[sy * w + sx]++
-                            si++
-                        }
-                    }
-                }
-            }
+        // ── Main iteration (type-specialized, zero-allocation, fast trig) ──
+        when {
+            colorMode == "multi" -> { /* skip main loop — multi does its own */ }
+            colorMode == "angle" -> iterateWithAngle(type, x, y, a, b, c, d, totalIterations, cx, cy, scale, rw, rh, hist, aux!!, splatOffsets, splatCount)
+            colorMode == "velocity" -> iterateWithVelocity(type, x, y, a, b, c, d, totalIterations, cx, cy, scale, rw, rh, hist, aux!!, splatOffsets, splatCount)
+            else -> iterateDensity(type, x, y, a, b, c, d, totalIterations, cx, cy, scale, rw, rh, hist, splatOffsets, splatCount)
         }
 
-        // -- Tone mapping --
+        // ── Tone mapping ──
         val paletteShift = colorShift + time * colorShift * 0.5f
 
         if (colorMode == "multi") {
-            renderMulti(type, a, b, c, d, cx, cy, scale, w, h, totalIterations,
-                brightness, paletteShift, palette, pix, out)
+            renderMulti(type, a, b, c, d, cx, cy, scale, rw, rh, totalIterations,
+                brightness, paletteShift, palette, pix)
         } else {
-            // Build palette LUT + log LUT
-            val palLut = buildPaletteLut(palette, 0f)
+            toneMap(hist, aux, colorMode, brightness, paletteShift, palette, pix, bufSize)
+        }
 
-            var maxCount = 1
-            for (v in hist) if (v > maxCount) maxCount = v
-            val logMax = ln(1f + maxCount * brightness)
-            val invLogMax = 1f / logMax
+        // ── Output: upscale if needed ──
+        if (rw == fullW && rh == fullH) {
+            bitmap.setPixels(pix, 0, rw, 0, 0, rw, rh)
+            canvas.drawBitmap(bitmap, 0f, 0f, null)
+        } else {
+            val renderBmp = ensureRenderBitmap(rw, rh)
+            renderBmp.setPixels(pix, 0, rw, 0, 0, rw, rh)
+            val srcRect = Rect(0, 0, rw, rh)
+            val dstRect = RectF(0f, 0f, fullW.toFloat(), fullH.toFloat())
+            val p = Paint(Paint.FILTER_BITMAP_FLAG)
+            canvas.drawBitmap(renderBmp, srcRect, dstRect, p)
+        }
+    }
 
-            val twoPiInv = 1f / (2f * PI.toFloat())
-            val lutMax = (PALETTE_LUT_SIZE - 1).toFloat()
+    // ── Type-specialized iteration loops ──
+    // Each loop inlines the attractor math directly to avoid when-dispatch per iteration.
 
-            for (j in 0 until bufSize) {
-                val count = hist[j]
-                if (count > 0) {
-                    val intensity = (ln(1f + count * brightness) * invLogMax).coerceIn(0f, 1f)
+    private fun iterateDensity(
+        type: Int, startX: Float, startY: Float,
+        a: Float, b: Float, c: Float, d: Float,
+        iterations: Int, cx: Float, cy: Float, scale: Float,
+        w: Int, h: Int, hist: IntArray,
+        splatOffsets: IntArray?, splatCount: Int
+    ) {
+        var x = startX; var y = startY
+        when (type) {
+            TYPE_CLIFFORD -> for (i in 0 until iterations) {
+                val nx = fsin(a * y) + c * fcos(a * x)
+                val ny = fsin(b * x) + d * fcos(b * y)
+                if (nx.isNaN() || nx.isInfinite()) { x = 0.1f; y = 0.1f; continue }
+                x = nx; y = ny
+                plotPoint(x, y, cx, cy, scale, w, h, hist, splatOffsets, splatCount)
+            }
+            TYPE_DEJONG -> for (i in 0 until iterations) {
+                val nx = fsin(a * y) - fcos(b * x)
+                val ny = fsin(c * x) - fcos(d * y)
+                if (nx.isNaN() || nx.isInfinite()) { x = 0.1f; y = 0.1f; continue }
+                x = nx; y = ny
+                plotPoint(x, y, cx, cy, scale, w, h, hist, splatOffsets, splatCount)
+            }
+            TYPE_BEDHEAD -> for (i in 0 until iterations) {
+                val nx = fsin(x * y / b) + fcos(a * x - y)
+                val ny = x + fsin(y) / b
+                if (nx.isNaN() || nx.isInfinite()) { x = 0.1f; y = 0.1f; continue }
+                x = nx; y = ny
+                plotPoint(x, y, cx, cy, scale, w, h, hist, splatOffsets, splatCount)
+            }
+            TYPE_SVENSSON -> for (i in 0 until iterations) {
+                val nx = d * fsin(a * x) - fsin(b * y)
+                val ny = c * fcos(a * x) + fcos(b * y)
+                if (nx.isNaN() || nx.isInfinite()) { x = 0.1f; y = 0.1f; continue }
+                x = nx; y = ny
+                plotPoint(x, y, cx, cy, scale, w, h, hist, splatOffsets, splatCount)
+            }
+            TYPE_TINKERBELL -> for (i in 0 until iterations) {
+                val nx = x * x - y * y + a * x + b * y
+                val ny = 2f * x * y + c * x + d * y
+                if (nx.isNaN() || nx.isInfinite()) { x = 0.1f; y = 0.1f; continue }
+                x = nx; y = ny
+                plotPoint(x, y, cx, cy, scale, w, h, hist, splatOffsets, splatCount)
+            }
+        }
+    }
 
-                    val palVal = when (colorMode) {
-                        "angle" -> ((aux!![j] * twoPiInv + 0.5f + paletteShift) % 1f + 1f) % 1f
-                        "velocity" -> ((aux!![j] * 2f + paletteShift) % 1f + 1f) % 1f
-                        else -> ((intensity + paletteShift) % 1f + 1f) % 1f
-                    }
-
-                    val lutIdx = (palVal * lutMax).toInt().coerceIn(0, PALETTE_LUT_SIZE - 1)
-                    val baseColor = palLut[lutIdx]
-                    val r = ((baseColor shr 16 and 0xFF) * intensity).toInt()
-                    val g = ((baseColor shr 8 and 0xFF) * intensity).toInt()
-                    val b2 = ((baseColor and 0xFF) * intensity).toInt()
-                    pix[j] = (0xFF shl 24) or (r shl 16) or (g shl 8) or b2
-                } else {
-                    pix[j] = BG_COLOR
+    private fun iterateWithAngle(
+        type: Int, startX: Float, startY: Float,
+        a: Float, b: Float, c: Float, d: Float,
+        iterations: Int, cx: Float, cy: Float, scale: Float,
+        w: Int, h: Int, hist: IntArray, aux: FloatArray,
+        splatOffsets: IntArray?, splatCount: Int
+    ) {
+        var x = startX; var y = startY; var prevX = x; var prevY = y
+        for (i in 0 until iterations) {
+            iterateInline(type, x, y, a, b, c, d) { nx, ny ->
+                if (nx.isNaN() || nx.isInfinite()) { x = 0.1f; y = 0.1f; prevX = x; prevY = y; return@iterateInline }
+                prevX = x; prevY = y; x = nx; y = ny
+                val px = (cx + x * scale).toInt(); val py = (cy + y * scale).toInt()
+                if (px in 0 until w && py in 0 until h) {
+                    val idx = py * w + px; hist[idx]++
+                    aux[idx] = atan2(y - prevY, x - prevX)
+                    splatHist(px, py, w, h, hist, splatOffsets, splatCount)
                 }
             }
         }
-
-        bitmap.setPixels(pix, 0, w, 0, 0, w, h)
-        canvas.drawBitmap(bitmap, 0f, 0f, null)
     }
 
-    /** Multi-layer rendering — each layer uses a different palette color. */
+    private fun iterateWithVelocity(
+        type: Int, startX: Float, startY: Float,
+        a: Float, b: Float, c: Float, d: Float,
+        iterations: Int, cx: Float, cy: Float, scale: Float,
+        w: Int, h: Int, hist: IntArray, aux: FloatArray,
+        splatOffsets: IntArray?, splatCount: Int
+    ) {
+        var x = startX; var y = startY; var prevX = x; var prevY = y
+        for (i in 0 until iterations) {
+            iterateInline(type, x, y, a, b, c, d) { nx, ny ->
+                if (nx.isNaN() || nx.isInfinite()) { x = 0.1f; y = 0.1f; prevX = x; prevY = y; return@iterateInline }
+                prevX = x; prevY = y; x = nx; y = ny
+                val px = (cx + x * scale).toInt(); val py = (cy + y * scale).toInt()
+                if (px in 0 until w && py in 0 until h) {
+                    val idx = py * w + px; hist[idx]++
+                    val vx = x - prevX; val vy = y - prevY
+                    aux[idx] = sqrt(vx * vx + vy * vy)
+                    splatHist(px, py, w, h, hist, splatOffsets, splatCount)
+                }
+            }
+        }
+    }
+
+    private inline fun iterateInline(
+        type: Int, x: Float, y: Float,
+        a: Float, b: Float, c: Float, d: Float,
+        block: (Float, Float) -> Unit
+    ) {
+        when (type) {
+            TYPE_CLIFFORD -> block(fsin(a * y) + c * fcos(a * x), fsin(b * x) + d * fcos(b * y))
+            TYPE_DEJONG -> block(fsin(a * y) - fcos(b * x), fsin(c * x) - fcos(d * y))
+            TYPE_BEDHEAD -> block(fsin(x * y / b) + fcos(a * x - y), x + fsin(y) / b)
+            TYPE_SVENSSON -> block(d * fsin(a * x) - fsin(b * y), c * fcos(a * x) + fcos(b * y))
+            TYPE_TINKERBELL -> block(x * x - y * y + a * x + b * y, 2f * x * y + c * x + d * y)
+            else -> block(fsin(a * y) + c * fcos(a * x), fsin(b * x) + d * fcos(b * y))
+        }
+    }
+
+    private fun plotPoint(
+        x: Float, y: Float, cx: Float, cy: Float, scale: Float,
+        w: Int, h: Int, hist: IntArray,
+        splatOffsets: IntArray?, splatCount: Int
+    ) {
+        val px = (cx + x * scale).toInt()
+        val py = (cy + y * scale).toInt()
+        if (px in 0 until w && py in 0 until h) {
+            hist[py * w + px]++
+            splatHist(px, py, w, h, hist, splatOffsets, splatCount)
+        }
+    }
+
+    private fun splatHist(px: Int, py: Int, w: Int, h: Int, hist: IntArray, offsets: IntArray?, count: Int) {
+        if (offsets == null) return
+        var si = 0
+        while (si < count) {
+            val sx = px + offsets[si * 2]
+            val sy = py + offsets[si * 2 + 1]
+            if (sx in 0 until w && sy in 0 until h) hist[sy * w + sx]++
+            si++
+        }
+    }
+
+    // ── Tone mapping ──
+
+    private fun toneMap(
+        hist: IntArray, aux: FloatArray?, colorMode: String,
+        brightness: Float, paletteShift: Float,
+        palette: Palette, pix: IntArray, bufSize: Int
+    ) {
+        val palLut = buildPaletteLut(palette, 0f)
+        var maxCount = 1
+        for (v in hist) if (v > maxCount) maxCount = v
+        val invLogMax = 1f / ln(1f + maxCount * brightness)
+        val twoPiInv = 1f / TWO_PI
+        val lutMax = (PALETTE_LUT_SIZE - 1).toFloat()
+
+        for (j in 0 until bufSize) {
+            val count = hist[j]
+            if (count > 0) {
+                val intensity = (ln(1f + count * brightness) * invLogMax).coerceIn(0f, 1f)
+                val palVal = when (colorMode) {
+                    "angle" -> ((aux!![j] * twoPiInv + 0.5f + paletteShift) % 1f + 1f) % 1f
+                    "velocity" -> ((aux!![j] * 2f + paletteShift) % 1f + 1f) % 1f
+                    else -> ((intensity + paletteShift) % 1f + 1f) % 1f
+                }
+                val lutIdx = (palVal * lutMax).toInt().coerceIn(0, PALETTE_LUT_SIZE - 1)
+                val base = palLut[lutIdx]
+                val r = ((base shr 16 and 0xFF) * intensity).toInt()
+                val g = ((base shr 8 and 0xFF) * intensity).toInt()
+                val b2 = ((base and 0xFF) * intensity).toInt()
+                pix[j] = (0xFF shl 24) or (r shl 16) or (g shl 8) or b2
+            } else {
+                pix[j] = BG_COLOR
+            }
+        }
+    }
+
+    // ── Multi-layer rendering ──
+
     private fun renderMulti(
         type: Int, a: Float, b: Float, c: Float, d: Float,
         cx: Float, cy: Float, scale: Float, w: Int, h: Int,
         totalIterations: Int, brightness: Float, paletteShift: Float,
-        palette: Palette, pix: IntArray, out: FloatArray
+        palette: Palette, pix: IntArray
     ) {
         val bufSize = w * h
         val colors = palette.colorInts()
@@ -460,23 +526,18 @@ class AttractorTrailsGenerator : Generator {
             var lx = 0.5f + layer * 0.1f
             var ly = 0.5f + layer * 0.1f
             for (wi in 0 until 200) {
-                iterate(type, lx, ly, la, lb, c, d, out)
-                lx = out[0]; ly = out[1]
+                iterateInline(type, lx, ly, la, lb, c, d) { nx, ny -> lx = nx; ly = ny }
                 if (lx.isNaN() || lx.isInfinite()) { lx = 0.1f; ly = 0.1f }
             }
 
             val layerIter = totalIterations / layerCount
             for (i in 0 until layerIter) {
-                iterate(type, lx, ly, la, lb, c, d, out)
-                val nx = out[0]; val ny = out[1]
-                if (nx.isNaN() || nx.isInfinite() || ny.isNaN() || ny.isInfinite()) {
-                    lx = 0.1f; ly = 0.1f; continue
-                }
-                lx = nx; ly = ny
-                val lpx = (cx + lx * scale).toInt()
-                val lpy = (cy + ly * scale).toInt()
-                if (lpx in 0 until w && lpy in 0 until h) {
-                    layerHist[lpy * w + lpx]++
+                iterateInline(type, lx, ly, la, lb, c, d) { nx, ny ->
+                    if (nx.isNaN() || nx.isInfinite()) { lx = 0.1f; ly = 0.1f; return@iterateInline }
+                    lx = nx; ly = ny
+                    val lpx = (cx + lx * scale).toInt()
+                    val lpy = (cy + ly * scale).toInt()
+                    if (lpx in 0 until w && lpy in 0 until h) layerHist[lpy * w + lpx]++
                 }
             }
 
@@ -512,8 +573,8 @@ class AttractorTrailsGenerator : Generator {
     override fun estimateCost(params: Map<String, Any>, quality: Quality): Float {
         val iterations = (params["iterations"] as? Number)?.toFloat() ?: 800f
         return when (quality) {
-            Quality.DRAFT -> iterations * 0.3f / 2000f
-            Quality.BALANCED -> iterations * 0.7f / 2000f
+            Quality.DRAFT -> iterations * 0.2f / 2000f
+            Quality.BALANCED -> iterations * 0.5f / 2000f
             Quality.ULTRA -> iterations / 2000f
         }.coerceIn(0.1f, 1f)
     }
