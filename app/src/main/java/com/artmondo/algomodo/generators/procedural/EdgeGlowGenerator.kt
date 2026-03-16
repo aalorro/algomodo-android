@@ -43,13 +43,15 @@ class EdgeGlowGenerator : Generator {
         Parameter.NumberParam("Quantize", "quantize", ParamGroup.TEXTURE,
             "Number of contour bands", 2f, 16f, 1f, 6f),
         Parameter.NumberParam("Speed", "speed", ParamGroup.FLOW_MOTION,
-            "Animation drift speed", 0.1f, 3f, 0.05f, 0.4f)
+            "Animation drift speed", 0.1f, 3f, 0.05f, 0.4f),
+        Parameter.NumberParam("Reactivity", "reactivity", ParamGroup.FLOW_MOTION,
+            "Audio reactivity strength", 0f, 2f, 0.1f, 1.0f)
     )
 
     override fun getDefaultParams(): Map<String, Any> = mapOf(
         "edgeMode" to "contour", "noiseScale" to 3.0f, "edgeWidth" to 1.5f,
         "glowRadius" to 0.5f, "glowIntensity" to 0.8f, "octaves" to 2f,
-        "quantize" to 6f, "speed" to 0.4f
+        "quantize" to 6f, "speed" to 0.4f, "reactivity" to 1.0f
     )
 
     override fun renderCanvas(
@@ -68,9 +70,10 @@ class EdgeGlowGenerator : Generator {
         val Q = (params["quantize"] as? Number)?.toInt()?.coerceAtLeast(2) ?: 6
         val spd = (params["speed"] as? Number)?.toFloat() ?: 0.4f
 
+        val rx = (params["reactivity"] as? Number)?.toFloat() ?: 1.0f
         val audioAnalysis = params["_audioAnalysis"] as? AudioAnalysis
-        val audioBass = audioAnalysis?.getBass(time) ?: 0f
-        val audioHigh = audioAnalysis?.getHigh(time) ?: 0f
+        val audioBass = (audioAnalysis?.getBass(time) ?: 0f) * rx
+        val audioHigh = (audioAnalysis?.getHigh(time) ?: 0f) * rx
         val effGlow = glowI * (1f + audioBass * 1.5f)
         val effEdgeW = edgeW * (1f + audioHigh * 0.5f)
 

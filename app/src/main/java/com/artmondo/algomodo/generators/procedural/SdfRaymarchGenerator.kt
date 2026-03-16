@@ -41,12 +41,15 @@ class SdfRaymarchGenerator : Generator {
         Parameter.NumberParam("Rotation Speed", "rotationSpeed", ParamGroup.FLOW_MOTION,
             "Primitive orbit speed", 0f, 2f, 0.1f, 0.5f),
         Parameter.NumberParam("Speed", "speed", ParamGroup.FLOW_MOTION,
-            "Global animation speed", 0.1f, 2f, 0.1f, 0.5f)
+            "Global animation speed", 0.1f, 2f, 0.1f, 0.5f),
+        Parameter.NumberParam("Reactivity", "reactivity", ParamGroup.FLOW_MOTION,
+            "Audio reactivity strength", 0f, 2f, 0.1f, 1.0f)
     )
 
     override fun getDefaultParams(): Map<String, Any> = mapOf(
         "sceneType" to "spheres", "complexity" to 4f, "glowIntensity" to 0.5f,
-        "bandWidth" to 0.3f, "smoothBlend" to 0.3f, "rotationSpeed" to 0.5f, "speed" to 0.5f
+        "bandWidth" to 0.3f, "smoothBlend" to 0.3f, "rotationSpeed" to 0.5f, "speed" to 0.5f,
+        "reactivity" to 1.0f
     )
 
     override fun renderCanvas(
@@ -60,9 +63,10 @@ class SdfRaymarchGenerator : Generator {
 
         val sceneType = (params["sceneType"] as? String) ?: "spheres"
         val complexity = (params["complexity"] as? Number)?.toInt()?.coerceAtLeast(1) ?: 4
+        val rx = (params["reactivity"] as? Number)?.toFloat() ?: 1.0f
         val audioAnalysis = params["_audioAnalysis"] as? AudioAnalysis
-        val audioBass = audioAnalysis?.getBass(time) ?: 0f
-        val audioMid = audioAnalysis?.getMid(time) ?: 0f
+        val audioBass = (audioAnalysis?.getBass(time) ?: 0f) * rx
+        val audioMid = (audioAnalysis?.getMid(time) ?: 0f) * rx
 
         val glowIntensity = ((params["glowIntensity"] as? Number)?.toFloat() ?: 0.5f) + audioBass * 0.5f
         val bandWidth = (params["bandWidth"] as? Number)?.toFloat() ?: 0.3f

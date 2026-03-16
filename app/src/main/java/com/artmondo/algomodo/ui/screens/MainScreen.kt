@@ -35,6 +35,7 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.hilt.navigation.compose.hiltViewModel
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
+import com.artmondo.algomodo.audio.AudioPlayer
 import com.artmondo.algomodo.core.registry.GeneratorRegistry
 import com.artmondo.algomodo.ui.components.*
 import com.artmondo.algomodo.ui.dialogs.*
@@ -92,6 +93,40 @@ fun MainScreen(
         contract = ActivityResultContracts.PickVisualMedia()
     ) { uri ->
         uri?.let { loadBitmapFromUri(context, it) { bitmap -> viewModel.setSourceImage(bitmap) } }
+    }
+
+    // Audio player — lives at MainScreen level so it persists across tab switches
+    val audioPlayer = remember { AudioPlayer(context) }
+    var isAudioPlaying by remember { mutableStateOf(false) }
+    var audioSliderPosition by remember { mutableFloatStateOf(0f) }
+    var isAudioSeeking by remember { mutableStateOf(false) }
+
+    // Load audio into player when URI changes
+    LaunchedEffect(state.audioUri) {
+        if (state.audioUri != null) {
+            audioPlayer.load(state.audioUri!!)
+        } else {
+            audioPlayer.release()
+            isAudioPlaying = false
+            audioSliderPosition = 0f
+        }
+    }
+
+    // Poll playback position
+    LaunchedEffect(isAudioPlaying) {
+        while (isAudioPlaying) {
+            if (!isAudioSeeking) {
+                val pos = audioPlayer.currentPositionMs
+                val dur = audioPlayer.durationMs
+                if (dur > 0) audioSliderPosition = pos.toFloat() / dur
+            }
+            delay(100)
+        }
+    }
+
+    // Cleanup on dispose
+    DisposableEffect(Unit) {
+        onDispose { audioPlayer.release() }
     }
 
     // Audio file picker
@@ -532,11 +567,37 @@ fun MainScreen(
                         exportState = exportState,
                         isAnimating = state.isAnimating,
                         supportsVector = state.generator?.supportsVector == true,
-                        audioUri = state.audioUri,
                         isAudioLoaded = state.isAudioLoaded,
                         audioDurationSec = state.audioDurationSec,
+                        isAudioPlaying = isAudioPlaying,
+                        audioSliderPosition = audioSliderPosition,
                         onLoadAudio = { audioPickerLauncher.launch("audio/*") },
-                        onClearAudio = { viewModel.clearAudio() },
+                        onClearAudio = {
+                            audioPlayer.release()
+                            isAudioPlaying = false
+                            audioSliderPosition = 0f
+                            viewModel.clearAudio()
+                        },
+                        onAudioPlayPause = {
+                            if (isAudioPlaying) {
+                                audioPlayer.pause()
+                                isAudioPlaying = false
+                            } else {
+                                audioPlayer.play()
+                                isAudioPlaying = true
+                            }
+                        },
+                        onAudioSeek = { pos ->
+                            audioSliderPosition = pos
+                        },
+                        onAudioSeekFinished = {
+                            val dur = audioPlayer.durationMs
+                            if (dur > 0) audioPlayer.seekTo((audioSliderPosition * dur).toInt())
+                            isAudioSeeking = false
+                        },
+                        onAudioSeekStarted = {
+                            isAudioSeeking = true
+                        },
                         onExportPng = {
                             val gen = state.generator ?: return@ExportPanel
                             exportViewModel.exportPng(context, gen, renderParams, state.seed, state.palette, state.quality, state.postFX, 1080, 1080, state.snapshotTime)

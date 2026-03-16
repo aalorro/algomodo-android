@@ -52,13 +52,16 @@ class ParticleAdvectionGenerator : Generator {
             "speed: velocity → color | direction: angle → color | age: position → color | palette: fixed",
             listOf("speed", "direction", "age", "palette"), "speed"),
         Parameter.NumberParam("Speed", "speed", ParamGroup.FLOW_MOTION,
-            "Animation drift speed", 0.1f, 3f, 0.05f, 0.7f)
+            "Animation drift speed", 0.1f, 3f, 0.05f, 0.7f),
+        Parameter.NumberParam("Reactivity", "reactivity", ParamGroup.FLOW_MOTION,
+            "Audio reactivity strength", 0f, 2f, 0.1f, 1.0f)
     )
 
     override fun getDefaultParams(): Map<String, Any> = mapOf(
         "fieldMode" to "curl", "particleCount" to 2500f, "trailLength" to 80f,
         "fieldScale" to 2.0f, "fieldStrength" to 2.5f, "lineWidth" to 1.5f,
-        "fadeRate" to 0.05f, "colorMode" to "speed", "speed" to 0.7f
+        "fadeRate" to 0.05f, "colorMode" to "speed", "speed" to 0.7f,
+        "reactivity" to 1.0f
     )
 
     override fun renderCanvas(
@@ -80,10 +83,11 @@ class ParticleAdvectionGenerator : Generator {
         val colorMode = (params["colorMode"] as? String) ?: "speed"
         val spd = (params["speed"] as? Number)?.toFloat() ?: 0.7f
 
+        val rx = (params["reactivity"] as? Number)?.toFloat() ?: 1.0f
         val audioAnalysis = params["_audioAnalysis"] as? AudioAnalysis
-        val audioBass = audioAnalysis?.getBass(time) ?: 0f
-        val audioMid = audioAnalysis?.getMid(time) ?: 0f
-        val audioHigh = audioAnalysis?.getHigh(time) ?: 0f
+        val audioBass = (audioAnalysis?.getBass(time) ?: 0f) * rx
+        val audioMid = (audioAnalysis?.getMid(time) ?: 0f) * rx
+        val audioHigh = (audioAnalysis?.getHigh(time) ?: 0f) * rx
 
         val t = time * spd
         val fStr = baseFStr * (1f + audioBass * 2f)

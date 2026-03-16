@@ -44,12 +44,15 @@ class FieldParticleGenerator : Generator {
             "velocity: speed → color | direction: angle → color | age: trail position → color | palette: fixed",
             listOf("velocity", "direction", "age", "palette"), "velocity"),
         Parameter.NumberParam("Speed", "speed", ParamGroup.FLOW_MOTION,
-            "Animation speed", 0.1f, 3f, 0.1f, 1.0f)
+            "Animation speed", 0.1f, 3f, 0.1f, 1.0f),
+        Parameter.NumberParam("Reactivity", "reactivity", ParamGroup.FLOW_MOTION,
+            "Audio reactivity strength", 0f, 2f, 0.1f, 1.0f)
     )
 
     override fun getDefaultParams(): Map<String, Any> = mapOf(
         "particleCount" to 1500f, "fieldType" to "curl", "trailLength" to 80f,
-        "fieldStrength" to 1.0f, "lineWidth" to 1.0f, "colorMode" to "velocity", "speed" to 1.0f
+        "fieldStrength" to 1.0f, "lineWidth" to 1.0f, "colorMode" to "velocity", "speed" to 1.0f,
+        "reactivity" to 1.0f
     )
 
     override fun renderCanvas(
@@ -70,9 +73,10 @@ class FieldParticleGenerator : Generator {
         val spd = (params["speed"] as? Number)?.toFloat() ?: 1.0f
         val t = time * spd
 
+        val rx = (params["reactivity"] as? Number)?.toFloat() ?: 1.0f
         val audioAnalysis = params["_audioAnalysis"] as? AudioAnalysis
-        val audioBass = audioAnalysis?.getBass(time) ?: 0f
-        val audioHigh = audioAnalysis?.getHigh(time) ?: 0f
+        val audioBass = (audioAnalysis?.getBass(time) ?: 0f) * rx
+        val audioHigh = (audioAnalysis?.getHigh(time) ?: 0f) * rx
 
         val qualityMult = when (quality) { Quality.DRAFT -> 0.5f; Quality.ULTRA -> 1.0f; else -> 0.75f }
         val actualCount = (pCount * qualityMult).toInt()

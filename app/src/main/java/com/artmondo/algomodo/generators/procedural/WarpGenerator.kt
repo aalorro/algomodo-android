@@ -40,12 +40,15 @@ class WarpGenerator : Generator {
         Parameter.NumberParam("Zoom", "zoom", ParamGroup.GEOMETRY,
             "Zoom into the warp field", 0.3f, 4f, 0.1f, 1.0f),
         Parameter.NumberParam("Speed", "speed", ParamGroup.FLOW_MOTION,
-            "Animation drift speed", 0.1f, 3f, 0.05f, 0.7f)
+            "Animation drift speed", 0.1f, 3f, 0.05f, 0.7f),
+        Parameter.NumberParam("Reactivity", "reactivity", ParamGroup.FLOW_MOTION,
+            "Audio reactivity strength", 0f, 2f, 0.1f, 1.0f)
     )
 
     override fun getDefaultParams(): Map<String, Any> = mapOf(
         "warpMode" to "spiral", "warpStrength" to 2.0f, "layers" to 3f,
-        "symmetry" to 1f, "chromaticShift" to 0.15f, "zoom" to 1.0f, "speed" to 0.7f
+        "symmetry" to 1f, "chromaticShift" to 0.15f, "zoom" to 1.0f, "speed" to 0.7f,
+        "reactivity" to 1.0f
     )
 
     override fun renderCanvas(
@@ -63,9 +66,10 @@ class WarpGenerator : Generator {
         val zoomVal = (params["zoom"] as? Number)?.toFloat() ?: 1.0f
         val spd = (params["speed"] as? Number)?.toFloat() ?: 0.7f
 
+        val rx = (params["reactivity"] as? Number)?.toFloat() ?: 1.0f
         val audioAnalysis = params["_audioAnalysis"] as? AudioAnalysis
-        val audioBass = audioAnalysis?.getBass(time) ?: 0f
-        val audioMid = audioAnalysis?.getMid(time) ?: 0f
+        val audioBass = (audioAnalysis?.getBass(time) ?: 0f) * rx
+        val audioMid = (audioAnalysis?.getMid(time) ?: 0f) * rx
 
         val t = time * spd
         val vn = ValueNoise(seed)

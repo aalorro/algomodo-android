@@ -131,7 +131,7 @@ class AudioReactiveGenerator : Generator {
 
         // Audio analysis: use real audio data when available, otherwise synthesize
         val audioAnalysis = params["_audioAnalysis"] as? AudioAnalysis
-        val audioBass = audioAnalysis?.getBass(time) ?: 0f
+        val audioBass = (audioAnalysis?.getBass(time) ?: 0f) * reactivity
 
         val beat: Float
         val spectrum: FloatArray
