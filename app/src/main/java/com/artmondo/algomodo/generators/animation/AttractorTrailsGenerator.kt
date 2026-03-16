@@ -201,7 +201,7 @@ class AttractorTrailsGenerator : Generator {
         val brightness = (params["brightness"] as? Number)?.toFloat() ?: 1.5f
         val colorMode = (params["colorMode"] as? String) ?: "density"
         val colorShift = (params["colorShift"] as? Number)?.toFloat() ?: 0f
-        val pointSize = (params["pointSize"] as? Number)?.toInt() ?: 1
+        val pointRadius = (params["pointSize"] as? Number)?.toFloat()?.let { (it - 1f) / 2f } ?: 0f
         val driftSpeed = (params["driftSpeed"] as? Number)?.toFloat() ?: 0.2f
         val driftAmp = (params["driftAmp"] as? Number)?.toFloat() ?: 0.15f
 
@@ -211,14 +211,16 @@ class AttractorTrailsGenerator : Generator {
         // Generate seeded base parameters
         val bp = baseParams(attractorType, rng)
 
+        // Seeded phase offsets so drift produces unique shapes even at time=0
+        val phases = DoubleArray(4) { rng.random() * 2.0 * PI }
         // Seeded oscillation frequencies for parameter drift
         val freqs = DoubleArray(4) { 0.3 + rng.random() * 0.7 }
 
-        // Apply time-based drift to parameters
-        val a = bp[0] + driftAmp * sin(time.toDouble() * driftSpeed * freqs[0] * 2.0 * PI)
-        val b = bp[1] + driftAmp * sin(time.toDouble() * driftSpeed * freqs[1] * 2.0 * PI + 1.0)
-        val c = bp[2] + driftAmp * sin(time.toDouble() * driftSpeed * freqs[2] * 2.0 * PI + 2.0)
-        val d = bp[3] + driftAmp * sin(time.toDouble() * driftSpeed * freqs[3] * 2.0 * PI + 3.0)
+        // Apply time-based drift to parameters (phase offsets ensure variety at time=0)
+        val a = bp[0] + driftAmp * sin(time.toDouble() * driftSpeed * freqs[0] * 2.0 * PI + phases[0])
+        val b = bp[1] + driftAmp * sin(time.toDouble() * driftSpeed * freqs[1] * 2.0 * PI + phases[1])
+        val c = bp[2] + driftAmp * sin(time.toDouble() * driftSpeed * freqs[2] * 2.0 * PI + phases[2])
+        val d = bp[3] + driftAmp * sin(time.toDouble() * driftSpeed * freqs[3] * 2.0 * PI + phases[3])
 
         val range = coordRange(attractorType)
         val cx = w / 2f
@@ -266,14 +268,19 @@ class AttractorTrailsGenerator : Generator {
                 val idx = py * w + px
                 histogram[idx]++
 
-                // Splat for point size > 1
-                if (pointSize > 1) {
-                    for (dy in -pointSize / 2..pointSize / 2) {
-                        for (dx in -pointSize / 2..pointSize / 2) {
-                            val sx = px + dx
-                            val sy = py + dy
-                            if (sx in 0 until w && sy in 0 until h) {
-                                histogram[sy * w + sx]++
+                // Splat for point size > 1 using float radius
+                if (pointRadius > 0f) {
+                    val ir = ceil(pointRadius).toInt()
+                    val r2 = pointRadius * pointRadius
+                    for (dy in -ir..ir) {
+                        for (dx in -ir..ir) {
+                            if (dx == 0 && dy == 0) continue
+                            if (dx * dx + dy * dy <= r2) {
+                                val sx = px + dx
+                                val sy = py + dy
+                                if (sx in 0 until w && sy in 0 until h) {
+                                    histogram[sy * w + sx]++
+                                }
                             }
                         }
                     }
@@ -297,7 +304,8 @@ class AttractorTrailsGenerator : Generator {
         // Tone-map and render to pixels
         val pixels = IntArray(w * h)
         val logMax = ln(1f + maxCount * brightness)
-        val timeShift = time * colorShift
+        // colorShift works as both static offset and time-based animation
+        val paletteShift = colorShift + time * colorShift * 0.5f
 
         when (colorMode) {
             "multi" -> {
@@ -337,7 +345,9 @@ class AttractorTrailsGenerator : Generator {
                     for (v in layerHist) if (v > layerMax) layerMax = v
                     val lLogMax = ln(1f + layerMax * brightness)
 
-                    val baseColor = colors[layer % colors.size]
+                    // colorShift rotates which palette color each layer uses
+                    val shiftedIdx = ((layer + (paletteShift * colors.size).toInt()) % colors.size + colors.size) % colors.size
+                    val baseColor = colors[shiftedIdx]
                     val cr = Color.red(baseColor)
                     val cg = Color.green(baseColor)
                     val cb = Color.blue(baseColor)
@@ -368,14 +378,14 @@ class AttractorTrailsGenerator : Generator {
                         val palVal = when (colorMode) {
                             "angle" -> {
                                 val ang = angleMap?.get(j) ?: 0f
-                                ((ang / (2f * PI.toFloat()) + 0.5f + timeShift) % 1f + 1f) % 1f
+                                ((ang / (2f * PI.toFloat()) + 0.5f + paletteShift) % 1f + 1f) % 1f
                             }
                             "velocity" -> {
                                 val vel = velocityMap?.get(j) ?: 0f
-                                ((vel * 2f + timeShift) % 1f + 1f) % 1f
+                                ((vel * 2f + paletteShift) % 1f + 1f) % 1f
                             }
                             else -> { // density
-                                ((intensity + timeShift) % 1f + 1f) % 1f
+                                ((intensity + paletteShift) % 1f + 1f) % 1f
                             }
                         }
 
