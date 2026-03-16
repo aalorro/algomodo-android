@@ -132,26 +132,46 @@ class AudioReactiveGenerator : Generator {
         val nC = colors.size
 
         val audioAnalysis = params["_audioAnalysis"] as? AudioAnalysis
-        val audioBass = (audioAnalysis?.getBass(time) ?: 0f) * reactivity
+        val audioBass = (audioAnalysis?.getBass(time) ?: 0f)
+        val audioMid = (audioAnalysis?.getMid(time) ?: 0f)
+        val audioHigh = (audioAnalysis?.getHigh(time) ?: 0f)
 
         val beat: Float
         val spectrum: FloatArray
 
         if (audioAnalysis != null) {
-            beat = min(1f, audioBass * 3f).pow(4f)
+            // Strong beat from bass — pow(2) for punchy response, not pow(4)
+            beat = min(1f, audioBass * reactivity * 2f).pow(2f)
             val realSpectrum = audioAnalysis.getSpectrum(time)
+            val srcBins = realSpectrum.size.coerceAtLeast(1)
+
+            // Map spectrum bins to bands with averaging for smooth coverage
             spectrum = FloatArray(bandCount) { i ->
-                val srcIdx = (i.toFloat() / bandCount * realSpectrum.size).toInt()
-                    .coerceIn(0, realSpectrum.size - 1)
-                min(1.5f, (realSpectrum.getOrElse(srcIdx) { 0f }) * reactivity * (1f + beat * 1.5f))
+                val startBin = (i.toFloat() / bandCount * srcBins).toInt().coerceIn(0, srcBins - 1)
+                val endBin = ((i + 1f) / bandCount * srcBins).toInt().coerceIn(startBin + 1, srcBins)
+                var sum = 0f
+                var peak = 0f
+                for (b in startBin until endBin) {
+                    val v = realSpectrum.getOrElse(b) { 0f }
+                    sum += v
+                    if (v > peak) peak = v
+                }
+                val avg = sum / (endBin - startBin).coerceAtLeast(1)
+                // Blend average with peak for punchiness, amplify strongly
+                val raw = (avg * 0.4f + peak * 0.6f) * reactivity * 2.5f
+                // Add bass energy to low bands, high energy to high bands for more movement
+                val bandBoost = if (i < bandCount / 3) audioBass * 0.5f
+                    else if (i > bandCount * 2 / 3) audioHigh * 0.3f
+                    else audioMid * 0.3f
+                min(1.5f, (raw + bandBoost) * (1f + beat * 1.2f))
             }
         } else {
             beat = max(0f, sin(t * beatRate * PI.toFloat())).pow(8f)
             spectrum = synthesizeSpectrum(bandCount, seed, t, reactivity, smoothing, beatRate)
         }
 
-        // Background
-        val bgBright = (8 + beat * 12f).toInt()
+        // Background — pulses noticeably on beat
+        val bgBright = (8 + beat * 30f).toInt().coerceIn(0, 50)
         canvas.drawColor(Color.rgb(bgBright, bgBright, bgBright + 2))
         val paint = Paint(Paint.ANTI_ALIAS_FLAG)
 

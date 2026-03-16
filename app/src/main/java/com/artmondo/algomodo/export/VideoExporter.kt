@@ -6,6 +6,7 @@ import android.graphics.Bitmap
 import android.graphics.Canvas
 import android.media.MediaCodec
 import android.media.MediaCodecInfo
+import android.media.MediaExtractor
 import android.media.MediaFormat
 import android.media.MediaMuxer
 import android.net.Uri
@@ -34,12 +35,32 @@ object VideoExporter {
         height: Int = 1080,
         fps: Int = 30,
         durationSeconds: Int = 5,
+        timeOffsetSec: Float = 0f,
+        audioUri: Uri? = null,
+        audioStartSec: Float = 0f,
         fileName: String,
         onProgress: (Float) -> Unit = {}
     ): Uri? {
-        val tempFile = File(context.cacheDir, "$fileName.mp4")
+        val videoTempFile = File(context.cacheDir, "$fileName.mp4")
+
+        // Copy audio to temp file immediately (before the long encode) to avoid
+        // content URI permission expiry and to guarantee file-path access for muxing
+        var audioTempFile: File? = null
+        if (audioUri != null) {
+            try {
+                audioTempFile = File(context.cacheDir, "${fileName}_audio_src")
+                context.contentResolver.openInputStream(audioUri)?.use { input ->
+                    audioTempFile!!.outputStream().use { output -> input.copyTo(output) }
+                }
+            } catch (e: Exception) {
+                android.util.Log.e("VideoExporter", "Failed to copy audio source", e)
+                audioTempFile?.delete()
+                audioTempFile = null
+            }
+        }
 
         try {
+            // ── Pass 1: Encode video ──
             val format = MediaFormat.createVideoFormat(MediaFormat.MIMETYPE_VIDEO_AVC, width, height).apply {
                 setInteger(MediaFormat.KEY_COLOR_FORMAT, MediaCodecInfo.CodecCapabilities.COLOR_FormatSurface)
                 setInteger(MediaFormat.KEY_BIT_RATE, 8_000_000)
@@ -51,12 +72,10 @@ object VideoExporter {
             codec.configure(format, null, null, MediaCodec.CONFIGURE_FLAG_ENCODE)
             val inputSurface = codec.createInputSurface()
 
-            // Set up EGL so we can set presentation timestamps
             val eglHelper = EglHelper(inputSurface)
-
             codec.start()
 
-            val muxer = MediaMuxer(tempFile.absolutePath, MediaMuxer.OutputFormat.MUXER_OUTPUT_MPEG_4)
+            val muxer = MediaMuxer(videoTempFile.absolutePath, MediaMuxer.OutputFormat.MUXER_OUTPUT_MPEG_4)
             var trackIndex = -1
             var muxerStarted = false
 
@@ -64,29 +83,22 @@ object VideoExporter {
             val frameIntervalNs = 1_000_000_000L / fps
             val bufferInfo = MediaCodec.BufferInfo()
 
-            // Offscreen bitmap for generator rendering
             val bitmap = Bitmap.createBitmap(width, height, Bitmap.Config.ARGB_8888)
             val bitmapCanvas = Canvas(bitmap)
-
-            // GL texture + renderer for uploading bitmap to EGL surface
             val glRenderer = GlBitmapRenderer(width, height)
 
             for (frameIdx in 0 until totalFrames) {
-                val time = frameIdx.toFloat() / fps
+                val time = timeOffsetSec + frameIdx.toFloat() / fps
 
-                // Render frame to bitmap
                 bitmapCanvas.drawColor(android.graphics.Color.BLACK)
                 generator.renderCanvas(bitmapCanvas, bitmap, params, seed, palette, quality, time)
 
-                // Draw bitmap via GL onto the EGL surface
                 glRenderer.draw(bitmap)
 
-                // Set exact presentation timestamp and swap
                 val presentationTimeNs = frameIdx.toLong() * frameIntervalNs
                 eglHelper.setPresentationTime(presentationTimeNs)
                 eglHelper.swapBuffers()
 
-                // Drain output
                 drainEncoder(codec, muxer, bufferInfo, trackIndex, muxerStarted).let {
                     trackIndex = it.first
                     muxerStarted = it.second
@@ -95,10 +107,7 @@ object VideoExporter {
                 onProgress(frameIdx.toFloat() / totalFrames)
             }
 
-            // Signal end of stream
             codec.signalEndOfInputStream()
-
-            // Drain remaining
             drainEncoder(codec, muxer, bufferInfo, trackIndex, muxerStarted, drain = true)
 
             glRenderer.release()
@@ -107,18 +116,314 @@ object VideoExporter {
             codec.release()
             eglHelper.release()
             inputSurface.release()
-            if (muxerStarted) {
-                muxer.stop()
-            }
+            if (muxerStarted) muxer.stop()
             muxer.release()
 
-            // Move to gallery
-            return saveToGallery(context, tempFile, fileName)
+            // ── Pass 2: Mux audio if available ──
+            val finalFile = if (audioTempFile != null && audioTempFile.exists()) {
+                muxAudio(videoTempFile, audioTempFile, audioStartSec, durationSeconds) ?: videoTempFile
+            } else {
+                videoTempFile
+            }
+
+            val result = saveToGallery(context, finalFile, fileName)
+            // Clean up temp files
+            if (finalFile != videoTempFile) videoTempFile.delete()
+            audioTempFile?.delete()
+            return result
         } catch (e: Exception) {
             android.util.Log.e("VideoExporter", "Export failed", e)
-            tempFile.delete()
+            videoTempFile.delete()
+            audioTempFile?.delete()
             return null
         }
+    }
+
+    /**
+     * Mux audio track from [audioFile] into [videoFile], trimming audio to
+     * [audioStartSec]..[audioStartSec + videoDurationSec].
+     * Transcodes non-AAC audio to AAC first (MP4 muxer only supports AAC).
+     * Returns the muxed file, or null on failure (caller falls back to video-only).
+     */
+    private fun muxAudio(
+        videoFile: File,
+        audioFile: File,
+        audioStartSec: Float,
+        videoDurationSec: Int
+    ): File? {
+        val muxedFile = File(videoFile.parent, videoFile.nameWithoutExtension + "_muxed.mp4")
+        try {
+            // First, prepare AAC audio (transcode if needed)
+            val aacFile = File(videoFile.parent, videoFile.nameWithoutExtension + "_aac.m4a")
+            val aacReady = prepareAacAudio(audioFile, aacFile, audioStartSec, videoDurationSec)
+            if (!aacReady) {
+                android.util.Log.e("VideoExporter", "Failed to prepare AAC audio")
+                aacFile.delete()
+                return null
+            }
+
+            // Extract video track from encoded video
+            val videoExtractor = MediaExtractor()
+            videoExtractor.setDataSource(videoFile.absolutePath)
+            val videoTrackIdx = findTrack(videoExtractor, "video/")
+            if (videoTrackIdx < 0) { videoExtractor.release(); aacFile.delete(); return null }
+            videoExtractor.selectTrack(videoTrackIdx)
+            val videoFormat = videoExtractor.getTrackFormat(videoTrackIdx)
+
+            // Extract AAC audio track from transcoded file
+            val audioExtractor = MediaExtractor()
+            audioExtractor.setDataSource(aacFile.absolutePath)
+            val audioTrackIdx = findTrack(audioExtractor, "audio/")
+            if (audioTrackIdx < 0) {
+                android.util.Log.e("VideoExporter", "No audio track in AAC file")
+                videoExtractor.release(); audioExtractor.release(); aacFile.delete(); return null
+            }
+            audioExtractor.selectTrack(audioTrackIdx)
+            val audioFormat = audioExtractor.getTrackFormat(audioTrackIdx)
+
+            // Create muxer with both tracks
+            val muxer = MediaMuxer(muxedFile.absolutePath, MediaMuxer.OutputFormat.MUXER_OUTPUT_MPEG_4)
+            val muxVideoTrack = muxer.addTrack(videoFormat)
+            val muxAudioTrack = muxer.addTrack(audioFormat)
+            muxer.start()
+
+            val buf = ByteBuffer.allocate(1024 * 1024)
+            val info = MediaCodec.BufferInfo()
+
+            // Copy video samples
+            while (true) {
+                val size = videoExtractor.readSampleData(buf, 0)
+                if (size < 0) break
+                info.offset = 0
+                info.size = size
+                info.presentationTimeUs = videoExtractor.sampleTime
+                info.flags = videoExtractor.sampleFlags
+                muxer.writeSampleData(muxVideoTrack, buf, info)
+                videoExtractor.advance()
+            }
+
+            // Copy audio samples (already trimmed by prepareAacAudio)
+            while (true) {
+                val size = audioExtractor.readSampleData(buf, 0)
+                if (size < 0) break
+                info.offset = 0
+                info.size = size
+                info.presentationTimeUs = audioExtractor.sampleTime
+                info.flags = audioExtractor.sampleFlags
+                muxer.writeSampleData(muxAudioTrack, buf, info)
+                audioExtractor.advance()
+            }
+
+            muxer.stop()
+            muxer.release()
+            videoExtractor.release()
+            audioExtractor.release()
+            aacFile.delete()
+
+            return muxedFile
+        } catch (e: Exception) {
+            android.util.Log.e("VideoExporter", "Audio muxing failed, falling back to video-only", e)
+            muxedFile.delete()
+            return null
+        }
+    }
+
+    /**
+     * Decode any audio format to PCM, then encode to AAC and write to [outputFile].
+     * Trims to [startSec]..[startSec + durationSec].
+     * If the source is already AAC, copies the relevant samples directly.
+     */
+    private fun prepareAacAudio(
+        inputFile: File,
+        outputFile: File,
+        startSec: Float,
+        durationSec: Int
+    ): Boolean {
+        val extractor = MediaExtractor()
+        try {
+            extractor.setDataSource(inputFile.absolutePath)
+        } catch (e: Exception) {
+            android.util.Log.e("VideoExporter", "Can't read audio file", e)
+            return false
+        }
+
+        val trackIdx = findTrack(extractor, "audio/")
+        if (trackIdx < 0) {
+            android.util.Log.e("VideoExporter", "No audio track found")
+            extractor.release()
+            return false
+        }
+        extractor.selectTrack(trackIdx)
+        val srcFormat = extractor.getTrackFormat(trackIdx)
+        val srcMime = srcFormat.getString(MediaFormat.KEY_MIME) ?: ""
+        val sampleRate = srcFormat.getInteger(MediaFormat.KEY_SAMPLE_RATE)
+        val channelCount = srcFormat.getInteger(MediaFormat.KEY_CHANNEL_COUNT)
+        android.util.Log.d("VideoExporter", "Source audio: mime=$srcMime rate=$sampleRate ch=$channelCount")
+
+        val startUs = (startSec * 1_000_000f).toLong()
+        val endUs = startUs + durationSec * 1_000_000L
+
+        // If already AAC, just remux the trimmed range into an M4A container
+        if (srcMime == MediaFormat.MIMETYPE_AUDIO_AAC) {
+            extractor.seekTo(startUs, MediaExtractor.SEEK_TO_CLOSEST_SYNC)
+            val muxer = MediaMuxer(outputFile.absolutePath, MediaMuxer.OutputFormat.MUXER_OUTPUT_MPEG_4)
+            val muxTrack = muxer.addTrack(srcFormat)
+            muxer.start()
+            val buf = ByteBuffer.allocate(65536)
+            val info = MediaCodec.BufferInfo()
+            while (true) {
+                val size = extractor.readSampleData(buf, 0)
+                if (size < 0) break
+                val ts = extractor.sampleTime
+                val adjusted = ts - startUs
+                if (adjusted < 0) { extractor.advance(); continue }
+                if (adjusted > endUs - startUs) break
+                info.offset = 0
+                info.size = size
+                info.presentationTimeUs = adjusted
+                info.flags = extractor.sampleFlags
+                muxer.writeSampleData(muxTrack, buf, info)
+                extractor.advance()
+            }
+            muxer.stop()
+            muxer.release()
+            extractor.release()
+            return true
+        }
+
+        // Non-AAC: transcode via decode → PCM → encode AAC
+        extractor.seekTo(startUs, MediaExtractor.SEEK_TO_CLOSEST_SYNC)
+
+        // Set up decoder
+        val decoder = MediaCodec.createDecoderByType(srcMime)
+        decoder.configure(srcFormat, null, null, 0)
+        decoder.start()
+
+        // Set up AAC encoder
+        val encFormat = MediaFormat.createAudioFormat(MediaFormat.MIMETYPE_AUDIO_AAC, sampleRate, channelCount).apply {
+            setInteger(MediaFormat.KEY_BIT_RATE, 128_000)
+            setInteger(MediaFormat.KEY_AAC_PROFILE, MediaCodecInfo.CodecProfileLevel.AACObjectLC)
+            setInteger(MediaFormat.KEY_MAX_INPUT_SIZE, 16384)
+        }
+        val encoder = MediaCodec.createEncoderByType(MediaFormat.MIMETYPE_AUDIO_AAC)
+        encoder.configure(encFormat, null, null, MediaCodec.CONFIGURE_FLAG_ENCODE)
+        encoder.start()
+
+        // Output muxer for the AAC file
+        val muxer = MediaMuxer(outputFile.absolutePath, MediaMuxer.OutputFormat.MUXER_OUTPUT_MPEG_4)
+        var muxTrack = -1
+        var muxerStarted = false
+
+        val decInfo = MediaCodec.BufferInfo()
+        val encInfo = MediaCodec.BufferInfo()
+        var extractorDone = false
+        var decoderDone = false
+        var encoderDone = false
+        val timeoutUs = 10_000L
+
+        // Intermediate PCM buffer for feeding encoder
+        var pendingPcm: ByteArray? = null
+        var pcmOffset = 0
+        var pcmTimestampUs = 0L
+        val bytesPerFrame = 2 * channelCount // 16-bit PCM
+
+        while (!encoderDone) {
+            // Step 1: Feed extractor → decoder
+            if (!extractorDone) {
+                val inIdx = decoder.dequeueInputBuffer(timeoutUs)
+                if (inIdx >= 0) {
+                    val buf = decoder.getInputBuffer(inIdx)!!
+                    val size = extractor.readSampleData(buf, 0)
+                    if (size < 0 || extractor.sampleTime > endUs) {
+                        decoder.queueInputBuffer(inIdx, 0, 0, 0, MediaCodec.BUFFER_FLAG_END_OF_STREAM)
+                        extractorDone = true
+                    } else {
+                        val ts = extractor.sampleTime - startUs
+                        decoder.queueInputBuffer(inIdx, 0, size, ts.coerceAtLeast(0), 0)
+                        extractor.advance()
+                    }
+                }
+            }
+
+            // Step 2: Drain decoder → collect PCM → feed encoder
+            if (!decoderDone) {
+                val outIdx = decoder.dequeueOutputBuffer(decInfo, timeoutUs)
+                if (outIdx >= 0) {
+                    if (decInfo.flags and MediaCodec.BUFFER_FLAG_END_OF_STREAM != 0) {
+                        decoderDone = true
+                        decoder.releaseOutputBuffer(outIdx, false)
+                        // Signal EOS to encoder
+                        val encInIdx = encoder.dequeueInputBuffer(timeoutUs)
+                        if (encInIdx >= 0) {
+                            encoder.queueInputBuffer(encInIdx, 0, 0, 0, MediaCodec.BUFFER_FLAG_END_OF_STREAM)
+                        }
+                    } else if (decInfo.size > 0) {
+                        val pcmBuf = decoder.getOutputBuffer(outIdx)!!
+                        pcmBuf.position(decInfo.offset)
+                        val chunk = ByteArray(decInfo.size)
+                        pcmBuf.get(chunk)
+                        decoder.releaseOutputBuffer(outIdx, false)
+
+                        // Feed decoded PCM to encoder
+                        var chunkOff = 0
+                        while (chunkOff < chunk.size) {
+                            val encInIdx = encoder.dequeueInputBuffer(timeoutUs)
+                            if (encInIdx < 0) break
+                            val encBuf = encoder.getInputBuffer(encInIdx)!!
+                            encBuf.clear()
+                            val toCopy = minOf(chunk.size - chunkOff, encBuf.remaining())
+                            encBuf.put(chunk, chunkOff, toCopy)
+                            val frameDurationUs = (toCopy.toLong() * 1_000_000L) / (bytesPerFrame * sampleRate)
+                            encoder.queueInputBuffer(encInIdx, 0, toCopy, pcmTimestampUs, 0)
+                            pcmTimestampUs += frameDurationUs
+                            chunkOff += toCopy
+                        }
+                    } else {
+                        decoder.releaseOutputBuffer(outIdx, false)
+                    }
+                }
+            }
+
+            // Step 3: Drain encoder → muxer
+            val encOutIdx = encoder.dequeueOutputBuffer(encInfo, timeoutUs)
+            when {
+                encOutIdx == MediaCodec.INFO_OUTPUT_FORMAT_CHANGED -> {
+                    muxTrack = muxer.addTrack(encoder.outputFormat)
+                    muxer.start()
+                    muxerStarted = true
+                }
+                encOutIdx >= 0 -> {
+                    if (encInfo.flags and MediaCodec.BUFFER_FLAG_CODEC_CONFIG != 0) {
+                        // skip codec config
+                    } else if (encInfo.size > 0 && muxerStarted) {
+                        val outBuf = encoder.getOutputBuffer(encOutIdx)!!
+                        outBuf.position(encInfo.offset)
+                        outBuf.limit(encInfo.offset + encInfo.size)
+                        muxer.writeSampleData(muxTrack, outBuf, encInfo)
+                    }
+                    encoder.releaseOutputBuffer(encOutIdx, false)
+                    if (encInfo.flags and MediaCodec.BUFFER_FLAG_END_OF_STREAM != 0) {
+                        encoderDone = true
+                    }
+                }
+            }
+        }
+
+        decoder.stop(); decoder.release()
+        encoder.stop(); encoder.release()
+        extractor.release()
+        if (muxerStarted) muxer.stop()
+        muxer.release()
+
+        return muxerStarted
+    }
+
+    private fun findTrack(extractor: MediaExtractor, mimePrefix: String): Int {
+        for (i in 0 until extractor.trackCount) {
+            val mime = extractor.getTrackFormat(i).getString(MediaFormat.KEY_MIME) ?: continue
+            if (mime.startsWith(mimePrefix)) return i
+        }
+        return -1
     }
 
     private fun drainEncoder(
@@ -160,9 +465,6 @@ object VideoExporter {
         return Pair(trackIndex, started)
     }
 
-    /**
-     * Manages an EGL context bound to a Surface for setting presentation timestamps.
-     */
     private class EglHelper(surface: Surface) {
         private val eglDisplay: EGLDisplay
         private val eglContext: EGLContext
@@ -211,21 +513,17 @@ object VideoExporter {
         }
     }
 
-    /**
-     * Uploads a Bitmap to the current EGL surface via a GL texture.
-     */
     private class GlBitmapRenderer(private val width: Int, private val height: Int) {
         private val texId: Int
         private val program: Int
 
         private val vertexBuffer = ByteBuffer.allocateDirect(64)
             .order(ByteOrder.nativeOrder()).asFloatBuffer().apply {
-                // x, y, u, v — fullscreen quad as triangle strip
                 put(floatArrayOf(
-                    -1f, -1f, 0f, 0f,
-                    1f, -1f, 1f, 0f,
-                    -1f, 1f, 0f, 1f,
-                    1f, 1f, 1f, 1f
+                    -1f, -1f, 0f, 1f,
+                    1f, -1f, 1f, 1f,
+                    -1f, 1f, 0f, 0f,
+                    1f, 1f, 1f, 0f
                 ))
                 position(0)
             }

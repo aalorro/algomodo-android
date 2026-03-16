@@ -8,8 +8,11 @@ import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.focus.onFocusChanged
 import androidx.compose.ui.text.TextRange
+import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.text.input.TextFieldValue
+import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.unit.dp
 import com.artmondo.algomodo.viewmodel.ExportUiState
@@ -46,7 +49,8 @@ fun ExportPanel(
     onGifResolutionChange: (Int) -> Unit,
     onGifBoomerangChange: (Boolean) -> Unit,
     onGifEndlessChange: (Boolean) -> Unit,
-    onVideoDurationChange: (Int) -> Unit,
+    onVideoStartChange: (Int) -> Unit,
+    onVideoEndChange: (Int) -> Unit,
     generatorStyleName: String = "",
     modifier: Modifier = Modifier
 ) {
@@ -167,71 +171,67 @@ fun ExportPanel(
             HorizontalDivider()
 
             // MP4 options
-            Text("MP4", style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.secondary)
+            Text(
+                if (isAudioLoaded) "MP4 + Audio" else "MP4",
+                style = MaterialTheme.typography.labelSmall,
+                color = MaterialTheme.colorScheme.secondary
+            )
 
-            var showCustomDuration by remember { mutableStateOf(false) }
-            val isCustom = exportState.videoDuration !in listOf(5, 15, 30)
+            var startText by remember { mutableStateOf(exportState.videoStartSec.toString()) }
+            var endText by remember { mutableStateOf(exportState.videoEndSec.toString()) }
+
+            // Compute displayed duration from the committed state
+            val displayDuration = (exportState.videoEndSec - exportState.videoStartSec).coerceAtLeast(1)
 
             Row(
-                horizontalArrangement = Arrangement.spacedBy(4.dp),
+                horizontalArrangement = Arrangement.spacedBy(8.dp),
                 verticalAlignment = Alignment.CenterVertically
             ) {
-                Text("Duration:", style = MaterialTheme.typography.bodySmall)
-                FlowRow(
-                    horizontalArrangement = Arrangement.spacedBy(4.dp),
-                    verticalArrangement = Arrangement.spacedBy(4.dp)
-                ) {
-                    listOf(5, 15, 30).forEach { dur ->
-                        FilterChip(
-                            selected = exportState.videoDuration == dur && !showCustomDuration,
-                            onClick = {
-                                showCustomDuration = false
-                                onVideoDurationChange(dur)
-                            },
-                            label = { Text("${dur}s") }
-                        )
-                    }
-                    FilterChip(
-                        selected = showCustomDuration || isCustom,
-                        onClick = { showCustomDuration = true },
-                        label = { Text(if (isCustom && !showCustomDuration) "${exportState.videoDuration}s" else "Custom") }
-                    )
-                }
+                OutlinedTextField(
+                    value = startText,
+                    onValueChange = { startText = it.filter { c -> c.isDigit() }.take(4) },
+                    label = { Text("Start (s)") },
+                    singleLine = true,
+                    keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
+                    modifier = Modifier
+                        .weight(1f)
+                        .onFocusChanged { focus ->
+                            if (!focus.isFocused) {
+                                val v = startText.toIntOrNull()?.coerceAtLeast(0) ?: 0
+                                startText = v.toString()
+                                onVideoStartChange(v)
+                            }
+                        }
+                )
+                OutlinedTextField(
+                    value = endText,
+                    onValueChange = { endText = it.filter { c -> c.isDigit() }.take(4) },
+                    label = { Text("End (s)") },
+                    singleLine = true,
+                    keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
+                    modifier = Modifier
+                        .weight(1f)
+                        .onFocusChanged { focus ->
+                            if (!focus.isFocused) {
+                                val v = endText.toIntOrNull()?.coerceAtLeast(1) ?: 30
+                                endText = v.toString()
+                                onVideoEndChange(v)
+                            }
+                        }
+                )
             }
-            Text("MP4 duration only (max 60s)", style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
-
-            if (showCustomDuration) {
-                var customText by remember {
-                    mutableStateOf(TextFieldValue(
-                        if (isCustom) exportState.videoDuration.toString() else "",
-                        selection = TextRange(0, if (isCustom) exportState.videoDuration.toString().length else 0)
-                    ))
-                }
-                Row(
-                    horizontalArrangement = Arrangement.spacedBy(8.dp),
-                    verticalAlignment = Alignment.CenterVertically
-                ) {
-                    Spacer(Modifier.width(54.dp))
-                    OutlinedTextField(
-                        value = customText,
-                        onValueChange = { newVal ->
-                            val filtered = newVal.copy(text = newVal.text.filter { it.isDigit() }.take(2))
-                            customText = filtered
-                        },
-                        label = { Text("1-60s") },
-                        singleLine = true,
-                        modifier = Modifier.width(90.dp)
-                    )
-                    TextButton(onClick = {
-                        val secs = customText.text.toIntOrNull()?.coerceIn(1, 60) ?: 15
-                        onVideoDurationChange(secs)
-                        showCustomDuration = false
-                    }) { Text("Set") }
-                }
-            }
+            Text(
+                "Duration: ${displayDuration}s",
+                style = MaterialTheme.typography.labelSmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant
+            )
 
             Button(onClick = onExportVideo, modifier = Modifier.fillMaxWidth()) {
-                Text("Export MP4")
+                if (isAudioLoaded) {
+                    Icon(Icons.Filled.MusicNote, contentDescription = null, modifier = Modifier.size(18.dp))
+                    Spacer(Modifier.width(4.dp))
+                }
+                Text(if (isAudioLoaded) "Export MP4 + Audio" else "Export MP4")
             }
         }
 

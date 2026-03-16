@@ -629,7 +629,7 @@ fun MainScreen(
                         },
                         onExportVideo = {
                             val gen = state.generator ?: return@ExportPanel
-                            exportViewModel.exportVideo(context, gen, renderParams, state.seed, state.palette, state.quality, state.animationFps)
+                            exportViewModel.exportVideo(context, gen, renderParams, state.seed, state.palette, state.quality, state.animationFps, audioUri = state.audioUri)
                         },
                         onExportRecipe = { fileName ->
                             val json = viewModel.exportRecipeJson()
@@ -650,7 +650,8 @@ fun MainScreen(
                         onGifResolutionChange = { exportViewModel.setGifResolution(it) },
                         onGifBoomerangChange = { exportViewModel.setGifBoomerang(it) },
                         onGifEndlessChange = { exportViewModel.setGifEndless(it) },
-                        onVideoDurationChange = { exportViewModel.setVideoDuration(it) },
+                        onVideoStartChange = { exportViewModel.setVideoStartSec(it) },
+                        onVideoEndChange = { exportViewModel.setVideoEndSec(it) },
                         generatorStyleName = state.generator?.styleName ?: ""
                     )
                 }
