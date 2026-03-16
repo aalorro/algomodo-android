@@ -23,6 +23,7 @@ fun ExportPanel(
     isAnimating: Boolean,
     supportsVector: Boolean,
     isAudioLoaded: Boolean = false,
+    audioFileName: String? = null,
     audioDurationSec: Float = 0f,
     isAudioPlaying: Boolean = false,
     audioSliderPosition: Float = 0f,
@@ -254,6 +255,17 @@ fun ExportPanel(
                 color = MaterialTheme.colorScheme.onSurfaceVariant
             )
         } else {
+            // Audio file name
+            if (audioFileName != null) {
+                Text(
+                    audioFileName,
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    maxLines = 1,
+                    overflow = androidx.compose.ui.text.style.TextOverflow.Ellipsis
+                )
+            }
+
             // Timer display
             val currentSec = (audioSliderPosition * audioDurationSec).toInt()
             val totalSec = audioDurationSec.toInt()

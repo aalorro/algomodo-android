@@ -53,6 +53,7 @@ data class MainUiState(
     val lockedParams: Set<String> = emptySet(),
     val sourceImage: Bitmap? = null,
     val audioUri: Uri? = null,
+    val audioFileName: String? = null,
     val audioAnalysis: AudioAnalysis? = null,
     val isAudioLoaded: Boolean = false,
     val audioDurationSec: Float = 0f,
@@ -362,8 +363,19 @@ class MainViewModel @Inject constructor(
     }
 
     fun loadAudio(context: Context, uri: Uri) {
+        // Resolve filename from content URI
+        val fileName = try {
+            val cursor = context.contentResolver.query(uri, null, null, null, null)
+            cursor?.use {
+                if (it.moveToFirst()) {
+                    val idx = it.getColumnIndex(android.provider.OpenableColumns.DISPLAY_NAME)
+                    if (idx >= 0) it.getString(idx) else null
+                } else null
+            }
+        } catch (_: Exception) { null }
+
         // Mark as loaded immediately — player can play regardless of analysis
-        _state.update { it.copy(audioUri = uri, isAudioLoaded = true) }
+        _state.update { it.copy(audioUri = uri, audioFileName = fileName, isAudioLoaded = true) }
         // Analysis runs in background; failure only means no reactivity, not no playback
         viewModelScope.launch {
             val analysis = try {
@@ -394,6 +406,7 @@ class MainViewModel @Inject constructor(
         _state.update {
             it.copy(
                 audioUri = null,
+                audioFileName = null,
                 audioAnalysis = null,
                 isAudioLoaded = false,
                 audioDurationSec = 0f,

@@ -578,6 +578,7 @@ fun MainScreen(
                         isAnimating = state.isAnimating,
                         supportsVector = state.generator?.supportsVector == true,
                         isAudioLoaded = state.isAudioLoaded,
+                        audioFileName = state.audioFileName,
                         audioDurationSec = state.audioDurationSec,
                         isAudioPlaying = isAudioPlaying,
                         audioSliderPosition = audioSliderPosition,
