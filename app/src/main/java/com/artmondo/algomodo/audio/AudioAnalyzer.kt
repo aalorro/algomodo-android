@@ -81,10 +81,18 @@ object AudioAnalyzer {
                 if (high[w] > maxHigh) maxHigh = high[w]
             }
 
-            // Normalize to [0, 1]
+            // Normalize bass/mid/high to [0, 1]
             if (maxBass > 0f) for (i in bass.indices) bass[i] /= maxBass
             if (maxMid > 0f) for (i in mid.indices) mid[i] /= maxMid
             if (maxHigh > 0f) for (i in high.indices) high[i] /= maxHigh
+
+            // Normalize spectra to [0, 1] — raw FFT magnitudes vary wildly
+            var maxMag = 0f
+            for (s in spectra) for (v in s) if (v > maxMag) maxMag = v
+            if (maxMag > 0f) {
+                val inv = 1f / maxMag
+                for (s in spectra) for (i in s.indices) s[i] *= inv
+            }
 
             AudioAnalysis(durationSec, windowSec, bass, mid, high, spectra)
         } catch (_: Throwable) {

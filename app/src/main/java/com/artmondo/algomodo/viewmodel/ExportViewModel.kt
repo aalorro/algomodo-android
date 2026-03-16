@@ -31,7 +31,8 @@ data class ExportUiState(
     val gifResolution: Int = 600,
     val gifBoomerang: Boolean = false,
     val gifEndless: Boolean = true,
-    val videoDuration: Int = 15,
+    val videoStartSec: Int = 0,
+    val videoEndSec: Int = 30,
     val lastExportUri: Uri? = null,
     val error: String? = null
 )
@@ -62,8 +63,12 @@ class ExportViewModel @Inject constructor() : ViewModel() {
         _state.update { it.copy(gifEndless = endless, gifBoomerang = if (endless) false else it.gifBoomerang) }
     }
 
-    fun setVideoDuration(duration: Int) {
-        _state.update { it.copy(videoDuration = duration.coerceIn(1, 60)) }
+    fun setVideoStartSec(sec: Int) {
+        _state.update { it.copy(videoStartSec = sec.coerceAtLeast(0)) }
+    }
+
+    fun setVideoEndSec(sec: Int) {
+        _state.update { it.copy(videoEndSec = sec.coerceAtLeast(1)) }
     }
 
     fun quickSave(
@@ -225,13 +230,15 @@ class ExportViewModel @Inject constructor() : ViewModel() {
         seed: Int,
         palette: Palette,
         quality: Quality,
-        fps: Int
+        fps: Int,
+        audioUri: Uri? = null
     ) {
         val s = _state.value
+        val durationSeconds = (s.videoEndSec - s.videoStartSec).coerceAtLeast(1)
         viewModelScope.launch(Dispatchers.IO) {
             _state.update { it.copy(isExporting = true, error = null) }
             try {
-                val resolution = s.gifResolution // use same resolution setting
+                val resolution = s.gifResolution
                 val uri = VideoExporter.export(
                     context = context,
                     generator = generator,
@@ -242,7 +249,10 @@ class ExportViewModel @Inject constructor() : ViewModel() {
                     width = resolution,
                     height = resolution,
                     fps = fps,
-                    durationSeconds = s.videoDuration,
+                    durationSeconds = durationSeconds,
+                    timeOffsetSec = s.videoStartSec.toFloat(),
+                    audioUri = audioUri,
+                    audioStartSec = s.videoStartSec.toFloat(),
                     fileName = "algomodo_${System.currentTimeMillis()}",
                     onProgress = { p ->
                         _state.update { it.copy(exportProgress = p) }
