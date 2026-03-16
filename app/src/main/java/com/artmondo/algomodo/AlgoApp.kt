@@ -12,6 +12,7 @@ import com.artmondo.algomodo.generators.noise.*
 import com.artmondo.algomodo.generators.plotter.*
 import com.artmondo.algomodo.generators.text.*
 import com.artmondo.algomodo.generators.voronoi.*
+import com.artmondo.algomodo.generators.procedural.*
 import dagger.hilt.android.HiltAndroidApp
 
 @HiltAndroidApp
@@ -148,5 +149,16 @@ class AlgoApp : Application() {
         GeneratorRegistry.register(VoronoiCellsGenerator())
         GeneratorRegistry.register(VoronoiMosaicGenerator())
         GeneratorRegistry.register(VoronoiWeightedGenerator())
+
+        // Procedural (9)
+        GeneratorRegistry.register(AudioReactiveGenerator())
+        GeneratorRegistry.register(DisplacementGenerator())
+        GeneratorRegistry.register(EdgeGlowGenerator())
+        GeneratorRegistry.register(FeedbackSystemsGenerator())
+        GeneratorRegistry.register(FieldParticleGenerator())
+        GeneratorRegistry.register(InstancedGeometryGenerator())
+        GeneratorRegistry.register(ParticleAdvectionGenerator())
+        GeneratorRegistry.register(SdfRaymarchGenerator())
+        GeneratorRegistry.register(WarpGenerator())
     }
 }

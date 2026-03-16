@@ -17,7 +17,8 @@ object GeneratorRegistry {
         "noise" to "Noise",
         "plotter" to "Plotter",
         "text" to "Text",
-        "voronoi" to "Voronoi"
+        "voronoi" to "Voronoi",
+        "procedural" to "Procedural"
     )
 
     private val familyDescriptions = mapOf(
@@ -30,7 +31,8 @@ object GeneratorRegistry {
         "noise" to "Simplex, FBM, Domain Warp, Turbulence, etc.",
         "plotter" to "Pen-plotter styles: stippling, hatching, contours, etc.",
         "text" to "Concrete poetry, typographic grid, digital rain, glyphs, naive handwriting, procedural cursive, etc.",
-        "voronoi" to "Voronoi cells, Delaunay, ridges, fractured, etc."
+        "voronoi" to "Voronoi cells, Delaunay, ridges, fractured, etc.",
+        "procedural" to "Warp, SDF, displacement, edge glow, feedback, particles, instanced geometry, audio-reactive"
     )
 
     fun register(generator: Generator) {
