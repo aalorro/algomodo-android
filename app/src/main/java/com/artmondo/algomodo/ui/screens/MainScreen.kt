@@ -101,17 +101,6 @@ fun MainScreen(
     var audioSliderPosition by remember { mutableFloatStateOf(0f) }
     var isAudioSeeking by remember { mutableStateOf(false) }
 
-    // Load audio into player when URI changes
-    LaunchedEffect(state.audioUri) {
-        if (state.audioUri != null) {
-            audioPlayer.load(state.audioUri!!)
-        } else {
-            audioPlayer.release()
-            isAudioPlaying = false
-            audioSliderPosition = 0f
-        }
-    }
-
     // Poll playback position
     LaunchedEffect(isAudioPlaying) {
         while (isAudioPlaying) {
@@ -129,11 +118,18 @@ fun MainScreen(
         onDispose { audioPlayer.release() }
     }
 
-    // Audio file picker
+    // Audio file picker — loads player directly, then starts analysis
     val audioPickerLauncher = rememberLauncherForActivityResult(
         contract = ActivityResultContracts.GetContent()
     ) { uri ->
-        uri?.let { viewModel.loadAudio(context, it) }
+        uri?.let {
+            val loaded = audioPlayer.load(it)
+            if (loaded) {
+                val durSec = audioPlayer.durationMs.toFloat() / 1000f
+                if (durSec > 0f) viewModel.setAudioDuration(durSec)
+            }
+            viewModel.loadAudio(context, it)
+        }
     }
 
     // Recipe file picker (import)
@@ -365,7 +361,21 @@ fun MainScreen(
                     if (state.isAnimating) Icons.Filled.Pause else Icons.Filled.PlayArrow,
                     if (state.isAnimating) "Pause" else "Play",
                     enabled = state.generator?.supportsAnimation == true
-                ) { viewModel.toggleAnimation() }
+                ) {
+                    viewModel.toggleAnimation()
+                    // Sync audio with animation
+                    if (state.isAudioLoaded) {
+                        if (!state.isAnimating) {
+                            // Was paused, now playing
+                            audioPlayer.play()
+                            isAudioPlaying = true
+                        } else {
+                            // Was playing, now pausing
+                            audioPlayer.pause()
+                            isAudioPlaying = false
+                        }
+                    }
+                }
             }
             CanvasButton(Icons.Filled.Casino, "Rand") { viewModel.randomize() }
             CanvasButton(Icons.Filled.Redo, "Redo", enabled = canRedo) { viewModel.redo() }
@@ -582,9 +592,11 @@ fun MainScreen(
                             if (isAudioPlaying) {
                                 audioPlayer.pause()
                                 isAudioPlaying = false
+                                viewModel.setAnimating(false)
                             } else {
                                 audioPlayer.play()
                                 isAudioPlaying = true
+                                viewModel.setAnimating(true)
                             }
                         },
                         onAudioSeek = { pos ->
