@@ -247,10 +247,10 @@ class AttractorTrailsGenerator : Generator {
         val rh = (fullH * resScale).toInt().coerceAtLeast(200)
         val renderDim = min(rw, rh)
 
-        // Iteration count scaled with resolution
+        // Iteration count — fast trig LUT allows higher counts without fps hit
         val totalIterations = when (quality) {
-            Quality.DRAFT -> (iterationsK * 200)       // 200 per K (was 300)
-            Quality.BALANCED -> (iterationsK * 500)    // 500 per K (was 700)
+            Quality.DRAFT -> (iterationsK * 400)
+            Quality.BALANCED -> (iterationsK * 800)
             Quality.ULTRA -> (iterationsK * 1000)
         }
 
@@ -573,8 +573,8 @@ class AttractorTrailsGenerator : Generator {
     override fun estimateCost(params: Map<String, Any>, quality: Quality): Float {
         val iterations = (params["iterations"] as? Number)?.toFloat() ?: 800f
         return when (quality) {
-            Quality.DRAFT -> iterations * 0.2f / 2000f
-            Quality.BALANCED -> iterations * 0.5f / 2000f
+            Quality.DRAFT -> iterations * 0.4f / 2000f
+            Quality.BALANCED -> iterations * 0.8f / 2000f
             Quality.ULTRA -> iterations / 2000f
         }.coerceIn(0.1f, 1f)
     }
