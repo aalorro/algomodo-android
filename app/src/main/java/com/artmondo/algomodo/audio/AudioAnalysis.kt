@@ -17,7 +17,9 @@ class AudioAnalysis(
 
     private fun windowIndex(time: Float): Int {
         if (windowCount == 0) return 0
+        if (durationSec <= 0f || windowSec <= 0f) return 0
         val t = time % durationSec
+        if (t.isNaN() || t.isInfinite()) return 0
         return ((t / windowSec).toInt()).coerceIn(0, windowCount - 1)
     }
 

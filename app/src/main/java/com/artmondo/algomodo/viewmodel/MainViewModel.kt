@@ -362,24 +362,32 @@ class MainViewModel @Inject constructor(
     }
 
     fun loadAudio(context: Context, uri: Uri) {
-        _state.update { it.copy(audioUri = uri) }
+        // Mark as loaded immediately — player can play regardless of analysis
+        _state.update { it.copy(audioUri = uri, isAudioLoaded = true) }
+        // Analysis runs in background; failure only means no reactivity, not no playback
         viewModelScope.launch {
-            val analysis = AudioAnalyzer.analyze(context, uri)
+            val analysis = try {
+                AudioAnalyzer.analyze(context, uri)
+            } catch (e: kotlinx.coroutines.CancellationException) {
+                throw e
+            } catch (_: Throwable) {
+                null
+            }
             if (analysis != null) {
                 _state.update {
                     it.copy(
                         audioAnalysis = analysis,
-                        isAudioLoaded = true,
                         audioDurationSec = analysis.durationSec,
                         renderTrigger = it.renderTrigger + 1
                     )
                 }
-            } else {
-                _state.update {
-                    it.copy(audioUri = null, audioAnalysis = null, isAudioLoaded = false, audioDurationSec = 0f)
-                }
             }
+            // Analysis failure does NOT clear audioUri or isAudioLoaded
         }
+    }
+
+    fun setAudioDuration(durationSec: Float) {
+        _state.update { it.copy(audioDurationSec = durationSec) }
     }
 
     fun clearAudio() {

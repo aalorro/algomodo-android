@@ -1,6 +1,7 @@
 package com.artmondo.algomodo.audio
 
 import android.content.Context
+import android.media.AudioFormat
 import android.media.MediaCodec
 import android.media.MediaExtractor
 import android.media.MediaFormat
@@ -8,97 +9,97 @@ import android.net.Uri
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.withContext
-import java.nio.ByteBuffer
 import java.nio.ByteOrder
 import kotlin.math.min
 import kotlin.math.roundToInt
 
 object AudioAnalyzer {
 
-    /**
-     * Decode audio from [uri] and compute frequency band analysis.
-     * Returns null if decoding fails.
-     */
+    // Cap at 5 minutes to prevent OOM
+    private const val MAX_SAMPLES = 44100 * 5 * 60
+
+    // Match web version: FFT_SIZE=256, 128 bins
+    private const val FFT_SIZE = 256
+
     suspend fun analyze(context: Context, uri: Uri): AudioAnalysis? = withContext(Dispatchers.IO) {
-        val pcm = decodeToMono(context, uri) ?: return@withContext null
-        val sampleRate = pcm.sampleRate
-        val samples = pcm.samples
+        try {
+            val pcm = decodeToMono(context, uri) ?: return@withContext null
+            val sampleRate = pcm.sampleRate
+            val samples = pcm.samples
 
-        // FFT window: power-of-2 size closest to 1/60s
-        val fftSize = 1024 // ~23ms at 44.1kHz
-        val hopSize = (sampleRate / 60f).roundToInt().coerceAtLeast(1) // ~60 windows/sec
-        val windowCount = ((samples.size - fftSize) / hopSize).coerceAtLeast(0) + 1
-        val windowSec = hopSize.toFloat() / sampleRate
-        val durationSec = samples.size.toFloat() / sampleRate
+            if (samples.isEmpty()) return@withContext null
 
-        // Frequency bin boundaries
-        val binHz = sampleRate.toFloat() / fftSize
-        val bassEnd = (250f / binHz).roundToInt().coerceAtMost(fftSize / 2)
-        val midEnd = (4000f / binHz).roundToInt().coerceAtMost(fftSize / 2)
-        val highEnd = (fftSize / 2)
+            val hopSize = (sampleRate / 60f).roundToInt().coerceAtLeast(1)
+            val windowCount = ((samples.size - FFT_SIZE) / hopSize).coerceAtLeast(0) + 1
+            val windowSec = hopSize.toFloat() / sampleRate
+            val durationSec = samples.size.toFloat() / sampleRate
 
-        // Hann window
-        val hann = FloatArray(fftSize) { i ->
-            (0.5f * (1f - kotlin.math.cos(2.0 * Math.PI * i / (fftSize - 1)))).toFloat()
-        }
+            if (durationSec <= 0f || windowCount <= 0) return@withContext null
 
-        val bass = FloatArray(windowCount)
-        val mid = FloatArray(windowCount)
-        val high = FloatArray(windowCount)
-        val spectra = Array(windowCount) { FloatArray(0) }
+            // Match web: bands are percentage of bins (128 bins total)
+            val bins = FFT_SIZE / 2
+            val bassEnd = (bins * 0.1f).toInt().coerceAtLeast(1)   // 0–10%
+            val midEnd = (bins * 0.5f).toInt()                      // 10–50%
 
-        // Track max for normalization
-        var maxBass = 0f; var maxMid = 0f; var maxHigh = 0f
-
-        val windowBuf = FloatArray(fftSize)
-
-        for (w in 0 until windowCount) {
-            if (!isActive) return@withContext null
-            val offset = w * hopSize
-
-            // Fill and window
-            for (i in 0 until fftSize) {
-                val idx = offset + i
-                windowBuf[i] = if (idx < samples.size) samples[idx] * hann[i] else 0f
+            // Hann window (matches web: 0.5 - 0.5 * cos(2*PI*i / (N-1)))
+            val hann = FloatArray(FFT_SIZE) { i ->
+                (0.5f * (1f - kotlin.math.cos(2.0 * Math.PI * i / (FFT_SIZE - 1)))).toFloat()
             }
 
-            val mag = FFT.magnitudeSpectrum(windowBuf)
-            spectra[w] = mag
+            val bass = FloatArray(windowCount)
+            val mid = FloatArray(windowCount)
+            val high = FloatArray(windowCount)
+            val spectra = Array(windowCount) { FloatArray(0) }
 
-            // Band energies (mean magnitude)
-            var bSum = 0f; var mSum = 0f; var hSum = 0f
-            for (i in 1 until bassEnd) bSum += mag[i]
-            for (i in bassEnd until midEnd) mSum += mag[i]
-            for (i in midEnd until highEnd) hSum += mag[i]
+            var maxBass = 0f; var maxMid = 0f; var maxHigh = 0f
+            val windowBuf = FloatArray(FFT_SIZE)
 
-            val bCount = (bassEnd - 1).coerceAtLeast(1)
-            val mCount = (midEnd - bassEnd).coerceAtLeast(1)
-            val hCount = (highEnd - midEnd).coerceAtLeast(1)
+            for (w in 0 until windowCount) {
+                if (!isActive) return@withContext null
+                val offset = w * hopSize
 
-            bass[w] = bSum / bCount
-            mid[w] = mSum / mCount
-            high[w] = hSum / hCount
+                for (i in 0 until FFT_SIZE) {
+                    val idx = offset + i
+                    windowBuf[i] = if (idx < samples.size) samples[idx] * hann[i] else 0f
+                }
 
-            if (bass[w] > maxBass) maxBass = bass[w]
-            if (mid[w] > maxMid) maxMid = mid[w]
-            if (high[w] > maxHigh) maxHigh = high[w]
+                val mag = FFT.magnitudeSpectrum(windowBuf)
+                spectra[w] = mag
+
+                // Band energies (matching web percentage splits)
+                var bSum = 0f; var mSum = 0f; var hSum = 0f
+                for (i in 0 until bassEnd) bSum += mag[i]
+                for (i in bassEnd until midEnd) mSum += mag[i]
+                for (i in midEnd until bins) hSum += mag[i]
+
+                bass[w] = bSum / bassEnd
+                mid[w] = mSum / (midEnd - bassEnd).coerceAtLeast(1)
+                high[w] = hSum / (bins - midEnd).coerceAtLeast(1)
+
+                if (bass[w] > maxBass) maxBass = bass[w]
+                if (mid[w] > maxMid) maxMid = mid[w]
+                if (high[w] > maxHigh) maxHigh = high[w]
+            }
+
+            // Normalize to [0, 1]
+            if (maxBass > 0f) for (i in bass.indices) bass[i] /= maxBass
+            if (maxMid > 0f) for (i in mid.indices) mid[i] /= maxMid
+            if (maxHigh > 0f) for (i in high.indices) high[i] /= maxHigh
+
+            AudioAnalysis(durationSec, windowSec, bass, mid, high, spectra)
+        } catch (_: Throwable) {
+            null
         }
-
-        // Normalize to [0, 1]
-        if (maxBass > 0f) for (i in bass.indices) bass[i] /= maxBass
-        if (maxMid > 0f) for (i in mid.indices) mid[i] /= maxMid
-        if (maxHigh > 0f) for (i in high.indices) high[i] /= maxHigh
-
-        AudioAnalysis(durationSec, windowSec, bass, mid, high, spectra)
     }
 
-    private data class PcmData(val samples: FloatArray, val sampleRate: Int)
+    private class PcmResult(val samples: FloatArray, val sampleRate: Int)
 
-    private fun decodeToMono(context: Context, uri: Uri): PcmData? {
+    private fun decodeToMono(context: Context, uri: Uri): PcmResult? {
         val extractor = MediaExtractor()
         try {
             extractor.setDataSource(context, uri, null)
-        } catch (e: Exception) {
+        } catch (_: Exception) {
+            try { extractor.release() } catch (_: Exception) {}
             return null
         }
 
@@ -121,7 +122,7 @@ object AudioAnalyzer {
 
         extractor.selectTrack(audioTrackIdx)
         val sampleRate = format.getInteger(MediaFormat.KEY_SAMPLE_RATE)
-        val channels = format.getInteger(MediaFormat.KEY_CHANNEL_COUNT)
+        var channels = format.getInteger(MediaFormat.KEY_CHANNEL_COUNT).coerceAtLeast(1)
         val mime = format.getString(MediaFormat.KEY_MIME) ?: run {
             extractor.release()
             return null
@@ -129,66 +130,130 @@ object AudioAnalyzer {
 
         val codec = try {
             MediaCodec.createDecoderByType(mime)
-        } catch (e: Exception) {
+        } catch (_: Exception) {
             extractor.release()
             return null
         }
 
-        codec.configure(format, null, null, 0)
-        codec.start()
+        try {
+            codec.configure(format, null, null, 0)
+            codec.start()
+        } catch (_: Exception) {
+            try { codec.release() } catch (_: Exception) {}
+            extractor.release()
+            return null
+        }
 
-        val outputSamples = mutableListOf<Float>()
+        // Detect output PCM encoding — default to 16-bit
+        var isFloatPcm = false
+        try {
+            val outFmt = codec.outputFormat
+            val enc = outFmt.getInteger(MediaFormat.KEY_PCM_ENCODING, AudioFormat.ENCODING_PCM_16BIT)
+            isFloatPcm = (enc == AudioFormat.ENCODING_PCM_FLOAT)
+            channels = outFmt.getInteger(MediaFormat.KEY_CHANNEL_COUNT, channels)
+        } catch (_: Exception) {}
+
+        // Pre-allocate output buffer
+        val durationUs = try { format.getLong(MediaFormat.KEY_DURATION) } catch (_: Exception) { 0L }
+        val estimatedSamples = if (durationUs > 0) {
+            ((durationUs / 1_000_000.0) * sampleRate).toInt().coerceIn(1, MAX_SAMPLES)
+        } else {
+            sampleRate * 30
+        }
+        var outputSamples = FloatArray(min(estimatedSamples + sampleRate, MAX_SAMPLES))
+        var writeIdx = 0
+
         val bufferInfo = MediaCodec.BufferInfo()
         var inputDone = false
         var outputDone = false
         val timeoutUs = 10_000L
 
-        while (!outputDone) {
-            // Feed input
-            if (!inputDone) {
-                val inIdx = codec.dequeueInputBuffer(timeoutUs)
-                if (inIdx >= 0) {
-                    val buf = codec.getInputBuffer(inIdx) ?: continue
-                    val read = extractor.readSampleData(buf, 0)
-                    if (read < 0) {
-                        codec.queueInputBuffer(inIdx, 0, 0, 0, MediaCodec.BUFFER_FLAG_END_OF_STREAM)
-                        inputDone = true
-                    } else {
-                        codec.queueInputBuffer(inIdx, 0, read, extractor.sampleTime, 0)
-                        extractor.advance()
-                    }
-                }
-            }
-
-            // Drain output
-            val outIdx = codec.dequeueOutputBuffer(bufferInfo, timeoutUs)
-            if (outIdx >= 0) {
-                val buf = codec.getOutputBuffer(outIdx)
-                if (buf != null && bufferInfo.size > 0) {
-                    buf.order(ByteOrder.LITTLE_ENDIAN)
-                    buf.position(bufferInfo.offset)
-                    val shortCount = bufferInfo.size / 2
-                    for (s in 0 until shortCount step channels) {
-                        // Mix to mono
-                        var sum = 0f
-                        for (ch in 0 until min(channels, shortCount - s)) {
-                            sum += buf.short.toFloat() / 32768f
+        try {
+            while (!outputDone) {
+                // Feed input
+                if (!inputDone) {
+                    val inIdx = codec.dequeueInputBuffer(timeoutUs)
+                    if (inIdx >= 0) {
+                        val inBuf = codec.getInputBuffer(inIdx)
+                        if (inBuf != null) {
+                            val read = extractor.readSampleData(inBuf, 0)
+                            if (read < 0) {
+                                codec.queueInputBuffer(inIdx, 0, 0, 0, MediaCodec.BUFFER_FLAG_END_OF_STREAM)
+                                inputDone = true
+                            } else {
+                                codec.queueInputBuffer(inIdx, 0, read, extractor.sampleTime, 0)
+                                extractor.advance()
+                            }
                         }
-                        outputSamples.add(sum / channels)
                     }
                 }
-                codec.releaseOutputBuffer(outIdx, false)
-                if (bufferInfo.flags and MediaCodec.BUFFER_FLAG_END_OF_STREAM != 0) {
-                    outputDone = true
+
+                // Drain output
+                val outIdx = codec.dequeueOutputBuffer(bufferInfo, timeoutUs)
+                when {
+                    outIdx == MediaCodec.INFO_OUTPUT_FORMAT_CHANGED -> {
+                        // Output format changed — update encoding & channel info
+                        try {
+                            val newFmt = codec.outputFormat
+                            val enc = newFmt.getInteger(MediaFormat.KEY_PCM_ENCODING, AudioFormat.ENCODING_PCM_16BIT)
+                            isFloatPcm = (enc == AudioFormat.ENCODING_PCM_FLOAT)
+                            channels = newFmt.getInteger(MediaFormat.KEY_CHANNEL_COUNT, channels).coerceAtLeast(1)
+                        } catch (_: Exception) {}
+                    }
+                    outIdx >= 0 -> {
+                        val buf = codec.getOutputBuffer(outIdx)
+                        if (buf != null && bufferInfo.size > 0) {
+                            buf.order(ByteOrder.LITTLE_ENDIAN)
+                            buf.position(bufferInfo.offset)
+
+                            val bytesPerSample = if (isFloatPcm) 4 else 2
+                            val totalSamples = bufferInfo.size / bytesPerSample
+                            val bytesPerFrame = bytesPerSample * channels
+
+                            var s = 0
+                            while (s + channels <= totalSamples && writeIdx < MAX_SAMPLES) {
+                                if (buf.remaining() < bytesPerFrame) break
+
+                                var sum = 0f
+                                for (ch in 0 until channels) {
+                                    sum += if (isFloatPcm) {
+                                        buf.float.coerceIn(-1f, 1f)
+                                    } else {
+                                        buf.short.toFloat() / 32768f
+                                    }
+                                }
+
+                                // Grow output array if needed
+                                if (writeIdx >= outputSamples.size) {
+                                    val newSize = min(outputSamples.size * 2, MAX_SAMPLES)
+                                    if (newSize <= outputSamples.size) break
+                                    outputSamples = outputSamples.copyOf(newSize)
+                                }
+
+                                outputSamples[writeIdx++] = sum / channels
+                                s += channels
+                            }
+                        }
+                        codec.releaseOutputBuffer(outIdx, false)
+                        if (bufferInfo.flags and MediaCodec.BUFFER_FLAG_END_OF_STREAM != 0) {
+                            outputDone = true
+                        }
+                    }
+                    // INFO_TRY_AGAIN_LATER or other negative values — just loop
                 }
+
+                if (writeIdx >= MAX_SAMPLES) outputDone = true
             }
+        } catch (_: Exception) {
+            // Decode error — use whatever we decoded so far
+        } finally {
+            try { codec.stop() } catch (_: Exception) {}
+            try { codec.release() } catch (_: Exception) {}
+            try { extractor.release() } catch (_: Exception) {}
         }
 
-        codec.stop()
-        codec.release()
-        extractor.release()
-
-        if (outputSamples.isEmpty()) return null
-        return PcmData(outputSamples.toFloatArray(), sampleRate)
+        if (writeIdx == 0) return null
+        val trimmed = if (writeIdx < outputSamples.size) outputSamples.copyOf(writeIdx) else outputSamples
+        return PcmResult(trimmed, sampleRate)
     }
 }
