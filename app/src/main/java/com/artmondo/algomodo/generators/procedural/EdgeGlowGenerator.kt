@@ -3,6 +3,7 @@ package com.artmondo.algomodo.generators.procedural
 import android.graphics.Bitmap
 import android.graphics.Canvas
 import android.graphics.Color
+import com.artmondo.algomodo.audio.AudioAnalysis
 import com.artmondo.algomodo.data.palettes.Palette
 import com.artmondo.algomodo.generators.Generator
 import com.artmondo.algomodo.generators.ParamGroup
@@ -67,6 +68,12 @@ class EdgeGlowGenerator : Generator {
         val Q = (params["quantize"] as? Number)?.toInt()?.coerceAtLeast(2) ?: 6
         val spd = (params["speed"] as? Number)?.toFloat() ?: 0.4f
 
+        val audioAnalysis = params["_audioAnalysis"] as? AudioAnalysis
+        val audioBass = audioAnalysis?.getBass(time) ?: 0f
+        val audioHigh = audioAnalysis?.getHigh(time) ?: 0f
+        val effGlow = glowI * (1f + audioBass * 1.5f)
+        val effEdgeW = edgeW * (1f + audioHigh * 0.5f)
+
         val t = time * spd
         val modeId = when (mode) { "contour" -> 0; "gradient" -> 1; "ridge" -> 2; else -> 3 }
         val vn = ValueNoise(seed)
@@ -86,10 +93,10 @@ class EdgeGlowGenerator : Generator {
         val circuitEps = eps * 3f
 
         // Brightness LUT
-        val glowPow = 1f / edgeW.coerceAtLeast(0.1f)
+        val glowPow = 1f / effEdgeW.coerceAtLeast(0.1f)
         val hasGlowR = glowR > 0.01f
         val glowFalloff = if (hasGlowR) 4f / glowR else 100f
-        val ambientGlow = if (hasGlowR) exp(-glowFalloff) * glowI * 0.1f else 0f
+        val ambientGlow = if (hasGlowR) exp(-glowFalloff) * effGlow * 0.1f else 0f
 
         val brightnessLUT = FloatArray(256)
         for (i in 0 until 256) {
@@ -97,7 +104,7 @@ class EdgeGlowGenerator : Generator {
             if (edge > 0.004f) {
                 val sharp = edge.pow(glowPow)
                 val soft = if (hasGlowR) exp(-((1f - edge) * glowFalloff)) * 0.3f else 0f
-                brightnessLUT[i] = ((sharp + soft) * glowI).coerceAtMost(1f)
+                brightnessLUT[i] = ((sharp + soft) * effGlow).coerceAtMost(1f)
             } else {
                 brightnessLUT[i] = ambientGlow.coerceAtMost(1f)
             }
