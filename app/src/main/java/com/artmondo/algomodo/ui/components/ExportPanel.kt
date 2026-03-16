@@ -1,5 +1,6 @@
 package com.artmondo.algomodo.ui.components
 
+import android.net.Uri
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.layout.FlowRow
 import androidx.compose.material.icons.Icons
@@ -8,11 +9,14 @@ import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.TextRange
 import androidx.compose.ui.text.input.TextFieldValue
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.unit.dp
+import com.artmondo.algomodo.audio.AudioPlayer
 import com.artmondo.algomodo.viewmodel.ExportUiState
+import kotlinx.coroutines.delay
 import java.text.SimpleDateFormat
 import java.util.Date
 import java.util.Locale
@@ -22,6 +26,11 @@ fun ExportPanel(
     exportState: ExportUiState,
     isAnimating: Boolean,
     supportsVector: Boolean,
+    audioUri: Uri? = null,
+    isAudioLoaded: Boolean = false,
+    audioDurationSec: Float = 0f,
+    onLoadAudio: () -> Unit = {},
+    onClearAudio: () -> Unit = {},
     onExportPng: () -> Unit,
     onExportJpg: () -> Unit,
     onExportSvg: () -> Unit,
@@ -221,6 +230,121 @@ fun ExportPanel(
 
             Button(onClick = onExportVideo, modifier = Modifier.fillMaxWidth()) {
                 Text("Export MP4")
+            }
+        }
+
+        // Audio Reactivity section
+        HorizontalDivider()
+        Text(
+            "Audio Reactivity",
+            style = MaterialTheme.typography.labelMedium,
+            color = MaterialTheme.colorScheme.primary
+        )
+
+        if (!isAudioLoaded) {
+            Button(onClick = onLoadAudio, modifier = Modifier.fillMaxWidth()) {
+                Icon(Icons.Filled.MusicNote, contentDescription = null, modifier = Modifier.size(18.dp))
+                Spacer(Modifier.width(4.dp))
+                Text("Load Audio")
+            }
+            Text(
+                "Load an audio file to enable audio reactivity in procedural generators.",
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant
+            )
+        } else {
+            val context = LocalContext.current
+            val audioPlayer = remember { AudioPlayer(context) }
+            var isPlaying by remember { mutableStateOf(false) }
+            var sliderPosition by remember { mutableFloatStateOf(0f) }
+            var isSeeking by remember { mutableStateOf(false) }
+
+            // Load audio into player
+            LaunchedEffect(audioUri) {
+                if (audioUri != null) {
+                    audioPlayer.load(audioUri)
+                }
+            }
+
+            // Poll playback position
+            LaunchedEffect(isPlaying) {
+                while (isPlaying) {
+                    if (!isSeeking) {
+                        val pos = audioPlayer.currentPositionMs
+                        val dur = audioPlayer.durationMs
+                        if (dur > 0) sliderPosition = pos.toFloat() / dur
+                    }
+                    delay(100)
+                }
+            }
+
+            // Cleanup
+            DisposableEffect(Unit) {
+                onDispose {
+                    audioPlayer.release()
+                }
+            }
+
+            // Timer display
+            val currentSec = (sliderPosition * audioDurationSec).toInt()
+            val totalSec = audioDurationSec.toInt()
+            val timeStr = "%d:%02d / %d:%02d".format(
+                currentSec / 60, currentSec % 60,
+                totalSec / 60, totalSec % 60
+            )
+
+            Text(timeStr, style = MaterialTheme.typography.bodyMedium)
+
+            // Seekable slider
+            Slider(
+                value = sliderPosition,
+                onValueChange = {
+                    isSeeking = true
+                    sliderPosition = it
+                },
+                onValueChangeFinished = {
+                    val dur = audioPlayer.durationMs
+                    if (dur > 0) audioPlayer.seekTo((sliderPosition * dur).toInt())
+                    isSeeking = false
+                },
+                modifier = Modifier.fillMaxWidth()
+            )
+
+            // Play/Pause + Clear buttons
+            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                Button(
+                    onClick = {
+                        if (isPlaying) {
+                            audioPlayer.pause()
+                            isPlaying = false
+                        } else {
+                            audioPlayer.play()
+                            isPlaying = true
+                        }
+                    },
+                    modifier = Modifier.weight(1f)
+                ) {
+                    Icon(
+                        if (isPlaying) Icons.Filled.Pause else Icons.Filled.PlayArrow,
+                        contentDescription = null,
+                        modifier = Modifier.size(18.dp)
+                    )
+                    Spacer(Modifier.width(4.dp))
+                    Text(if (isPlaying) "Pause" else "Play")
+                }
+                OutlinedButton(
+                    onClick = {
+                        audioPlayer.release()
+                        isPlaying = false
+                        sliderPosition = 0f
+                        onClearAudio()
+                    },
+                    modifier = Modifier.weight(1f)
+                ) {
+                    Icon(Icons.Filled.Clear, contentDescription = null, modifier = Modifier.size(18.dp))
+                    Spacer(Modifier.width(4.dp))
+                    Text("Clear")
+                }
             }
         }
 

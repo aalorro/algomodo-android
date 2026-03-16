@@ -10,6 +10,7 @@ import android.graphics.Paint
 import android.graphics.Path
 import android.graphics.PorterDuff
 import android.graphics.PorterDuffXfermode
+import com.artmondo.algomodo.audio.AudioAnalysis
 import com.artmondo.algomodo.core.rng.SeededRNG
 import com.artmondo.algomodo.data.palettes.Palette
 import com.artmondo.algomodo.generators.Generator
@@ -135,12 +136,19 @@ class FeedbackSystemsGenerator : Generator {
         val midX = w / 2f; val midY = h / 2f
         val rng = SeededRNG(seed)
 
+        val audioAnalysis = params["_audioAnalysis"] as? AudioAnalysis
+        val audioBass = audioAnalysis?.getBass(time) ?: 0f
+        val audioMid = audioAnalysis?.getMid(time) ?: 0f
+
         val iterations = (params["iterations"] as? Number)?.toInt()?.coerceAtLeast(1) ?: 12
-        val zoom = (params["zoomFactor"] as? Number)?.toFloat() ?: 0.97f
+        var zoom = (params["zoomFactor"] as? Number)?.toFloat() ?: 0.97f
         val rotRate = (params["rotationRate"] as? Number)?.toFloat() ?: 0.5f
         val seedShape = (params["seedShape"] as? String) ?: "circles"
         val colorDrift = (params["colorDrift"] as? Number)?.toFloat() ?: 0.3f
         val blendOpacity = (params["blendOpacity"] as? Number)?.toFloat() ?: 0.75f
+
+        zoom *= (1f + audioBass * 0.15f)
+        val audioMidRotation = audioMid * 0.4f
 
         val doColorDrift = colorDrift > 0f
         val colors = palette.colorInts()
@@ -162,7 +170,7 @@ class FeedbackSystemsGenerator : Generator {
         val matrix = Matrix()
 
         for (i in 0 until iterations) {
-            val angle = rotRate * (time + i * 0.12f)
+            val angle = rotRate * (time + i * 0.12f) + audioMidRotation
 
             // Transform A → B
             bufB.eraseColor(Color.TRANSPARENT)

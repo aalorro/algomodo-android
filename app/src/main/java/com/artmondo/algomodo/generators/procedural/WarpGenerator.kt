@@ -3,6 +3,7 @@ package com.artmondo.algomodo.generators.procedural
 import android.graphics.Bitmap
 import android.graphics.Canvas
 import android.graphics.Color
+import com.artmondo.algomodo.audio.AudioAnalysis
 import com.artmondo.algomodo.data.palettes.Palette
 import com.artmondo.algomodo.generators.Generator
 import com.artmondo.algomodo.generators.ParamGroup
@@ -62,6 +63,10 @@ class WarpGenerator : Generator {
         val zoomVal = (params["zoom"] as? Number)?.toFloat() ?: 1.0f
         val spd = (params["speed"] as? Number)?.toFloat() ?: 0.7f
 
+        val audioAnalysis = params["_audioAnalysis"] as? AudioAnalysis
+        val audioBass = audioAnalysis?.getBass(time) ?: 0f
+        val audioMid = audioAnalysis?.getMid(time) ?: 0f
+
         val t = time * spd
         val vn = ValueNoise(seed)
 
@@ -78,6 +83,9 @@ class WarpGenerator : Generator {
         val segAngle = if (sym > 1) TAU / sym else 0f
         val caScale = ca * 0.6f
         val doCa = ca > 0.01f
+
+        val warpAudio = 1f + audioBass * 2f
+        val rippleFreq = 6f + audioMid * 4f
 
         val modeId = when (mode) { "spiral" -> 0; "ripple" -> 1; "tunnel" -> 2; else -> 3 }
 
@@ -120,10 +128,10 @@ class WarpGenerator : Generator {
                 when (modeId) {
                     0 -> { // spiral
                         u = rad * 2f
-                        v = ang + rad * warpStr + t
+                        v = ang + rad * warpStr * warpAudio + t
                     }
                     1 -> { // ripple
-                        val disp = sin(rad * 6f - t * 3f) * warpStr * 0.3f
+                        val disp = sin(rad * rippleFreq - t * 3f) * warpStr * 0.3f * warpAudio
                         val invR = if (rad > 0.001f) disp / rad else 0f
                         if (sym > 1) {
                             val cx2 = rad * cos(ang); val cy2 = rad * sin(ang)

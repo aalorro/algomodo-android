@@ -5,6 +5,7 @@ import android.graphics.Canvas
 import android.graphics.Color
 import android.graphics.Paint
 import android.graphics.Path
+import com.artmondo.algomodo.audio.AudioAnalysis
 import com.artmondo.algomodo.core.rng.SeededRNG
 import com.artmondo.algomodo.data.palettes.Palette
 import com.artmondo.algomodo.generators.Generator
@@ -88,6 +89,10 @@ class InstancedGeometryGenerator : Generator {
         val rotVar = (params["rotationVar"] as? Number)?.toFloat() ?: 0.4f
         val waveSpd = (params["waveSpeed"] as? Number)?.toFloat() ?: 1.0f
         val fillMode = (params["fillMode"] as? String) ?: "filled"
+
+        val audioAnalysis = params["_audioAnalysis"] as? AudioAnalysis
+        val audioBass = audioAnalysis?.getBass(time) ?: 0f
+        val audioMid = audioAnalysis?.getMid(time) ?: 0f
 
         val colors = palette.colorInts()
         val nC = colors.size
@@ -190,13 +195,15 @@ class InstancedGeometryGenerator : Generator {
         val paint = Paint(Paint.ANTI_ALIAS_FLAG)
         paint.strokeWidth = max(1f, minDim * 0.003f)
         val waveSpd2 = waveSpd * 2f
+        val bassAmp = 0.35f + audioBass * 0.8f
+        val midAmp = 0.5f + audioMid * 0.6f
 
         for (si in 0 until instCount) {
             val ii = sortIdx[si]
             val phase = instDist[ii] * 0.008f - time * waveSpd2
             val sinPhase = sin(phase)
-            val scaleWave = 1f + 0.35f * sinPhase
-            val rotWave = 0.5f * sin(phase * 0.7f + 1.2f)
+            val scaleWave = 1f + bassAmp * sinPhase
+            val rotWave = midAmp * sin(phase * 0.7f + 1.2f)
             val alphaWave = 0.55f + 0.45f * sin(phase * 0.5f + 0.8f)
 
             val sz = instSize[ii] * scaleWave

@@ -1,9 +1,13 @@
 package com.artmondo.algomodo.viewmodel
 
+import android.content.Context
 import android.graphics.Bitmap
 import android.graphics.Canvas
+import android.net.Uri
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
+import com.artmondo.algomodo.audio.AudioAnalysis
+import com.artmondo.algomodo.audio.AudioAnalyzer
 import com.artmondo.algomodo.core.recipe.CanvasSettings
 import com.artmondo.algomodo.core.recipe.RecipeSerializer
 import com.artmondo.algomodo.core.registry.GeneratorRegistry
@@ -48,6 +52,10 @@ data class MainUiState(
     val seedLocked: Boolean = false,
     val lockedParams: Set<String> = emptySet(),
     val sourceImage: Bitmap? = null,
+    val audioUri: Uri? = null,
+    val audioAnalysis: AudioAnalysis? = null,
+    val isAudioLoaded: Boolean = false,
+    val audioDurationSec: Float = 0f,
     val theme: String = "dark",
     val performanceMode: Boolean = false,
     val showFps: Boolean = false,
@@ -351,6 +359,39 @@ class MainViewModel @Inject constructor(
 
     fun setSourceImage(bitmap: Bitmap?) {
         _state.update { it.copy(sourceImage = bitmap, renderTrigger = it.renderTrigger + 1) }
+    }
+
+    fun loadAudio(context: Context, uri: Uri) {
+        _state.update { it.copy(audioUri = uri) }
+        viewModelScope.launch {
+            val analysis = AudioAnalyzer.analyze(context, uri)
+            if (analysis != null) {
+                _state.update {
+                    it.copy(
+                        audioAnalysis = analysis,
+                        isAudioLoaded = true,
+                        audioDurationSec = analysis.durationSec,
+                        renderTrigger = it.renderTrigger + 1
+                    )
+                }
+            } else {
+                _state.update {
+                    it.copy(audioUri = null, audioAnalysis = null, isAudioLoaded = false, audioDurationSec = 0f)
+                }
+            }
+        }
+    }
+
+    fun clearAudio() {
+        _state.update {
+            it.copy(
+                audioUri = null,
+                audioAnalysis = null,
+                isAudioLoaded = false,
+                audioDurationSec = 0f,
+                renderTrigger = it.renderTrigger + 1
+            )
+        }
     }
 
     fun setSnapshotTime(time: Float) {

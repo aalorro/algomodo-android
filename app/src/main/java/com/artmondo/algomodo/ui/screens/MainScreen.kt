@@ -66,10 +66,12 @@ fun MainScreen(
     val canUndo by viewModel.canUndo.collectAsStateWithLifecycle()
     val canRedo by viewModel.canRedo.collectAsStateWithLifecycle()
 
-    // Merge sourceImage into params so image-family generators receive it
-    val renderParams = if (state.sourceImage != null)
-        state.params + ("_sourceImage" to state.sourceImage!!)
-    else state.params
+    // Merge sourceImage and audioAnalysis into params so generators receive them
+    val renderParams = buildMap<String, Any> {
+        putAll(state.params)
+        state.sourceImage?.let { put("_sourceImage", it) }
+        state.audioAnalysis?.let { put("_audioAnalysis", it) }
+    }
 
     val context = LocalContext.current
     val scope = rememberCoroutineScope()
@@ -90,6 +92,13 @@ fun MainScreen(
         contract = ActivityResultContracts.PickVisualMedia()
     ) { uri ->
         uri?.let { loadBitmapFromUri(context, it) { bitmap -> viewModel.setSourceImage(bitmap) } }
+    }
+
+    // Audio file picker
+    val audioPickerLauncher = rememberLauncherForActivityResult(
+        contract = ActivityResultContracts.GetContent()
+    ) { uri ->
+        uri?.let { viewModel.loadAudio(context, it) }
     }
 
     // Recipe file picker (import)
@@ -523,6 +532,11 @@ fun MainScreen(
                         exportState = exportState,
                         isAnimating = state.isAnimating,
                         supportsVector = state.generator?.supportsVector == true,
+                        audioUri = state.audioUri,
+                        isAudioLoaded = state.isAudioLoaded,
+                        audioDurationSec = state.audioDurationSec,
+                        onLoadAudio = { audioPickerLauncher.launch("audio/*") },
+                        onClearAudio = { viewModel.clearAudio() },
                         onExportPng = {
                             val gen = state.generator ?: return@ExportPanel
                             exportViewModel.exportPng(context, gen, renderParams, state.seed, state.palette, state.quality, state.postFX, 1080, 1080, state.snapshotTime)

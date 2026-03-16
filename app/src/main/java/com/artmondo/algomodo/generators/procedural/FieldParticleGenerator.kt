@@ -5,6 +5,7 @@ import android.graphics.Canvas
 import android.graphics.Color
 import android.graphics.Paint
 import android.graphics.Path
+import com.artmondo.algomodo.audio.AudioAnalysis
 import com.artmondo.algomodo.core.rng.SeededRNG
 import com.artmondo.algomodo.data.palettes.Palette
 import com.artmondo.algomodo.generators.Generator
@@ -69,6 +70,10 @@ class FieldParticleGenerator : Generator {
         val spd = (params["speed"] as? Number)?.toFloat() ?: 1.0f
         val t = time * spd
 
+        val audioAnalysis = params["_audioAnalysis"] as? AudioAnalysis
+        val audioBass = audioAnalysis?.getBass(time) ?: 0f
+        val audioHigh = audioAnalysis?.getHigh(time) ?: 0f
+
         val qualityMult = when (quality) { Quality.DRAFT -> 0.5f; Quality.ULTRA -> 1.0f; else -> 0.75f }
         val actualCount = (pCount * qualityMult).toInt()
 
@@ -82,7 +87,8 @@ class FieldParticleGenerator : Generator {
         val maxVel = minDim * 0.025f
         val maxVelSq = maxVel * maxVel
         val noiseScale = 3.0f / minDim
-        val curlMag = baseFStr * 6f
+        val fStr = baseFStr * (1f + audioBass * 2.5f)
+        val curlMag = fStr * 6f
         val curlTimeX = t * 0.01f; val curlTimeY = t * 0.007f
 
         // Build sin/cos LUT
@@ -113,9 +119,9 @@ class FieldParticleGenerator : Generator {
             }
         }
 
-        val attractFStr = baseFStr * 50000f
-        val vortexFStr = baseFStr * 200f
-        val dipoleFStr = baseFStr * 1.2e8f
+        val attractFStr = fStr * 50000f
+        val vortexFStr = fStr * 200f
+        val dipoleFStr = fStr * 1.2e8f
 
         var outVx = 0f; var outVy = 0f
         fun computeVelocity(px: Float, py: Float) {
@@ -245,7 +251,8 @@ class FieldParticleGenerator : Generator {
                 if (sStart >= trailLen) break
 
                 val midAge = ((sStart + sEnd) * 0.5f) / trailLen
-                val alpha = ((1f - midAge) * 0.7f * 255f).toInt().coerceIn(0, 255)
+                val baseAlpha = 0.7f + audioHigh * 0.3f
+                val alpha = ((1f - midAge) * baseAlpha * 255f).toInt().coerceIn(0, 255)
                 if (alpha < 5) break
 
                 // Determine color for this band

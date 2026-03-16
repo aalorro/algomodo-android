@@ -7,6 +7,7 @@ import android.graphics.Paint
 import android.graphics.Path
 import android.graphics.PorterDuff
 import android.graphics.PorterDuffXfermode
+import com.artmondo.algomodo.audio.AudioAnalysis
 import com.artmondo.algomodo.core.rng.SeededRNG
 import com.artmondo.algomodo.data.palettes.Palette
 import com.artmondo.algomodo.generators.Generator
@@ -79,9 +80,14 @@ class ParticleAdvectionGenerator : Generator {
         val colorMode = (params["colorMode"] as? String) ?: "speed"
         val spd = (params["speed"] as? Number)?.toFloat() ?: 0.7f
 
+        val audioAnalysis = params["_audioAnalysis"] as? AudioAnalysis
+        val audioBass = audioAnalysis?.getBass(time) ?: 0f
+        val audioMid = audioAnalysis?.getMid(time) ?: 0f
+        val audioHigh = audioAnalysis?.getHigh(time) ?: 0f
+
         val t = time * spd
-        val fStr = baseFStr
-        val effScale = fScale
+        val fStr = baseFStr * (1f + audioBass * 2f)
+        val effScale = fScale * (1f + audioMid * 0.3f)
 
         val qualityMult = when (quality) { Quality.DRAFT -> 0.5f; Quality.ULTRA -> 1.0f; else -> 0.75f }
         val actualCount = (pCount * qualityMult).toInt()
@@ -225,7 +231,8 @@ class ParticleAdvectionGenerator : Generator {
                 if (sStart >= trailLen) break
 
                 val midAge = ((sStart + sEnd) * 0.5f) * invTrailLen
-                val alpha = ((1f - midAge * fadeMult) * 0.85f * 255f).toInt().coerceIn(0, 255)
+                val baseAlpha = 0.85f + audioHigh * 0.15f
+                val alpha = ((1f - midAge * fadeMult) * baseAlpha * 255f).toInt().coerceIn(0, 255)
                 if (alpha < 5) break
 
                 val c: Int = when (colorMode) {

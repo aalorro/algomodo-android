@@ -3,6 +3,7 @@ package com.artmondo.algomodo.generators.procedural
 import android.graphics.Bitmap
 import android.graphics.Canvas
 import android.graphics.Color
+import com.artmondo.algomodo.audio.AudioAnalysis
 import com.artmondo.algomodo.core.rng.SeededRNG
 import com.artmondo.algomodo.data.palettes.Palette
 import com.artmondo.algomodo.generators.Generator
@@ -59,11 +60,15 @@ class SdfRaymarchGenerator : Generator {
 
         val sceneType = (params["sceneType"] as? String) ?: "spheres"
         val complexity = (params["complexity"] as? Number)?.toInt()?.coerceAtLeast(1) ?: 4
-        val glowIntensity = (params["glowIntensity"] as? Number)?.toFloat() ?: 0.5f
+        val audioAnalysis = params["_audioAnalysis"] as? AudioAnalysis
+        val audioBass = audioAnalysis?.getBass(time) ?: 0f
+        val audioMid = audioAnalysis?.getMid(time) ?: 0f
+
+        val glowIntensity = ((params["glowIntensity"] as? Number)?.toFloat() ?: 0.5f) + audioBass * 0.5f
         val bandWidth = (params["bandWidth"] as? Number)?.toFloat() ?: 0.3f
         val smoothK = ((params["smoothBlend"] as? Number)?.toFloat() ?: 0.3f) * minDim * 0.15f
         val useSmooth = smoothK >= 0.001f
-        val rotSpeed = (params["rotationSpeed"] as? Number)?.toFloat() ?: 0.5f
+        val rotSpeed = ((params["rotationSpeed"] as? Number)?.toFloat() ?: 0.5f) * (1f + audioMid * 1.5f)
         val spd = (params["speed"] as? Number)?.toFloat() ?: 0.5f
         val t = time * spd
 

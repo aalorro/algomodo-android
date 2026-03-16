@@ -7,6 +7,7 @@ import android.graphics.LinearGradient
 import android.graphics.Paint
 import android.graphics.Path
 import android.graphics.Shader
+import com.artmondo.algomodo.audio.AudioAnalysis
 import com.artmondo.algomodo.core.rng.SeededRNG
 import com.artmondo.algomodo.data.palettes.Palette
 import com.artmondo.algomodo.generators.Generator
@@ -128,12 +129,29 @@ class AudioReactiveGenerator : Generator {
         val colors = palette.colorInts()
         val nC = colors.size
 
+        // Audio analysis: use real audio data when available, otherwise synthesize
+        val audioAnalysis = params["_audioAnalysis"] as? AudioAnalysis
+        val audioBass = audioAnalysis?.getBass(time) ?: 0f
+
+        val beat: Float
+        val spectrum: FloatArray
+
+        if (audioAnalysis != null) {
+            beat = min(1f, audioBass * 3f).pow(4f)
+            val realSpectrum = audioAnalysis.getSpectrum(time)
+            spectrum = FloatArray(bandCount) { i ->
+                val srcIdx = (i.toFloat() / bandCount * realSpectrum.size).toInt()
+                    .coerceIn(0, realSpectrum.size - 1)
+                min(1.5f, (realSpectrum.getOrElse(srcIdx) { 0f }) * reactivity * (1f + beat * 1.5f))
+            }
+        } else {
+            beat = max(0f, sin(t * beatRate * PI.toFloat())).pow(8f)
+            spectrum = synthesizeSpectrum(bandCount, seed, t, reactivity, smoothing, beatRate)
+        }
+
         // Background
-        val beat = max(0f, sin(t * beatRate * PI.toFloat())).pow(8f)
         val bgBright = (8 + beat * 12f).toInt()
         canvas.drawColor(Color.rgb(bgBright, bgBright, bgBright + 2))
-
-        val spectrum = synthesizeSpectrum(bandCount, seed, t, reactivity, smoothing, beatRate)
         val paint = Paint(Paint.ANTI_ALIAS_FLAG)
 
         when (style) {

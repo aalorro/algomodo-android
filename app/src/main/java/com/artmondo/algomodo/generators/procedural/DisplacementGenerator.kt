@@ -3,6 +3,7 @@ package com.artmondo.algomodo.generators.procedural
 import android.graphics.Bitmap
 import android.graphics.Canvas
 import android.graphics.Color
+import com.artmondo.algomodo.audio.AudioAnalysis
 import com.artmondo.algomodo.data.palettes.Palette
 import com.artmondo.algomodo.generators.Generator
 import com.artmondo.algomodo.generators.ParamGroup
@@ -63,6 +64,12 @@ class DisplacementGenerator : Generator {
         val ca = (params["chromaticShift"] as? Number)?.toFloat() ?: 0.1f
         val spd = (params["speed"] as? Number)?.toFloat() ?: 0.5f
 
+        val audioAnalysis = params["_audioAnalysis"] as? AudioAnalysis
+        val audioBass = audioAnalysis?.getBass(time) ?: 0f
+        val audioMid = audioAnalysis?.getMid(time) ?: 0f
+        val effStr = str * (1f + audioBass * 3f)
+        val effScl = scl * (1f + audioMid * 0.5f)
+
         val t = time * spd
         val modeId = when (mode) { "flow" -> 0; "fracture" -> 1; "radial" -> 2; else -> 3 }
         val vn = ValueNoise(seed)
@@ -89,11 +96,11 @@ class DisplacementGenerator : Generator {
         val radialTimeOff = t * 3f
         val waveFreq = 3f + dist * 10f
         val waveT1 = t * 2f; val waveT2 = t * 1.5f
-        val colorScl = scl * 2f
+        val colorScl = effScl * 2f
 
         val tOff1x = t * 0.1f; val tOff1y = t * 0.07f
         val tOff2x = t * 0.07f; val tOff2y = t * 0.1f
-        val distNScl = scl * 2.5f
+        val distNScl = effScl * 2.5f
 
         val pixels = IntArray(w * h)
 
@@ -102,7 +109,7 @@ class DisplacementGenerator : Generator {
             for (px in 0 until w step step) {
                 val u = (px - halfW) * invDim2
 
-                val nx = u * scl; val ny = v * scl
+                val nx = u * effScl; val ny = v * effScl
                 val n1 = vn.fbm(nx + tOff1x, ny + tOff1y, maxOct)
                 val n2 = vn.fbm(nx + 31.7f + tOff2x, ny + 17.3f + tOff2y, maxOct)
 
@@ -124,8 +131,8 @@ class DisplacementGenerator : Generator {
                     }
                 }
 
-                var wu = u + dx * str
-                var wv = v + dy * str
+                var wu = u + dx * effStr
+                var wv = v + dy * effStr
 
                 if (doDist) {
                     val dnx = nx * distNScl; val dny = ny * distNScl
