@@ -41,12 +41,15 @@ class DisplacementGenerator : Generator {
         Parameter.NumberParam("Chromatic Shift", "chromaticShift", ParamGroup.COLOR,
             "RGB channel offset for color splitting", 0f, 1f, 0.05f, 0.1f),
         Parameter.NumberParam("Speed", "speed", ParamGroup.FLOW_MOTION,
-            "Animation drift speed", 0.1f, 3f, 0.05f, 0.5f)
+            "Animation drift speed", 0.1f, 3f, 0.05f, 0.5f),
+        Parameter.NumberParam("Reactivity", "reactivity", ParamGroup.FLOW_MOTION,
+            "Audio reactivity strength", 0f, 2f, 0.1f, 1.0f)
     )
 
     override fun getDefaultParams(): Map<String, Any> = mapOf(
         "mode" to "flow", "strength" to 0.15f, "scale" to 2.0f, "octaves" to 3f,
-        "distortion" to 0.3f, "chromaticShift" to 0.1f, "speed" to 0.5f
+        "distortion" to 0.3f, "chromaticShift" to 0.1f, "speed" to 0.5f,
+        "reactivity" to 1.0f
     )
 
     override fun renderCanvas(
@@ -64,9 +67,10 @@ class DisplacementGenerator : Generator {
         val ca = (params["chromaticShift"] as? Number)?.toFloat() ?: 0.1f
         val spd = (params["speed"] as? Number)?.toFloat() ?: 0.5f
 
+        val rx = (params["reactivity"] as? Number)?.toFloat() ?: 1.0f
         val audioAnalysis = params["_audioAnalysis"] as? AudioAnalysis
-        val audioBass = audioAnalysis?.getBass(time) ?: 0f
-        val audioMid = audioAnalysis?.getMid(time) ?: 0f
+        val audioBass = (audioAnalysis?.getBass(time) ?: 0f) * rx
+        val audioMid = (audioAnalysis?.getMid(time) ?: 0f) * rx
         val effStr = str * (1f + audioBass * 3f)
         val effScl = scl * (1f + audioMid * 0.5f)
 

@@ -46,12 +46,15 @@ class InstancedGeometryGenerator : Generator {
         Parameter.NumberParam("Wave Speed", "waveSpeed", ParamGroup.FLOW_MOTION,
             "Animation wave propagation speed", 0f, 2f, 0.1f, 1.0f),
         Parameter.SelectParam("Fill Mode", "fillMode", ParamGroup.TEXTURE,
-            null, listOf("filled", "outlined", "mixed"), "filled")
+            null, listOf("filled", "outlined", "mixed"), "filled"),
+        Parameter.NumberParam("Reactivity", "reactivity", ParamGroup.FLOW_MOTION,
+            "Audio reactivity strength", 0f, 2f, 0.1f, 1.0f)
     )
 
     override fun getDefaultParams(): Map<String, Any> = mapOf(
         "shape" to "hexagon", "count" to 150f, "arrangement" to "grid",
-        "sizeVar" to 0.3f, "rotationVar" to 0.4f, "waveSpeed" to 1.0f, "fillMode" to "filled"
+        "sizeVar" to 0.3f, "rotationVar" to 0.4f, "waveSpeed" to 1.0f, "fillMode" to "filled",
+        "reactivity" to 1.0f
     )
 
     private fun getPolyVertices(shape: String): Pair<FloatArray, FloatArray>? {
@@ -90,9 +93,10 @@ class InstancedGeometryGenerator : Generator {
         val waveSpd = (params["waveSpeed"] as? Number)?.toFloat() ?: 1.0f
         val fillMode = (params["fillMode"] as? String) ?: "filled"
 
+        val rx = (params["reactivity"] as? Number)?.toFloat() ?: 1.0f
         val audioAnalysis = params["_audioAnalysis"] as? AudioAnalysis
-        val audioBass = audioAnalysis?.getBass(time) ?: 0f
-        val audioMid = audioAnalysis?.getMid(time) ?: 0f
+        val audioBass = (audioAnalysis?.getBass(time) ?: 0f) * rx
+        val audioMid = (audioAnalysis?.getMid(time) ?: 0f) * rx
 
         val colors = palette.colorInts()
         val nC = colors.size

@@ -46,12 +46,15 @@ class FeedbackSystemsGenerator : Generator {
         Parameter.NumberParam("Color Drift", "colorDrift", ParamGroup.COLOR,
             "Hue rotation amount per iteration", 0f, 1f, 0.05f, 0.3f),
         Parameter.NumberParam("Blend Opacity", "blendOpacity", ParamGroup.COLOR,
-            "Opacity of each feedback composite layer", 0.3f, 1.0f, 0.05f, 0.75f)
+            "Opacity of each feedback composite layer", 0.3f, 1.0f, 0.05f, 0.75f),
+        Parameter.NumberParam("Reactivity", "reactivity", ParamGroup.FLOW_MOTION,
+            "Audio reactivity strength", 0f, 2f, 0.1f, 1.0f)
     )
 
     override fun getDefaultParams(): Map<String, Any> = mapOf(
         "iterations" to 12f, "zoomFactor" to 0.97f, "rotationRate" to 0.5f,
-        "seedShape" to "circles", "colorDrift" to 0.3f, "blendOpacity" to 0.75f
+        "seedShape" to "circles", "colorDrift" to 0.3f, "blendOpacity" to 0.75f,
+        "reactivity" to 1.0f
     )
 
     private fun drawSeedPattern(
@@ -136,9 +139,10 @@ class FeedbackSystemsGenerator : Generator {
         val midX = w / 2f; val midY = h / 2f
         val rng = SeededRNG(seed)
 
+        val rx = (params["reactivity"] as? Number)?.toFloat() ?: 1.0f
         val audioAnalysis = params["_audioAnalysis"] as? AudioAnalysis
-        val audioBass = audioAnalysis?.getBass(time) ?: 0f
-        val audioMid = audioAnalysis?.getMid(time) ?: 0f
+        val audioBass = (audioAnalysis?.getBass(time) ?: 0f) * rx
+        val audioMid = (audioAnalysis?.getMid(time) ?: 0f) * rx
 
         val iterations = (params["iterations"] as? Number)?.toInt()?.coerceAtLeast(1) ?: 12
         var zoom = (params["zoomFactor"] as? Number)?.toFloat() ?: 0.97f
