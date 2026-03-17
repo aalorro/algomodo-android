@@ -309,7 +309,8 @@ class NewtonGenerator : Generator {
                                 val ni = fi * fpr - fr * fpi
                                 if (dampIsOne) { zr -= nr / d; zi -= ni / d }
                                 else { zr -= damping * nr / d; zi -= damping * ni / d }
-                                if (zr * zr + zi * zi > BAIL_SQ) break
+                                val zMag = zr * zr + zi * zi
+                                if (zMag > BAIL_SQ || !zMag.isFinite()) break
                                 if (iter and 1 == 0) {
                                     val nearK = (zr * INV_PI).roundToInt()
                                     val dr = zr - nearK * PI
