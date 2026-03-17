@@ -154,7 +154,7 @@ private fun BooleanControl(
     }
 }
 
-@OptIn(ExperimentalMaterial3Api::class)
+@OptIn(ExperimentalLayoutApi::class)
 @Composable
 private fun SelectControl(
     param: Parameter.SelectParam,
@@ -162,37 +162,16 @@ private fun SelectControl(
     onValueChange: (Any) -> Unit
 ) {
     val currentValue = value as? String ?: param.default
-    var expanded by remember { mutableStateOf(false) }
 
     Column {
         Text(param.name, style = MaterialTheme.typography.bodySmall)
-        ExposedDropdownMenuBox(
-            expanded = expanded,
-            onExpandedChange = { expanded = it }
-        ) {
-            OutlinedTextField(
-                value = currentValue,
-                onValueChange = {},
-                readOnly = true,
-                trailingIcon = { ExposedDropdownMenuDefaults.TrailingIcon(expanded = expanded) },
-                modifier = Modifier
-                    .menuAnchor()
-                    .fillMaxWidth(),
-                textStyle = MaterialTheme.typography.bodySmall
-            )
-            ExposedDropdownMenu(
-                expanded = expanded,
-                onDismissRequest = { expanded = false }
-            ) {
-                param.options.forEach { option ->
-                    DropdownMenuItem(
-                        text = { Text(option, fontSize = 14.sp) },
-                        onClick = {
-                            onValueChange(option)
-                            expanded = false
-                        }
-                    )
-                }
+        FlowRow(horizontalArrangement = Arrangement.spacedBy(4.dp)) {
+            param.options.forEach { option ->
+                FilterChip(
+                    selected = option == currentValue,
+                    onClick = { onValueChange(option) },
+                    label = { Text(option, fontSize = 12.sp) }
+                )
             }
         }
     }
