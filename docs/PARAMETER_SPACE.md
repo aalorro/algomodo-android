@@ -110,7 +110,7 @@ Total number of distinct visual outcomes possible across all generators, given t
 |-----------|--------|--------|---------|---------|----------|
 | mandelbrot | 4 | 2^5 | 2 | 64 × 4 × 10 | 2,560 |
 | julia | 4 | 2^5 | — | 32 × 4 × 10 | 1,280 |
-| newton | 4×3 | 2^4 | — | 16 × 12 × 10 | 1,920 |
+| newton | 5×4×3 | 2^4 | — | 5 × 16 × 12 × 10 | 9,600 |
 | ifs-barnsley | 5×3 | 2^3 | — | 8 × 15 × 10 | 1,200 |
 | recursive-subdivision | 4×3 | 2^3 | 2 | 16 × 12 × 10 | 1,920 |
 | fractal-orbit-traps | 2×4 | 2^6 | — | 64 × 8 × 10 | 5,120 |
