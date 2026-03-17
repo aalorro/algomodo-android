@@ -47,7 +47,7 @@ class GraphAnisotropicGenerator : Generator {
     override val parameterSchema = listOf(
         Parameter.NumberParam("Point Count", "pointCount", ParamGroup.COMPOSITION, null, 40f, 500f, 10f, 150f),
         Parameter.NumberParam("Field Frequency", "fieldFreq", ParamGroup.TEXTURE, "Spatial frequency of the directional field", 0.5f, 6f, 0.5f, 2f),
-        Parameter.NumberParam("Anisotropy", "anisotropy", ParamGroup.GEOMETRY, "Strength of directional stretching", 0f, 2f, 0.1f, 0.8f),
+        Parameter.NumberParam("Anisotropy", "anisotropy", ParamGroup.GEOMETRY, "Strength of directional stretching — 0 = isotropic, 1 = one cell spacing, 3+ = extreme warp", 0f, 4f, 0.1f, 0.8f),
         Parameter.NumberParam("Field Angle", "fieldAngle", ParamGroup.COMPOSITION, "Global rotation of the field in degrees", 0f, 360f, 15f, 0f),
         Parameter.BooleanParam("Show Field Lines", "showFieldLines", ParamGroup.TEXTURE, "Overlay directional field streamlines", false),
         Parameter.NumberParam("Edge Width", "edgeWidth", ParamGroup.GEOMETRY, null, 0.5f, 4f, 0.5f, 1.5f),
@@ -134,8 +134,8 @@ class GraphAnisotropicGenerator : Generator {
                 flowY = sin(theta) * time * speed * cellSpacing * 0.5f
             }
 
-            px[i] = (basePx[i] + cos(theta) * effectiveAnisotropy * cellSpacing * 0.5f + flowX).coerceIn(0f, w)
-            py[i] = (basePy[i] + sin(theta) * effectiveAnisotropy * cellSpacing * 0.5f + flowY).coerceIn(0f, h)
+            px[i] = (basePx[i] + cos(theta) * effectiveAnisotropy * cellSpacing + flowX).coerceIn(-margin, w + margin)
+            py[i] = (basePy[i] + sin(theta) * effectiveAnisotropy * cellSpacing + flowY).coerceIn(-margin, h + margin)
         }
 
         // Bowyer-Watson Delaunay
@@ -284,8 +284,8 @@ class GraphAnisotropicGenerator : Generator {
         for (i in 0 until n) {
             val fx = basePx[i] / w * fieldFreq; val fy = basePy[i] / h * fieldFreq
             val theta = noise.noise2D(fx, fy) * PI.toFloat() + fieldAngleRad
-            px[i] = (basePx[i] + cos(theta) * anisotropy * cellSpacing * 0.5f).coerceIn(0f, w)
-            py[i] = (basePy[i] + sin(theta) * anisotropy * cellSpacing * 0.5f).coerceIn(0f, h)
+            px[i] = (basePx[i] + cos(theta) * anisotropy * cellSpacing).coerceIn(-margin, w + margin)
+            py[i] = (basePy[i] + sin(theta) * anisotropy * cellSpacing).coerceIn(-margin, h + margin)
         }
 
         val pxExt = FloatArray(n + 3); val pyExt = FloatArray(n + 3)
