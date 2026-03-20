@@ -37,7 +37,7 @@ class RecursiveSubdivisionGenerator : Generator {
             key = "depth",
             group = ParamGroup.COMPOSITION,
             help = "Recursion depth \u2014 higher = more cells",
-            min = 1f, max = 10f, step = 1f, default = 5f
+            min = 3f, max = 10f, step = 1f, default = 5f
         ),
         Parameter.SelectParam(
             name = "Split Mode",
