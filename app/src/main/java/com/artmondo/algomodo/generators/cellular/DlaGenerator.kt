@@ -197,14 +197,14 @@ class DlaGenerator : Generator {
 
         val margin = 5
         var attempts = 0
-        val maxAttempts = target * 8
+        val maxAttempts = target * 5
 
         while (placed < target && attempts < maxAttempts) {
             attempts++
 
-            // Adaptive launch radius
-            val launchR = (maxAggR + margin).coerceIn(5f, (gridSize / 2 - 1).toFloat())
-            val killR2 = (launchR * 2.5f + margin).let { it * it }
+            // Tighter spawn/kill radii (matching web reference) — reduces walk steps per particle
+            val launchR = (maxAggR + 3f).coerceIn(3f, (gridSize / 2 - 1).toFloat())
+            val killR2 = (maxAggR + 7f).let { it * it }
 
             // Launch walker
             var px: Int; var py: Int
@@ -281,6 +281,17 @@ class DlaGenerator : Generator {
         val maxDep = run { var m = 1; for (i in 0 until totalCells) if (dep[i] > m) m = dep[i]; m }
         val mono = palette.colorInts().last()
 
+        // Pre-compute palette LUT and glow color
+        val paletteLut = palette.buildLut(256)
+        val glowBaseColor = paletteLut[128]
+        val glowBaseR = Color.red(glowBaseColor)
+        val glowBaseG = Color.green(glowBaseColor)
+        val glowBaseB = Color.blue(glowBaseColor)
+
+        // Pre-compute grid-to-screen lookup arrays (replaces per-pixel float division)
+        val gyLookup = IntArray(h) { ry -> (ry / cellH).toInt().coerceAtMost(gridSize - 1) }
+        val gxLookup = IntArray(w) { rx -> (rx / cellW).toInt().coerceAtMost(gridSize - 1) }
+
         // Background glow via BFS distance transform
         val glowField: FloatArray? = if (bgGlow) {
             val f = FloatArray(totalCells) { Float.MAX_VALUE }
@@ -303,35 +314,37 @@ class DlaGenerator : Generator {
             f
         } else null
         val glowMax = gridSize * 0.15f
+        val invHalfGrid = 1f / (gridSize / 2f).coerceAtLeast(1f)
+        val invTwoPi = 1f / (2f * Math.PI.toFloat())
+        val piFloat = Math.PI.toFloat()
 
         for (ry in 0 until h) {
-            val gy = (ry / cellH).toInt().coerceAtMost(gridSize - 1)
+            val gy = gyLookup[ry]
             val rowOff = ry * w
             for (rx in 0 until w) {
-                val gx = (rx / cellW).toInt().coerceAtMost(gridSize - 1)
+                val gx = gxLookup[rx]
                 val idx = gy * gridSize + gx
                 pixels[rowOff + rx] = if (agg[idx]) {
                     when (colorMode) {
                         "radius" -> {
                             val d = sqrt(((gx - cx) * (gx - cx) + (gy - cy) * (gy - cy)).toFloat())
-                            palette.lerpColor((d / (gridSize / 2f).coerceAtLeast(1f)).coerceIn(0f, 1f))
+                            paletteLut[((d * invHalfGrid).coerceIn(0f, 1f) * 255f).toInt()]
                         }
                         "angle" -> {
                             val a = atan2((gy - cy).toFloat(), (gx - cx).toFloat())
-                            palette.lerpColor(((a + Math.PI.toFloat()) / (2f * Math.PI.toFloat())).coerceIn(0f, 1f))
+                            paletteLut[(((a + piFloat) * invTwoPi).coerceIn(0f, 1f) * 255f).toInt()]
                         }
-                        "depth" -> palette.lerpColor((dep[idx].toFloat() / maxDep).coerceIn(0f, 1f))
+                        "depth" -> paletteLut[((dep[idx].toFloat() / maxDep).coerceIn(0f, 1f) * 255f).toInt()]
                         "monochrome" -> mono
-                        else -> palette.lerpColor(ord[idx].toFloat() / maxOrd)
+                        else -> paletteLut[((ord[idx].toFloat() / maxOrd) * 255f).toInt().coerceIn(0, 255)]
                     }
                 } else if (glowField != null && glowField[idx] < glowMax) {
                     val t = 1f - glowField[idx] / glowMax
                     val intensity = t * t * 0.35f
-                    val c = palette.lerpColor(0.5f)
                     Color.rgb(
-                        (Color.red(c) * intensity).toInt().coerceIn(0, 255),
-                        (Color.green(c) * intensity).toInt().coerceIn(0, 255),
-                        (Color.blue(c) * intensity).toInt().coerceIn(0, 255)
+                        (glowBaseR * intensity).toInt().coerceIn(0, 255),
+                        (glowBaseG * intensity).toInt().coerceIn(0, 255),
+                        (glowBaseB * intensity).toInt().coerceIn(0, 255)
                     )
                 } else {
                     Color.BLACK

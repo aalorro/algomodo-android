@@ -273,37 +273,39 @@ class IfsBarnsleyGenerator : Generator {
         val cosR = cos(rotRad)
         val sinR = sin(rotRad)
 
-        val pointsX = FloatArray(scaledIterations)
-        val pointsY = FloatArray(scaledIterations)
-        val pointTransform = IntArray(scaledIterations)
+        val storedCount = scaledIterations - skip
+        val pointsX = FloatArray(storedCount)
+        val pointsY = FloatArray(storedCount)
+        val pointTransform = IntArray(storedCount)
 
         for (i in 0 until scaledIterations) {
             val r = rng.random()
             var tIdx = 0
             for (j in cumProb.indices) {
-                if (r <= cumProb[j]) {
-                    tIdx = j
-                    break
-                }
+                if (r <= cumProb[j]) { tIdx = j; break }
             }
 
             val t = transforms[tIdx]
             val nx = t.a * x + t.b * y + t.e
             val ny = t.c * x + t.d * y + t.f
-            x = nx
-            y = ny
+            x = nx; y = ny
 
-            pointsX[i] = x * cosR - y * sinR
-            pointsY[i] = x * sinR + y * cosR
-            pointTransform[i] = tIdx
+            // Divergence check — prevent garbage output on random presets
+            if (x.isNaN() || y.isNaN() || abs(x) > 1e6f || abs(y) > 1e6f) {
+                x = 0f; y = 0f; continue
+            }
+
+            if (i < skip) continue
+            val si = i - skip
+            pointsX[si] = x * cosR - y * sinR
+            pointsY[si] = x * sinR + y * cosR
+            pointTransform[si] = tIdx
         }
 
         // Compute bounds
-        var minX = Float.MAX_VALUE
-        var maxX = -Float.MAX_VALUE
-        var minY = Float.MAX_VALUE
-        var maxY = -Float.MAX_VALUE
-        for (i in skip until scaledIterations) {
+        var minX = Float.MAX_VALUE; var maxX = -Float.MAX_VALUE
+        var minY = Float.MAX_VALUE; var maxY = -Float.MAX_VALUE
+        for (i in 0 until storedCount) {
             if (pointsX[i] < minX) minX = pointsX[i]
             if (pointsX[i] > maxX) maxX = pointsX[i]
             if (pointsY[i] < minY) minY = pointsY[i]
@@ -313,80 +315,94 @@ class IfsBarnsleyGenerator : Generator {
         val rangeX = (maxX - minX).coerceAtLeast(0.001f)
         val rangeY = (maxY - minY).coerceAtLeast(0.001f)
         val margin = 0.05f
+        val scaleX = (1f - 2f * margin) / rangeX
+        val scaleY = (1f - 2f * margin) / rangeY
 
         val pixels = IntArray(w * h)
         val paletteColors = palette.colorInts()
         val ptSizeInt = pointSize.roundToInt().coerceAtLeast(1) - 1
         val singlePixel = ptSizeInt == 0
 
-        // Precompute palette LUT for density and height modes
-        val lutSize = 256
-        val paletteLut = IntArray(lutSize) { palette.lerpColor(it.toFloat() / (lutSize - 1)) }
+        val paletteLut = palette.buildLut(256)
+
+        // Pre-compute point-size offsets for multi-pixel plotting
+        val ptOffsets: IntArray
+        val ptOffsetCount: Int
+        if (!singlePixel) {
+            val offsets = mutableListOf<Int>()
+            for (dy in -ptSizeInt..ptSizeInt) {
+                for (dx in -ptSizeInt..ptSizeInt) {
+                    offsets.add(dx); offsets.add(dy)
+                }
+            }
+            ptOffsets = offsets.toIntArray()
+            ptOffsetCount = offsets.size / 2
+        } else {
+            ptOffsets = IntArray(0)
+            ptOffsetCount = 0
+        }
 
         when (colorMode) {
             "density" -> {
                 val histogram = IntArray(w * h)
+                // Track touched pixels for sparse rendering
+                val touched = IntArray(storedCount)
+                var touchedCount = 0
 
-                for (i in skip until scaledIterations) {
-                    val sx = ((pointsX[i] - minX) / rangeX * (1f - 2f * margin) + margin) * w
-                    val sy = (1f - ((pointsY[i] - minY) / rangeY * (1f - 2f * margin) + margin)) * h
-                    val px = sx.roundToInt()
-                    val py = sy.roundToInt()
+                for (i in 0 until storedCount) {
+                    val px = ((pointsX[i] - minX) * scaleX + margin).let { (it * w).roundToInt() }
+                    val py = (1f - ((pointsY[i] - minY) * scaleY + margin)).let { (it * h).roundToInt() }
 
                     if (singlePixel) {
                         if (px in 0 until w && py in 0 until h) {
-                            histogram[py * w + px]++
+                            val idx = py * w + px
+                            if (histogram[idx] == 0) touched[touchedCount++] = idx
+                            histogram[idx]++
                         }
                     } else {
-                        for (dy in -ptSizeInt..ptSizeInt) {
-                            for (dx in -ptSizeInt..ptSizeInt) {
-                                val fx = px + dx
-                                val fy = py + dy
-                                if (fx in 0 until w && fy in 0 until h) {
-                                    histogram[fy * w + fx]++
-                                }
+                        for (oi in 0 until ptOffsetCount) {
+                            val fx = px + ptOffsets[oi * 2]
+                            val fy = py + ptOffsets[oi * 2 + 1]
+                            if (fx in 0 until w && fy in 0 until h) {
+                                val idx = fy * w + fx
+                                if (histogram[idx] == 0) touched[touchedCount++] = idx
+                                histogram[idx]++
                             }
                         }
                     }
                 }
 
+                // Tone mapping LUT
                 var maxDensity = 1
-                for (d in histogram) {
-                    if (d > maxDensity) maxDensity = d
-                }
+                for (d in histogram) { if (d > maxDensity) maxDensity = d }
                 val logMax = ln(maxDensity.toFloat() + 1f)
+                val toneLut = FloatArray(maxDensity + 1) { count ->
+                    if (count == 0) 0f else (ln(count.toFloat() + 1f) / logMax).coerceIn(0f, 1f)
+                }
 
-                for (i in pixels.indices) {
-                    if (histogram[i] > 0) {
-                        val t = (ln(histogram[i].toFloat() + 1f) / logMax).coerceIn(0f, 1f)
-                        pixels[i] = paletteLut[(t * (lutSize - 1)).toInt().coerceIn(0, lutSize - 1)]
-                    }
+                // Sparse render — only touched pixels
+                for (ti in 0 until touchedCount) {
+                    val idx = touched[ti]
+                    val t = toneLut[histogram[idx]]
+                    pixels[idx] = paletteLut[(t * 255f).toInt().coerceIn(0, 255)]
                 }
             }
 
             "height" -> {
-                for (i in skip until scaledIterations) {
-                    val sx = ((pointsX[i] - minX) / rangeX * (1f - 2f * margin) + margin) * w
-                    val sy = (1f - ((pointsY[i] - minY) / rangeY * (1f - 2f * margin) + margin)) * h
-                    val px = sx.roundToInt()
-                    val py = sy.roundToInt()
-
-                    val yNorm = ((pointsY[i] - minY) / rangeY).coerceIn(0f, 1f)
-                    val color = paletteLut[(yNorm * (lutSize - 1)).toInt().coerceIn(0, lutSize - 1)]
+                val invRangeY = 1f / rangeY
+                for (i in 0 until storedCount) {
+                    val px = ((pointsX[i] - minX) * scaleX + margin).let { (it * w).roundToInt() }
+                    val py = (1f - ((pointsY[i] - minY) * scaleY + margin)).let { (it * h).roundToInt() }
+                    val yNorm = ((pointsY[i] - minY) * invRangeY).coerceIn(0f, 1f)
+                    val color = paletteLut[(yNorm * 255f).toInt().coerceIn(0, 255)]
 
                     if (singlePixel) {
-                        if (px in 0 until w && py in 0 until h) {
-                            pixels[py * w + px] = color
-                        }
+                        if (px in 0 until w && py in 0 until h) pixels[py * w + px] = color
                     } else {
-                        for (dy in -ptSizeInt..ptSizeInt) {
-                            for (dx in -ptSizeInt..ptSizeInt) {
-                                val fx = px + dx
-                                val fy = py + dy
-                                if (fx in 0 until w && fy in 0 until h) {
-                                    pixels[fy * w + fx] = color
-                                }
-                            }
+                        for (oi in 0 until ptOffsetCount) {
+                            val fx = px + ptOffsets[oi * 2]
+                            val fy = py + ptOffsets[oi * 2 + 1]
+                            if (fx in 0 until w && fy in 0 until h) pixels[fy * w + fx] = color
                         }
                     }
                 }
@@ -394,26 +410,18 @@ class IfsBarnsleyGenerator : Generator {
 
             else -> {
                 // "flame" — color by transform index
-                for (i in skip until scaledIterations) {
-                    val sx = ((pointsX[i] - minX) / rangeX * (1f - 2f * margin) + margin) * w
-                    val sy = (1f - ((pointsY[i] - minY) / rangeY * (1f - 2f * margin) + margin)) * h
-                    val px = sx.roundToInt()
-                    val py = sy.roundToInt()
+                for (i in 0 until storedCount) {
+                    val px = ((pointsX[i] - minX) * scaleX + margin).let { (it * w).roundToInt() }
+                    val py = (1f - ((pointsY[i] - minY) * scaleY + margin)).let { (it * h).roundToInt() }
                     val color = paletteColors[pointTransform[i] % paletteColors.size]
 
                     if (singlePixel) {
-                        if (px in 0 until w && py in 0 until h) {
-                            pixels[py * w + px] = color
-                        }
+                        if (px in 0 until w && py in 0 until h) pixels[py * w + px] = color
                     } else {
-                        for (dy in -ptSizeInt..ptSizeInt) {
-                            for (dx in -ptSizeInt..ptSizeInt) {
-                                val fx = px + dx
-                                val fy = py + dy
-                                if (fx in 0 until w && fy in 0 until h) {
-                                    pixels[fy * w + fx] = color
-                                }
-                            }
+                        for (oi in 0 until ptOffsetCount) {
+                            val fx = px + ptOffsets[oi * 2]
+                            val fy = py + ptOffsets[oi * 2 + 1]
+                            if (fx in 0 until w && fy in 0 until h) pixels[fy * w + fx] = color
                         }
                     }
                 }

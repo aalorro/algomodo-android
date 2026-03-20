@@ -88,7 +88,6 @@ class FractalFlamesGenerator : Generator {
         val anim = time * speed * 0.15f
 
         val rng = SeededRNG(seed)
-        // Store transforms as flat arrays for cache efficiency
         val ta = DoubleArray(numTransforms)
         val tb = DoubleArray(numTransforms)
         val tc = DoubleArray(numTransforms)
@@ -108,7 +107,6 @@ class FractalFlamesGenerator : Generator {
             tColorIdx[i] = i.toFloat() / (numTransforms - 1).coerceAtLeast(1)
         }
 
-        // Precompute palette LUT — avoids hex string parsing per iteration
         val lutSize = 256
         val lutR = IntArray(lutSize)
         val lutG = IntArray(lutSize)
@@ -120,19 +118,6 @@ class FractalFlamesGenerator : Generator {
             lutB[i] = Color.blue(c)
         }
 
-        val histogram = IntArray(w * h)
-        val colorAccR = FloatArray(w * h)
-        val colorAccG = FloatArray(w * h)
-        val colorAccB = FloatArray(w * h)
-
-        val iterRng = SeededRNG(seed + 1)
-        var x = iterRng.range(-1f, 1f).toDouble()
-        var y = iterRng.range(-1f, 1f).toDouble()
-        var curColor = 0.5f
-
-        val skip = 20
-        val viewScale = 1.5 / zoom
-
         val varIdx = when (variation) {
             "sinusoidal" -> VAR_SINUSOIDAL; "spherical" -> VAR_SPHERICAL
             "swirl" -> VAR_SWIRL; "horseshoe" -> VAR_HORSESHOE
@@ -140,74 +125,119 @@ class FractalFlamesGenerator : Generator {
             else -> VAR_SINUSOIDAL
         }
 
+        val skip = 50
+        val invGamma = 1.0 / gamma
+        val halfW = w / 2.0
+        val halfH = h / 2.0
+
+        // --- Bounding box pre-pass (matching web reference) ---
+        val preRng = SeededRNG(seed + 1)
+        var preX = preRng.range(-1f, 1f).toDouble()
+        var preY = preRng.range(-1f, 1f).toDouble()
+        var bMinX = Double.MAX_VALUE; var bMaxX = -Double.MAX_VALUE
+        var bMinY = Double.MAX_VALUE; var bMaxY = -Double.MAX_VALUE
+
+        for (i in 0 until 5000) {
+            val tIdx = preRng.integer(0, numTransforms - 1)
+            val ax = ta[tIdx] * preX + tb[tIdx] * preY + te[tIdx]
+            val ay = tc[tIdx] * preX + td[tIdx] * preY + tf[tIdx]
+
+            when (varIdx) {
+                VAR_SINUSOIDAL -> { preX = sin(ax); preY = sin(ay) }
+                VAR_SPHERICAL -> { val s = 1.0 / (ax * ax + ay * ay + 1e-10); preX = ax * s; preY = ay * s }
+                VAR_SWIRL -> { val r2 = ax * ax + ay * ay; val sr = sin(r2); val cr = cos(r2); preX = ax * sr - ay * cr; preY = ax * cr + ay * sr }
+                VAR_HORSESHOE -> { val inv = 1.0 / (sqrt(ax * ax + ay * ay) + 1e-10); preX = (ax - ay) * (ax + ay) * inv; preY = 2.0 * ax * ay * inv }
+                VAR_HANDKERCHIEF -> { val r = sqrt(ax * ax + ay * ay); val theta = atan2(ay, ax); preX = r * sin(theta + r); preY = r * cos(theta - r) }
+                VAR_DISC -> { val r = sqrt(ax * ax + ay * ay); val f = atan2(ay, ax) / PI; preX = f * sin(PI * r); preY = f * cos(PI * r) }
+            }
+
+            if (i >= skip && preX.isFinite() && preY.isFinite()) {
+                if (preX < bMinX) bMinX = preX; if (preX > bMaxX) bMaxX = preX
+                if (preY < bMinY) bMinY = preY; if (preY > bMaxY) bMaxY = preY
+            }
+        }
+
+        // Fallback if bounds are degenerate
+        if (bMinX >= bMaxX || bMinY >= bMaxY) {
+            bMinX = -1.5; bMaxX = 1.5; bMinY = -1.5; bMaxY = 1.5
+        }
+
+        // Compute view mapping: map flame bounds to canvas with padding
+        val pad = 0.08
+        val rangeX = (bMaxX - bMinX) * (1 + pad)
+        val rangeY = (bMaxY - bMinY) * (1 + pad)
+        val centerX = (bMinX + bMaxX) / 2.0
+        val centerY = (bMinY + bMaxY) / 2.0
+        // Use the larger ratio so the entire flame fits; zoom multiplies density
+        val scale = maxOf(rangeX / w, rangeY / h)
+        val invScale = zoom / scale
+
+        // --- Main chaos game ---
+        val histogram = IntArray(w * h)
+        val colorAccR = FloatArray(w * h)
+        val colorAccG = FloatArray(w * h)
+        val colorAccB = FloatArray(w * h)
+        val touched = IntArray(w * h)
+        var touchedCount = 0
+
+        val iterRng = SeededRNG(seed + 1)
+        var x = iterRng.range(-1f, 1f).toDouble()
+        var y = iterRng.range(-1f, 1f).toDouble()
+        var curColor = 0.5f
+
         for (i in 0 until scaledIterations) {
             val tIdx = iterRng.integer(0, numTransforms - 1)
-
             val ax = ta[tIdx] * x + tb[tIdx] * y + te[tIdx]
             val ay = tc[tIdx] * x + td[tIdx] * y + tf[tIdx]
 
-            // Inline variation to avoid function call + DoubleArray allocation
             when (varIdx) {
                 VAR_SINUSOIDAL -> { x = sin(ax); y = sin(ay) }
-                VAR_SPHERICAL -> {
-                    val s = 1.0 / (ax * ax + ay * ay + 1e-10)
-                    x = ax * s; y = ay * s
-                }
-                VAR_SWIRL -> {
-                    val r2 = ax * ax + ay * ay
-                    val sr = sin(r2); val cr = cos(r2)
-                    x = ax * sr - ay * cr; y = ax * cr + ay * sr
-                }
-                VAR_HORSESHOE -> {
-                    val inv = 1.0 / (sqrt(ax * ax + ay * ay) + 1e-10)
-                    x = (ax - ay) * (ax + ay) * inv; y = 2.0 * ax * ay * inv
-                }
-                VAR_HANDKERCHIEF -> {
-                    val r = sqrt(ax * ax + ay * ay)
-                    val theta = atan2(ay, ax)
-                    x = r * sin(theta + r); y = r * cos(theta - r)
-                }
-                VAR_DISC -> {
-                    val r = sqrt(ax * ax + ay * ay)
-                    val f = atan2(ay, ax) / PI
-                    x = f * sin(PI * r); y = f * cos(PI * r)
-                }
+                VAR_SPHERICAL -> { val s = 1.0 / (ax * ax + ay * ay + 1e-10); x = ax * s; y = ay * s }
+                VAR_SWIRL -> { val r2 = ax * ax + ay * ay; val sr = sin(r2); val cr = cos(r2); x = ax * sr - ay * cr; y = ax * cr + ay * sr }
+                VAR_HORSESHOE -> { val inv = 1.0 / (sqrt(ax * ax + ay * ay) + 1e-10); x = (ax - ay) * (ax + ay) * inv; y = 2.0 * ax * ay * inv }
+                VAR_HANDKERCHIEF -> { val r = sqrt(ax * ax + ay * ay); val theta = atan2(ay, ax); x = r * sin(theta + r); y = r * cos(theta - r) }
+                VAR_DISC -> { val r = sqrt(ax * ax + ay * ay); val f = atan2(ay, ax) / PI; x = f * sin(PI * r); y = f * cos(PI * r) }
             }
 
             curColor = (curColor + tColorIdx[tIdx]) * 0.5f
 
             if (i < skip) continue
 
-            val sx = ((x / viewScale + 0.5) * w).toInt()
-            val sy = ((y / viewScale + 0.5) * h).toInt()
+            // Map flame coords to pixel coords: center on canvas, scale to fit
+            val sx = ((x - centerX) * invScale + halfW).toInt()
+            val sy = ((y - centerY) * invScale + halfH).toInt()
 
             if (sx in 0 until w && sy in 0 until h) {
                 val idx = sy * w + sx
+                if (histogram[idx] == 0) touched[touchedCount++] = idx
                 histogram[idx]++
-                val lutIdx = (curColor * (lutSize - 1)).toInt().coerceIn(0, lutSize - 1)
-                colorAccR[idx] += lutR[lutIdx] / 255f
-                colorAccG[idx] += lutG[lutIdx] / 255f
-                colorAccB[idx] += lutB[lutIdx] / 255f
+                val li = (curColor * (lutSize - 1)).toInt().coerceIn(0, lutSize - 1)
+                colorAccR[idx] += lutR[li] / 255f
+                colorAccG[idx] += lutG[li] / 255f
+                colorAccB[idx] += lutB[li] / 255f
             }
         }
 
+        // --- Tone mapping LUT ---
         var maxDensity = 1
-        for (d in histogram) {
-            if (d > maxDensity) maxDensity = d
-        }
+        for (d in histogram) { if (d > maxDensity) maxDensity = d }
         val logMax = ln(maxDensity.toFloat() + 1f)
-        val invGamma = 1.0 / gamma
 
+        val toneLut = FloatArray(maxDensity + 1) { count ->
+            if (count == 0) 0f
+            else (ln(count.toFloat() + 1f) / logMax).toDouble().pow(invGamma).toFloat()
+        }
+
+        // --- Sparse pixel rendering ---
         val pixels = IntArray(w * h)
-        for (i in pixels.indices) {
-            if (histogram[i] > 0) {
-                val count = histogram[i].toFloat()
-                val alpha = (ln(count + 1f) / logMax).toDouble().pow(invGamma).toFloat()
-                val r = ((colorAccR[i] / count) * alpha * 255f).toInt().coerceIn(0, 255)
-                val g = ((colorAccG[i] / count) * alpha * 255f).toInt().coerceIn(0, 255)
-                val b = ((colorAccB[i] / count) * alpha * 255f).toInt().coerceIn(0, 255)
-                pixels[i] = Color.rgb(r, g, b)
-            }
+        for (t in 0 until touchedCount) {
+            val i = touched[t]
+            val count = histogram[i].toFloat()
+            val alpha = toneLut[histogram[i]]
+            val r = ((colorAccR[i] / count) * alpha * 255f).toInt().coerceIn(0, 255)
+            val g = ((colorAccG[i] / count) * alpha * 255f).toInt().coerceIn(0, 255)
+            val b = ((colorAccB[i] / count) * alpha * 255f).toInt().coerceIn(0, 255)
+            pixels[i] = Color.rgb(r, g, b)
         }
 
         bitmap.setPixels(pixels, 0, w, 0, 0, w, h)
