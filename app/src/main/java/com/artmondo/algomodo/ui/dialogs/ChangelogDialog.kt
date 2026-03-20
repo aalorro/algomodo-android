@@ -18,6 +18,12 @@ fun ChangelogDialog(onDismiss: () -> Unit) {
         text = {
             Text(
                 text = """
+v1.5.1 (Android)
+Improvements:
+- Rewrote IFS/Barnsley (histogram rendering, lean/curl/spread, symmetry, tone mapping)
+- Optimized Kaleidoscope, Plasma Feedback, Wave Interference, Fractal Flames, L-System, DLA
+- Moved Recursive Subdivision to Geometry family
+
 v1.5.0 (Android)
 New Generators (9):
 - 9 new procedural generators (new family): Audio Reactive, Displacement, Edge Glow, Feedback Systems, Field Particle, Instanced Geometry, Particle Advection, SDF Raymarch, Warp

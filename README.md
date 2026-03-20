@@ -27,8 +27,8 @@ Create stunning algorithmic art using pure mathematics — noise functions, cell
 |--------|-------|---------|
 | Animation | 8 | Attractor Trails, Curl Fluid, Kaleidoscope, Plasma Feedback |
 | Cellular Automata | 14 | Game of Life, Reaction Diffusion, Turing Patterns, DLA |
-| Fractals | 10 | Mandelbrot, Julia, Burning Ship, Fractal Flames, Multibrot, Orbit Traps, Strange Attractors |
-| Geometry | 10 | Islamic Patterns, L-System, Spirograph, Truchet Tiles |
+| Fractals | 9 | Mandelbrot, Julia, Burning Ship, Fractal Flames, Multibrot, Orbit Traps, Strange Attractors |
+| Geometry | 11 | Islamic Patterns, L-System, Recursive Subdivision, Spirograph, Truchet Tiles |
 | Graphs | 11 | Geodesic, Constrained Delaunay, Anisotropic, Euler Trails, K-Nearest Neighbor, Gabriel, Planar |
 | Image Processing | 14 | Pixel Sort, Halftone, ASCII Art, Glitch Transform |
 | Noise | 7 | Simplex Field, FBM Terrain, Domain Warp, Ridged Noise |

@@ -15,7 +15,7 @@ Total number of distinct visual outcomes possible across all generators, given t
 
 ## Grand Total
 
-### 9,524,200 distinct parameter configurations
+### 9,592,120 distinct parameter configurations
 
 ---
 
@@ -23,15 +23,15 @@ Total number of distinct visual outcomes possible across all generators, given t
 
 | Family | Generators | Outcomes | Share |
 |--------|-----------|----------|-------|
-| Plotter | 14 | 6,931,200 | 72.78% |
-| Graphs | 11 | 1,770,240 | 18.59% |
-| Voronoi | 11 | 295,040 | 3.10% |
-| Noise | 7 | 268,800 | 2.82% |
-| Image | 14 | 64,480 | 0.68% |
+| Plotter | 14 | 6,931,200 | 72.26% |
+| Graphs | 11 | 1,770,240 | 18.46% |
+| Voronoi | 11 | 295,040 | 3.08% |
+| Noise | 7 | 268,800 | 2.80% |
+| Text | 8 | 101,600 | 1.06% |
+| Fractals | 9 | 84,800 | 0.88% |
+| Image | 14 | 64,480 | 0.67% |
 | Animation | 8 | 38,400 | 0.40% |
-| Geometry | 10 | 23,520 | 0.25% |
-| Fractals | 10 | 18,800 | 0.20% |
-| Text | 8 | 101,600 | 1.07% |
+| Geometry | 11 | 25,440 | 0.27% |
 | Cellular | 14 | 12,120 | 0.13% |
 
 ---
@@ -104,35 +104,35 @@ Total number of distinct visual outcomes possible across all generators, given t
 | eden-growth | 3×3 | 2^3 | — | 8 × 9 × 10 | 720 |
 | turing-patterns | 3 | 2^5 | — | 32 × 3 × 10 | 960 |
 
-### Fractals (10 generators — 18,800 outcomes)
+### Fractals (9 generators — 84,800 outcomes)
 
 | Generator | Select | Number | Boolean | Formula | Outcomes |
 |-----------|--------|--------|---------|---------|----------|
-| mandelbrot | 4 | 2^5 | 2 | 64 × 4 × 10 | 2,560 |
-| julia | 4 | 2^5 | — | 32 × 4 × 10 | 1,280 |
+| ifs-barnsley | 9×3 | 2^8 | — | 256 × 27 × 10 | 69,120 |
 | newton | 5×4×3 | 2^4 | — | 5 × 16 × 12 × 10 | 9,600 |
-| ifs-barnsley | 5×3 | 2^3 | — | 8 × 15 × 10 | 1,200 |
-| recursive-subdivision | 4×3 | 2^3 | 2 | 16 × 12 × 10 | 1,920 |
 | fractal-orbit-traps | 2×4 | 2^6 | — | 64 × 8 × 10 | 5,120 |
+| mandelbrot | 4 | 2^5 | 2 | 64 × 4 × 10 | 2,560 |
 | fractal-flames | 6 | 2^5 | — | 32 × 6 × 10 | 1,920 |
+| julia | 4 | 2^5 | — | 32 × 4 × 10 | 1,280 |
 | fractal-multibrot | — | 2^7 | — | 128 × 1 × 10 | 1,280 |
 | fractal-strange-attractor | 4×3 | 2^3 | — | 8 × 12 × 10 | 960 |
 | fractal-burning-ship | — | 2^6 | — | 64 × 1 × 10 | 640 |
 
-### Geometry (10 generators — 23,520 outcomes)
+### Geometry (11 generators — 25,440 outcomes)
 
 | Generator | Select | Number | Boolean | Formula | Outcomes |
 |-----------|--------|--------|---------|---------|----------|
+| superformula | 3 | 2^8 | — | 256 × 3 × 10 | 7,680 |
+| l-system | 6×3 | 2^4 | — | 16 × 18 × 10 | 2,880 |
+| islamic-patterns | 5×3 | 2^3 | 2 | 16 × 15 × 10 | 2,400 |
 | mst-web | 3 | 2^5 | 2 | 64 × 3 × 10 | 1,920 |
 | truchet | 4×3 | 2^3 | 2 | 16 × 12 × 10 | 1,920 |
-| l-system | 6×3 | 2^4 | — | 16 × 18 × 10 | 2,880 |
-| chladni | 3 | 2^5 | — | 32 × 3 × 10 | 960 |
 | rosettes | 3 | 2^5 | 2 | 64 × 3 × 10 | 1,920 |
 | lissajous | 3 | 2^6 | — | 64 × 3 × 10 | 1,920 |
+| recursive-subdivision | 4×3 | 2^3 | 2 | 16 × 12 × 10 | 1,920 |
+| chladni | 3 | 2^5 | — | 32 × 3 × 10 | 960 |
 | spirograph | 3 | 2^5 | — | 32 × 3 × 10 | 960 |
 | moire | 3 | 2^5 | — | 32 × 3 × 10 | 960 |
-| islamic-patterns | 5×3 | 2^3 | 2 | 16 × 15 × 10 | 2,400 |
-| superformula | 3 | 2^8 | — | 256 × 3 × 10 | 7,680 |
 
 ### Graphs (11 generators — 1,770,240 outcomes)
 
@@ -262,6 +262,6 @@ The grand total is the **sum** across all 107 generators, since each generator i
 
 | If you added... | Multiplier |
 |-----------------|-----------|
-| PostFX (4 effects × ON/OFF) | ×16 → ~152.4M |
-| Seed (assume 2^32 range) | ×4,294,967,296 → ~40.5 quadrillion |
+| PostFX (4 effects × ON/OFF) | ×16 → ~153.5M |
+| Seed (assume 2^32 range) | ×4,294,967,296 → ~41.2 quadrillion |
 | Continuous NumberParam range (100 steps) | Astronomically large |

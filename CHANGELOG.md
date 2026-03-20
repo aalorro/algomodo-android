@@ -2,6 +2,19 @@
 
 All notable changes to Algomodo will be documented in this file.
 
+## [1.5.1] - Android
+
+### Improvements
+- Rewrote IFS/Barnsley generator: histogram-based rendering, shape modifiers (lean/curl/spread), 1-8 fold symmetry, bounding box pre-pass, divergence checking, log-density tone mapping
+- Optimized Kaleidoscope with polar buffer pre-computation
+- Optimized Plasma Feedback with coarse grid + bilinear upscale
+- Optimized Wave Interference with per-source wave LUTs
+- Optimized Fractal Flames with bounding box pre-pass, tone mapping LUT, and sparse rendering
+- Optimized L-System with batched path drawing
+- Optimized DLA with tighter spawn/kill radii and palette LUT
+- Moved Recursive Subdivision from Fractals to Geometry family
+- Parameter space expanded to over 9.5 million unique configurations
+
 ## [1.5.0] - Android
 
 ### New Generators (9)
