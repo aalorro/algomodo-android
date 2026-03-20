@@ -2,6 +2,29 @@
 
 All notable changes to Algomodo will be documented in this file.
 
+## [1.5.0] - Android
+
+### New Generators (9)
+- Added 9 new procedural generators (new family): Audio Reactive, Displacement, Edge Glow, Feedback Systems, Field Particle, Instanced Geometry, Particle Advection, SDF Raymarch, Warp
+- Total generators: 116 across 11 families (up from 107 across 10)
+
+### New Features
+- Audio reactivity system for procedural generators with real-time frequency analysis
+- Video export with audio support and adjustable start/end times
+- Parameter selection buttons replace dropdowns for faster one-tap interaction
+
+### Improvements
+- Rewrote DLA generator with circle-jump optimization, rotational symmetry (1-6 fold), drift control, and background glow
+- Rewrote Ecosystems generator with multi-species food chain (2-5 species) and 5 visual styles (dots, network, trails, glow, heatmap)
+- Enhanced Newton fractal with multiple styles and improved parameter handling
+- Enhanced SDF Raymarch with domain warping and new shapes
+- Fixed Anisotropic generator anisotropy parameter having no visible effect
+- Optimized AttractorTrails generator with fast trig lookup, reduced allocations, and constant-based comparisons
+
+### Bug Fixes
+- Fixed Newton generator root discovery stability (finite check for z magnitude)
+- Fixed Hilt ViewModel import statement
+
 ## [1.4.0] - Android
 
 ### New Features

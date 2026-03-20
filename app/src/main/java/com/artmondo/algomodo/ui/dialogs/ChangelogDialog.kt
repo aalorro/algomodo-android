@@ -18,6 +18,22 @@ fun ChangelogDialog(onDismiss: () -> Unit) {
         text = {
             Text(
                 text = """
+v1.5.0 (Android)
+New Generators (9):
+- 9 new procedural generators (new family): Audio Reactive, Displacement, Edge Glow, Feedback Systems, Field Particle, Instanced Geometry, Particle Advection, SDF Raymarch, Warp
+- Total: 116 generators across 11 families
+
+New Features:
+- Audio reactivity for procedural generators
+- Video export with audio support and adjustable start/end times
+- Parameter buttons replace dropdowns for one-tap selection
+
+Improvements:
+- Rewrote DLA generator (circle-jump optimization, rotational symmetry, background glow)
+- Rewrote Ecosystems generator (multi-species food chain, 5 visual styles)
+- Enhanced Newton fractal, SDF Raymarch, and AttractorTrails generators
+- Fixed Anisotropic generator anisotropy parameter
+
 v1.4.0 (Android)
 New Features:
 - Progressive reveal animation for Maze/Meander generator
