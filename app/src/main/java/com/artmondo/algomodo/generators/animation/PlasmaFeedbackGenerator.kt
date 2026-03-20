@@ -179,9 +179,9 @@ class PlasmaFeedbackGenerator : Generator {
 
         // --- Coarse grid sampling + bilinear upscale ---
         val gridStep = when (quality) {
-            Quality.DRAFT -> 8
-            Quality.BALANCED -> 6
-            Quality.ULTRA -> 4
+            Quality.DRAFT -> 4
+            Quality.BALANCED -> 2
+            Quality.ULTRA -> 1
         }
         val cw = (w + gridStep - 1) / gridStep + 1
         val ch = (h + gridStep - 1) / gridStep + 1
