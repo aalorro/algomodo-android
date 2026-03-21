@@ -10,7 +10,7 @@ import com.artmondo.algomodo.generators.Generator
 import com.artmondo.algomodo.generators.ParamGroup
 import com.artmondo.algomodo.generators.Parameter
 import com.artmondo.algomodo.generators.Quality
-import kotlin.math.pow
+import kotlin.math.abs
 import kotlin.math.sqrt
 
 /**
@@ -67,13 +67,19 @@ class VoronoiCrackleGenerator : Generator {
         val w = bitmap.width
         val h = bitmap.height
         val numPoints = (params["cellCount"] as? Number)?.toInt() ?: 80
-        val intensity = 1f
+        if (numPoints <= 0) { canvas.drawColor(Color.BLACK); return }
         val lineWidth = (params["crackWidth"] as? Number)?.toFloat() ?: 2f
         val crackColor = (params["crackColor"] as? String) ?: "black"
         val fillMode = (params["fillMode"] as? String) ?: "gradient"
         val distanceMetric = (params["distanceMetric"] as? String) ?: "Euclidean"
         val animSpeed = (params["animSpeed"] as? Number)?.toFloat() ?: 0.4f
         val animAmp = (params["animAmp"] as? Number)?.toFloat() ?: 0.2f
+
+        val metricId = when (distanceMetric.lowercase()) {
+            "manhattan" -> 1; "chebyshev" -> 2; else -> 0
+        }
+        val isEuclidean = metricId == 0
+        val fillModeId = when (fillMode) { "flat-dark" -> 1; "flat-light" -> 2; "palette" -> 3; else -> 0 }
 
         val rng = SeededRNG(seed)
         val noise = SimplexNoise(seed)
@@ -87,99 +93,187 @@ class VoronoiCrackleGenerator : Generator {
 
         // Animate
         if (time > 0f) {
-            val speed = animSpeed / 0.4f
-            val amp = animAmp / 0.2f
+            val speed = animSpeed / 0.4f; val amp = animAmp / 0.2f
+            val wf = w.toFloat(); val hf = h.toFloat()
             for (i in 0 until numPoints) {
-                px[i] += noise.noise2D(i * 0.25f + 40f, time * 0.15f * speed) * w * 0.03f * amp
-                py[i] += noise.noise2D(i * 0.25f + 140f, time * 0.15f * speed) * h * 0.03f * amp
-                px[i] = px[i].coerceIn(0f, w.toFloat() - 1f)
-                py[i] = py[i].coerceIn(0f, h.toFloat() - 1f)
+                px[i] = (px[i] + noise.noise2D(i * 0.25f + 40f, time * 0.15f * speed) * wf * 0.03f * amp).coerceIn(0f, wf - 1f)
+                py[i] = (py[i] + noise.noise2D(i * 0.25f + 140f, time * 0.15f * speed) * hf * 0.03f * amp).coerceIn(0f, hf - 1f)
             }
         }
 
-        val pixels = IntArray(w * h)
-        val colors = palette.colorInts()
+        // ── Spatial grid (3×3 search window) ──
+        val gridSize = (maxOf(w, h).toFloat() / sqrt(numPoints.toFloat())).coerceAtLeast(8f)
+        val invGridSize = 1f / gridSize
+        val gridCols = (w * invGridSize).toInt() + 1
+        val gridRows = (h * invGridSize).toInt() + 1
+        val gcM1 = gridCols - 1; val grM1 = gridRows - 1
+        val gridHeads = IntArray(gridCols * gridRows) { -1 }
+        val gridNext = IntArray(numPoints) { -1 }
+        for (i in 0 until numPoints) {
+            val gx = minOf((px[i] * invGridSize).toInt(), gcM1)
+            val gy = minOf((py[i] * invGridSize).toInt(), grM1)
+            val cell = gy * gridCols + gx
+            gridNext[i] = gridHeads[cell]; gridHeads[cell] = i
+        }
 
-        // Determine crack line color
+        // Sample maxCrackle for normalization
+        var maxCrackle = 1f
+        for (s in 0 until 50) {
+            val sx = rng.random() * w; val sy = rng.random() * h
+            var sf1 = Float.MAX_VALUE; var sf2 = Float.MAX_VALUE
+            for (i in 0 until numPoints) {
+                val dx = sx - px[i]; val dy = sy - py[i]
+                val d = if (isEuclidean) dx * dx + dy * dy
+                        else if (metricId == 1) abs(dx) + abs(dy)
+                        else maxOf(abs(dx), abs(dy))
+                if (d < sf1) { sf2 = sf1; sf1 = d }
+                else if (d < sf2) { sf2 = d }
+            }
+            if (isEuclidean) { sf1 = sqrt(sf1); sf2 = sqrt(sf2) }
+            val ed = sf2 - sf1
+            if (ed > maxCrackle) maxCrackle = ed
+        }
+
+        val colors = palette.colorInts()
+        val colorsSize = colors.size
         val crackColorInt = when (crackColor) {
             "white" -> Color.WHITE
             "palette-first" -> colors.firstOrNull() ?: Color.BLACK
             "palette-last" -> colors.lastOrNull() ?: Color.BLACK
-            else -> Color.BLACK  // "black"
+            else -> Color.BLACK
         }
-
-        // Sample max edge distance for normalization
-        var maxCrackle = 1f
-        for (s in 0 until 100) {
-            val sx = rng.random() * w
-            val sy = rng.random() * h
-            val (f1, f2) = findF1F2BruteForce(sx, sy, px, py, numPoints, distanceMetric)
-            val c = (f2 - f1)
-            if (c > maxCrackle) maxCrackle = c
-        }
-
         val lineScale = lineWidth / 2f
+        val invMaxCrackle = 1f / maxCrackle
+        val pixels = IntArray(w * h)
+        val step = when (quality) { Quality.DRAFT -> 2; else -> 1 }
 
-        val step = when (quality) {
-            Quality.DRAFT -> 2
-            Quality.BALANCED -> 1
-            Quality.ULTRA -> 1
-        }
-
-        for (row in 0 until h step step) {
-            for (col in 0 until w step step) {
-                val (f1, f2, nearestIdx) = findF1F2WithIndexBruteForce(col.toFloat(), row.toFloat(), px, py, numPoints, distanceMetric)
-                val crackleRaw = (f2 - f1) / maxCrackle
-                // Apply intensity exponent and line width scaling
-                val crackle = (crackleRaw / lineScale).coerceIn(0f, 1f).pow(intensity)
-
-                val color = if (crackle < 0.15f) {
-                    // Near the crack line - use crack color
-                    crackColorInt
-                } else {
-                    // Cell interior - use fill mode
-                    when (fillMode) {
-                        "flat-dark" -> {
-                            val base = colors[nearestIdx % colors.size]
-                            val factor = 0.3f
-                            Color.rgb(
-                                (Color.red(base) * factor).toInt().coerceIn(0, 255),
-                                (Color.green(base) * factor).toInt().coerceIn(0, 255),
-                                (Color.blue(base) * factor).toInt().coerceIn(0, 255)
-                            )
-                        }
-                        "flat-light" -> {
-                            val base = colors[nearestIdx % colors.size]
-                            val factor = 0.85f
-                            Color.rgb(
-                                (Color.red(base) * factor + 255 * (1f - factor)).toInt().coerceIn(0, 255),
-                                (Color.green(base) * factor + 255 * (1f - factor)).toInt().coerceIn(0, 255),
-                                (Color.blue(base) * factor + 255 * (1f - factor)).toInt().coerceIn(0, 255)
-                            )
-                        }
-                        "palette" -> {
-                            colors[nearestIdx % colors.size]
-                        }
-                        else -> {
-                            // "gradient" - original behavior with brightness gradient
-                            val edgeColor = colors[nearestIdx % colors.size]
-                            val r = (Color.red(edgeColor) * (1f - crackle * 0.85f)).toInt().coerceIn(0, 255)
-                            val g = (Color.green(edgeColor) * (1f - crackle * 0.85f)).toInt().coerceIn(0, 255)
-                            val b = (Color.blue(edgeColor) * (1f - crackle * 0.85f)).toInt().coerceIn(0, 255)
-                            Color.rgb(r, g, b)
+        if (isEuclidean) {
+            // ── EUCLIDEAN FAST PATH: no metric branch in inner loop ──
+            for (row in 0 until h step step) {
+                val y = row.toFloat()
+                val rowOff = row * w
+                val gy = minOf((y * invGridSize).toInt(), grM1)
+                val cyMin = maxOf(gy - 1, 0); val cyMax = minOf(gy + 1, grM1)
+                for (col in 0 until w step step) {
+                    val x = col.toFloat()
+                    val gx = minOf((x * invGridSize).toInt(), gcM1)
+                    val cxMin = maxOf(gx - 1, 0); val cxMax = minOf(gx + 1, gcM1)
+                    var f1 = Float.MAX_VALUE; var f2 = Float.MAX_VALUE; var nearestIdx = 0
+                    for (cy in cyMin..cyMax) {
+                        val ro = cy * gridCols
+                        for (cx in cxMin..cxMax) {
+                            var idx = gridHeads[ro + cx]
+                            while (idx >= 0) {
+                                val dx = x - px[idx]; val dy = y - py[idx]
+                                val d = dx * dx + dy * dy
+                                if (d < f1) { f2 = f1; f1 = d; nearestIdx = idx }
+                                else if (d < f2) { f2 = d }
+                                idx = gridNext[idx]
+                            }
                         }
                     }
-                }
-
-                if (step == 1) {
-                    pixels[row * w + col] = color
-                } else {
-                    for (dy in 0 until step) {
-                        for (dx in 0 until step) {
-                            val fx = col + dx
-                            val fy = row + dy
-                            if (fx < w && fy < h) pixels[fy * w + fx] = color
+                    f1 = sqrt(f1); f2 = sqrt(f2)
+                    val crackle = ((f2 - f1) * invMaxCrackle / lineScale).coerceIn(0f, 1f)
+                    val color = if (crackle < 0.15f) crackColorInt
+                    else {
+                        val ci = nearestIdx % colorsSize
+                        when (fillModeId) {
+                            1 -> { // flat-dark
+                                val base = colors[ci]
+                                Color.rgb((Color.red(base) * 0.3f).toInt(), (Color.green(base) * 0.3f).toInt(), (Color.blue(base) * 0.3f).toInt())
+                            }
+                            2 -> { // flat-light
+                                val base = colors[ci]
+                                Color.rgb(
+                                    (Color.red(base) * 0.85f + 38.25f).toInt().coerceIn(0, 255),
+                                    (Color.green(base) * 0.85f + 38.25f).toInt().coerceIn(0, 255),
+                                    (Color.blue(base) * 0.85f + 38.25f).toInt().coerceIn(0, 255)
+                                )
+                            }
+                            3 -> colors[ci] // palette
+                            else -> { // gradient
+                                val base = colors[ci]
+                                val factor = 1f - crackle * 0.85f
+                                Color.rgb(
+                                    (Color.red(base) * factor).toInt().coerceIn(0, 255),
+                                    (Color.green(base) * factor).toInt().coerceIn(0, 255),
+                                    (Color.blue(base) * factor).toInt().coerceIn(0, 255)
+                                )
+                            }
                         }
+                    }
+                    if (step == 1) {
+                        pixels[rowOff + col] = color
+                    } else {
+                        val i0 = rowOff + col
+                        pixels[i0] = color
+                        if (col + 1 < w) pixels[i0 + 1] = color
+                        if (row + 1 < h) { pixels[i0 + w] = color; if (col + 1 < w) pixels[i0 + w + 1] = color }
+                    }
+                }
+            }
+        } else {
+            // ── NON-EUCLIDEAN PATH ──
+            for (row in 0 until h step step) {
+                val y = row.toFloat()
+                val rowOff = row * w
+                val gy = minOf((y * invGridSize).toInt(), grM1)
+                val cyMin = maxOf(gy - 1, 0); val cyMax = minOf(gy + 1, grM1)
+                for (col in 0 until w step step) {
+                    val x = col.toFloat()
+                    val gx = minOf((x * invGridSize).toInt(), gcM1)
+                    val cxMin = maxOf(gx - 1, 0); val cxMax = minOf(gx + 1, gcM1)
+                    var f1 = Float.MAX_VALUE; var f2 = Float.MAX_VALUE; var nearestIdx = 0
+                    for (cy in cyMin..cyMax) {
+                        val ro = cy * gridCols
+                        for (cx in cxMin..cxMax) {
+                            var idx = gridHeads[ro + cx]
+                            while (idx >= 0) {
+                                val dx = x - px[idx]; val dy = y - py[idx]
+                                val d = if (metricId == 1) abs(dx) + abs(dy)
+                                        else maxOf(abs(dx), abs(dy))
+                                if (d < f1) { f2 = f1; f1 = d; nearestIdx = idx }
+                                else if (d < f2) { f2 = d }
+                                idx = gridNext[idx]
+                            }
+                        }
+                    }
+                    val crackle = ((f2 - f1) * invMaxCrackle / lineScale).coerceIn(0f, 1f)
+                    val color = if (crackle < 0.15f) crackColorInt
+                    else {
+                        val ci = nearestIdx % colorsSize
+                        when (fillModeId) {
+                            1 -> {
+                                val base = colors[ci]
+                                Color.rgb((Color.red(base) * 0.3f).toInt(), (Color.green(base) * 0.3f).toInt(), (Color.blue(base) * 0.3f).toInt())
+                            }
+                            2 -> {
+                                val base = colors[ci]
+                                Color.rgb(
+                                    (Color.red(base) * 0.85f + 38.25f).toInt().coerceIn(0, 255),
+                                    (Color.green(base) * 0.85f + 38.25f).toInt().coerceIn(0, 255),
+                                    (Color.blue(base) * 0.85f + 38.25f).toInt().coerceIn(0, 255)
+                                )
+                            }
+                            3 -> colors[ci]
+                            else -> {
+                                val base = colors[ci]
+                                val factor = 1f - crackle * 0.85f
+                                Color.rgb(
+                                    (Color.red(base) * factor).toInt().coerceIn(0, 255),
+                                    (Color.green(base) * factor).toInt().coerceIn(0, 255),
+                                    (Color.blue(base) * factor).toInt().coerceIn(0, 255)
+                                )
+                            }
+                        }
+                    }
+                    if (step == 1) {
+                        pixels[rowOff + col] = color
+                    } else {
+                        val i0 = rowOff + col
+                        pixels[i0] = color
+                        if (col + 1 < w) pixels[i0 + 1] = color
+                        if (row + 1 < h) { pixels[i0 + w] = color; if (col + 1 < w) pixels[i0 + w + 1] = color }
                     }
                 }
             }
@@ -187,58 +281,6 @@ class VoronoiCrackleGenerator : Generator {
 
         bitmap.setPixels(pixels, 0, w, 0, 0, w, h)
         canvas.drawBitmap(bitmap, 0f, 0f, null)
-    }
-
-    private data class F1F2Result(val f1: Float, val f2: Float, val nearestIdx: Int)
-
-    private fun computeDistance(dx: Float, dy: Float, metric: String): Float = when (metric) {
-        "Manhattan" -> kotlin.math.abs(dx) + kotlin.math.abs(dy)
-        "Chebyshev" -> maxOf(kotlin.math.abs(dx), kotlin.math.abs(dy))
-        else -> sqrt(dx * dx + dy * dy)
-    }
-
-    private fun findF1F2BruteForce(
-        x: Float, y: Float,
-        px: FloatArray, py: FloatArray, numPoints: Int,
-        metric: String = "Euclidean"
-    ): Pair<Float, Float> {
-        var f1 = Float.MAX_VALUE
-        var f2 = Float.MAX_VALUE
-        for (i in 0 until numPoints) {
-            val dx = x - px[i]
-            val dy = y - py[i]
-            val d = computeDistance(dx, dy, metric)
-            if (d < f1) {
-                f2 = f1
-                f1 = d
-            } else if (d < f2) {
-                f2 = d
-            }
-        }
-        return Pair(f1, f2)
-    }
-
-    private fun findF1F2WithIndexBruteForce(
-        x: Float, y: Float,
-        px: FloatArray, py: FloatArray, numPoints: Int,
-        metric: String = "Euclidean"
-    ): F1F2Result {
-        var f1 = Float.MAX_VALUE
-        var f2 = Float.MAX_VALUE
-        var nearestIdx = 0
-        for (i in 0 until numPoints) {
-            val dx = x - px[i]
-            val dy = y - py[i]
-            val d = computeDistance(dx, dy, metric)
-            if (d < f1) {
-                f2 = f1
-                f1 = d
-                nearestIdx = i
-            } else if (d < f2) {
-                f2 = d
-            }
-        }
-        return F1F2Result(f1, f2, nearestIdx)
     }
 
     override fun estimateCost(params: Map<String, Any>, quality: Quality): Float {

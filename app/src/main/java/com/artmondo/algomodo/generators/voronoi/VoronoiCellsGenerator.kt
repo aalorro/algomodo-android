@@ -11,15 +11,9 @@ import com.artmondo.algomodo.generators.ParamGroup
 import com.artmondo.algomodo.generators.Parameter
 import com.artmondo.algomodo.generators.Quality
 import kotlin.math.abs
+import kotlin.math.atan2
+import kotlin.math.sqrt
 
-/**
- * Classic Voronoi diagram generator.
- *
- * Scatters seed points using SeededRNG, then for each pixel finds the nearest
- * point and colours the pixel by the owning cell's palette index. Edges are
- * detected where the nearest and second-nearest cells differ in adjacent pixels.
- * Animation slowly drifts points via simplex noise.
- */
 class VoronoiCellsGenerator : Generator {
 
     override val id = "voronoi-cells"
@@ -29,9 +23,9 @@ class VoronoiCellsGenerator : Generator {
         "Classic Voronoi diagram where the plane is partitioned into cells around scattered seed points, each coloured by palette index."
     override val algorithmNotes =
         "Seed points are placed via SeededRNG. For each pixel the nearest point is found using a grid-accelerated " +
-        "spatial lookup (brute-force fallback for small N). Supports euclidean, manhattan, and chebyshev distance " +
-        "metrics. Edges are detected by checking if the closest cell differs from the second-closest within edgeWidth. " +
-        "Animation displaces seed points over time using simplex noise."
+        "spatial lookup. Supports euclidean, manhattan, and chebyshev distance metrics. Edges are detected by " +
+        "checking if the closest cell differs from the second-closest within edgeWidth. Animation displaces seed " +
+        "points over time using simplex noise."
     override val supportsVector = false
     override val supportsAnimation = true
 
@@ -66,8 +60,8 @@ class VoronoiCellsGenerator : Generator {
     ) {
         val w = bitmap.width
         val h = bitmap.height
-
         val numPoints = (params["cellCount"] as? Number)?.toInt() ?: 40
+        if (numPoints <= 0) { canvas.drawColor(Color.BLACK); return }
         val edgeWidth = (params["borderWidth"] as? Number)?.toFloat() ?: 1f
         val showEdges = edgeWidth > 0f
         val metric = (params["distanceMetric"] as? String) ?: "Euclidean"
@@ -76,10 +70,13 @@ class VoronoiCellsGenerator : Generator {
         val animSpeed = (params["animSpeed"] as? Number)?.toFloat() ?: 0.4f
         val animAmp = (params["animAmp"] as? Number)?.toFloat() ?: 0.2f
 
+        val metricId = when (metric.lowercase()) {
+            "manhattan" -> 1; "chebyshev" -> 2; else -> 0
+        }
+        val isEuclidean = metricId == 0
+
         val rng = SeededRNG(seed)
         val noise = SimplexNoise(seed)
-
-        // Generate seed points
         val px = FloatArray(numPoints)
         val py = FloatArray(numPoints)
         for (i in 0 until numPoints) {
@@ -87,7 +84,6 @@ class VoronoiCellsGenerator : Generator {
             py[i] = rng.random() * h
         }
 
-        // Lloyd relaxation for more uniform cells
         if (relaxed) {
             val relaxStep = 4
             for (pass in 0 until 3) {
@@ -95,120 +91,149 @@ class VoronoiCellsGenerator : Generator {
                 val sumY = FloatArray(numPoints)
                 val count = IntArray(numPoints)
                 for (sy in 0 until h step relaxStep) {
+                    val syf = sy.toFloat()
                     for (sx in 0 until w step relaxStep) {
-                        var bestDist2 = Float.MAX_VALUE
-                        var bestIdx2 = 0
+                        val sxf = sx.toFloat()
+                        var bd = Float.MAX_VALUE; var bi = 0
                         for (i in 0 until numPoints) {
-                            val ddx = sx.toFloat() - px[i]
-                            val ddy = sy.toFloat() - py[i]
-                            val dd = when (metric.lowercase()) {
-                                "manhattan" -> abs(ddx) + abs(ddy)
-                                "chebyshev" -> maxOf(abs(ddx), abs(ddy))
-                                else -> ddx * ddx + ddy * ddy
-                            }
-                            if (dd < bestDist2) {
-                                bestDist2 = dd
-                                bestIdx2 = i
-                            }
+                            val ddx = sxf - px[i]; val ddy = syf - py[i]
+                            val dd = if (isEuclidean) ddx * ddx + ddy * ddy
+                                     else if (metricId == 1) abs(ddx) + abs(ddy)
+                                     else maxOf(abs(ddx), abs(ddy))
+                            if (dd < bd) { bd = dd; bi = i }
                         }
-                        sumX[bestIdx2] += sx.toFloat()
-                        sumY[bestIdx2] += sy.toFloat()
-                        count[bestIdx2]++
+                        sumX[bi] += sxf; sumY[bi] += syf; count[bi]++
                     }
                 }
                 for (i in 0 until numPoints) {
-                    if (count[i] > 0) {
-                        px[i] = sumX[i] / count[i]
-                        py[i] = sumY[i] / count[i]
-                    }
+                    if (count[i] > 0) { px[i] = sumX[i] / count[i]; py[i] = sumY[i] / count[i] }
                 }
             }
         }
 
-        // Animate: displace points with noise
         if (time > 0f) {
-            val speed = animSpeed / 0.4f
-            val amp = animAmp / 0.2f
+            val speed = animSpeed / 0.4f; val amp = animAmp / 0.2f
+            val wf = w.toFloat(); val hf = h.toFloat()
             for (i in 0 until numPoints) {
-                val nx = noise.noise2D(i * 0.3f + 100f, time * 0.2f * speed) * w * 0.05f * amp
-                val ny = noise.noise2D(i * 0.3f + 200f, time * 0.2f * speed) * h * 0.05f * amp
-                px[i] = (px[i] + nx).coerceIn(0f, w.toFloat() - 1f)
-                py[i] = (py[i] + ny).coerceIn(0f, h.toFloat() - 1f)
+                px[i] = (px[i] + noise.noise2D(i * 0.3f + 100f, time * 0.2f * speed) * wf * 0.05f * amp).coerceIn(0f, wf - 1f)
+                py[i] = (py[i] + noise.noise2D(i * 0.3f + 200f, time * 0.2f * speed) * hf * 0.05f * amp).coerceIn(0f, hf - 1f)
             }
+        }
+
+        // ── Spatial grid (3×3 search window) ──
+        val gridSize = (maxOf(w, h).toFloat() / sqrt(numPoints.toFloat())).coerceAtLeast(8f)
+        val invGridSize = 1f / gridSize
+        val gridCols = (w * invGridSize).toInt() + 1
+        val gridRows = (h * invGridSize).toInt() + 1
+        val gcM1 = gridCols - 1; val grM1 = gridRows - 1
+        val gridHeads = IntArray(gridCols * gridRows) { -1 }
+        val gridNext = IntArray(numPoints) { -1 }
+        for (i in 0 until numPoints) {
+            val gx = minOf((px[i] * invGridSize).toInt(), gcM1)
+            val gy = minOf((py[i] * invGridSize).toInt(), grM1)
+            val cell = gy * gridCols + gx
+            gridNext[i] = gridHeads[cell]; gridHeads[cell] = i
         }
 
         val colors = palette.colorInts()
+        val colorsSize = colors.size
+        val colorModeId = when (colorMode) { "By Distance" -> 1; "By Angle" -> 2; else -> 0 }
+        val lut = if (colorModeId != 0) palette.buildLut(256) else null
         val pixels = IntArray(w * h)
-        val cellMap = IntArray(w * h)
+        val step = when (quality) { Quality.DRAFT -> 2; else -> 1 }
 
-        val step = when (quality) {
-            Quality.DRAFT -> 2
-            Quality.BALANCED -> 1
-            Quality.ULTRA -> 1
-        }
-
-        for (row in 0 until h step step) {
-            for (col in 0 until w step step) {
-                var bestDist = Float.MAX_VALUE
-                var secondDist = Float.MAX_VALUE
-                var bestIdx = 0
-                val x = col.toFloat()
+        if (isEuclidean && !showEdges && colorModeId == 0) {
+            // ── FAST PATH: Euclidean + By Index + no edges (default config) ──
+            // No secondDist tracking, no sqrt, no string comparison
+            for (row in 0 until h step step) {
                 val y = row.toFloat()
-
-                for (i in 0 until numPoints) {
-                    val dx = x - px[i]
-                    val dy = y - py[i]
-                    val d = when (metric.lowercase()) {
-                        "manhattan" -> abs(dx) + abs(dy)
-                        "chebyshev" -> maxOf(abs(dx), abs(dy))
-                        else -> dx * dx + dy * dy
-                    }
-                    if (d < bestDist) {
-                        secondDist = bestDist
-                        bestDist = d
-                        bestIdx = i
-                    } else if (d < secondDist) {
-                        secondDist = d
-                    }
-                }
-
-                val isEdge = showEdges && (secondDist - bestDist) < edgeWidth * 2f
-                val color = if (isEdge) {
-                    Color.BLACK
-                } else {
-                    when (colorMode) {
-                        "By Distance" -> {
-                            // Color by distance from pixel to nearest seed
-                            val dx2 = x - px[bestIdx]
-                            val dy2 = y - py[bestIdx]
-                            val dist = kotlin.math.sqrt(dx2 * dx2 + dy2 * dy2)
-                            val avgCellSize = kotlin.math.sqrt((w.toFloat() * h.toFloat()) / numPoints)
-                            val t = (dist / avgCellSize).coerceIn(0f, 1f)
-                            palette.lerpColor(t)
-                        }
-                        "By Angle" -> {
-                            // Color by angle of seed relative to canvas centre
-                            val angle = kotlin.math.atan2(py[bestIdx] - h / 2f, px[bestIdx] - w / 2f)
-                            val t = ((angle + Math.PI.toFloat()) / (2f * Math.PI.toFloat())).coerceIn(0f, 1f)
-                            palette.lerpColor(t)
-                        }
-                        else -> colors[bestIdx % colors.size] // "By Index"
-                    }
-                }
-
-                if (step == 1) {
-                    pixels[row * w + col] = color
-                    cellMap[row * w + col] = bestIdx
-                } else {
-                    for (dy in 0 until step) {
-                        for (dx in 0 until step) {
-                            val fx = col + dx
-                            val fy = row + dy
-                            if (fx < w && fy < h) {
-                                pixels[fy * w + fx] = color
-                                cellMap[fy * w + fx] = bestIdx
+                val rowOff = row * w
+                val gy = minOf((y * invGridSize).toInt(), grM1)
+                val cyMin = maxOf(gy - 1, 0); val cyMax = minOf(gy + 1, grM1)
+                for (col in 0 until w step step) {
+                    val x = col.toFloat()
+                    val gx = minOf((x * invGridSize).toInt(), gcM1)
+                    val cxMin = maxOf(gx - 1, 0); val cxMax = minOf(gx + 1, gcM1)
+                    var bestDist = Float.MAX_VALUE; var bestIdx = 0
+                    for (cy in cyMin..cyMax) {
+                        val ro = cy * gridCols
+                        for (cx in cxMin..cxMax) {
+                            var idx = gridHeads[ro + cx]
+                            while (idx >= 0) {
+                                val dx = x - px[idx]; val dy = y - py[idx]
+                                val d = dx * dx + dy * dy
+                                if (d < bestDist) { bestDist = d; bestIdx = idx }
+                                idx = gridNext[idx]
                             }
                         }
+                    }
+                    val color = colors[bestIdx % colorsSize]
+                    if (step == 1) {
+                        pixels[rowOff + col] = color
+                    } else {
+                        val i0 = rowOff + col
+                        pixels[i0] = color
+                        if (col + 1 < w) pixels[i0 + 1] = color
+                        if (row + 1 < h) { pixels[i0 + w] = color; if (col + 1 < w) pixels[i0 + w + 1] = color }
+                    }
+                }
+            }
+        } else {
+            // ── GENERAL PATH ──
+            val avgCellSize = if (colorModeId == 1) sqrt((w.toFloat() * h.toFloat()) / numPoints) else 0f
+            val halfW = w / 2f; val halfH = h / 2f
+            val invTwoPi = 1f / (2f * Math.PI.toFloat())
+            val edgeThresh = edgeWidth * 2f
+            val edgeThreshSq = edgeThresh * edgeThresh
+            for (row in 0 until h step step) {
+                val y = row.toFloat()
+                val rowOff = row * w
+                val gy = minOf((y * invGridSize).toInt(), grM1)
+                val cyMin = maxOf(gy - 1, 0); val cyMax = minOf(gy + 1, grM1)
+                for (col in 0 until w step step) {
+                    val x = col.toFloat()
+                    val gx = minOf((x * invGridSize).toInt(), gcM1)
+                    val cxMin = maxOf(gx - 1, 0); val cxMax = minOf(gx + 1, gcM1)
+                    var bestDist = Float.MAX_VALUE; var secondDist = Float.MAX_VALUE; var bestIdx = 0
+                    for (cy in cyMin..cyMax) {
+                        val ro = cy * gridCols
+                        for (cx in cxMin..cxMax) {
+                            var idx = gridHeads[ro + cx]
+                            while (idx >= 0) {
+                                val dx = x - px[idx]; val dy = y - py[idx]
+                                val d = if (isEuclidean) dx * dx + dy * dy
+                                        else if (metricId == 1) abs(dx) + abs(dy)
+                                        else maxOf(abs(dx), abs(dy))
+                                if (d < bestDist) { secondDist = bestDist; bestDist = d; bestIdx = idx }
+                                else if (d < secondDist) { secondDist = d }
+                                idx = gridNext[idx]
+                            }
+                        }
+                    }
+                    // Edge detection: 1 sqrt instead of 2 for Euclidean
+                    val sqrtBest = if (isEuclidean && (showEdges || colorModeId == 1)) sqrt(bestDist) else 0f
+                    val isEdge = showEdges && if (isEuclidean)
+                        secondDist < bestDist + edgeThreshSq + 2f * edgeThresh * sqrtBest
+                    else (secondDist - bestDist) < edgeThresh
+                    val color = if (isEdge) Color.BLACK
+                    else when (colorModeId) {
+                        1 -> {
+                            val dist = if (isEuclidean) sqrtBest else bestDist
+                            lut!![(minOf(dist / avgCellSize, 1f) * 255f).toInt().coerceIn(0, 255)]
+                        }
+                        2 -> {
+                            val t = ((atan2(py[bestIdx] - halfH, px[bestIdx] - halfW) + Math.PI.toFloat()) * invTwoPi).coerceIn(0f, 1f)
+                            lut!![(t * 255f).toInt().coerceIn(0, 255)]
+                        }
+                        else -> colors[bestIdx % colorsSize]
+                    }
+                    if (step == 1) {
+                        pixels[rowOff + col] = color
+                    } else {
+                        val i0 = rowOff + col
+                        pixels[i0] = color
+                        if (col + 1 < w) pixels[i0 + 1] = color
+                        if (row + 1 < h) { pixels[i0 + w] = color; if (col + 1 < w) pixels[i0 + w + 1] = color }
                     }
                 }
             }

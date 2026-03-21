@@ -11,16 +11,8 @@ import com.artmondo.algomodo.generators.ParamGroup
 import com.artmondo.algomodo.generators.Parameter
 import com.artmondo.algomodo.generators.Quality
 import kotlin.math.abs
-import kotlin.math.floor
 import kotlin.math.sqrt
 
-/**
- * Voronoi contour band generator.
- *
- * Instead of colouring by nearest cell, this uses the distance to the nearest
- * Voronoi edge (F2 - F1 concept) to create banded contour patterns, producing
- * a topographic map-like effect from the Voronoi distance field.
- */
 class VoronoiContoursGenerator : Generator {
 
     override val id = "voronoi-contours"
@@ -71,6 +63,7 @@ class VoronoiContoursGenerator : Generator {
         val w = bitmap.width
         val h = bitmap.height
         val numPoints = (params["cellCount"] as? Number)?.toInt() ?: 25
+        if (numPoints <= 0) { canvas.drawColor(Color.BLACK); return }
         val bands = (params["bandCount"] as? Number)?.toInt() ?: 8
         val bandMode = (params["bandMode"] as? String) ?: "hard"
         val contourLineWidth = (params["contourLineWidth"] as? Number)?.toFloat() ?: 1f
@@ -80,10 +73,13 @@ class VoronoiContoursGenerator : Generator {
         val animSpeed = (params["animSpeed"] as? Number)?.toFloat() ?: 0.4f
         val animAmp = (params["animAmp"] as? Number)?.toFloat() ?: 0.2f
 
+        val metricId = when (distanceMetric.lowercase()) {
+            "manhattan" -> 1; "chebyshev" -> 2; else -> 0
+        }
+        val isEuclidean = metricId == 0
+
         val rng = SeededRNG(seed)
         val noise = SimplexNoise(seed)
-
-        // Generate seed points
         val px = FloatArray(numPoints)
         val py = FloatArray(numPoints)
         for (i in 0 until numPoints) {
@@ -91,175 +87,257 @@ class VoronoiContoursGenerator : Generator {
             py[i] = rng.random() * h
         }
 
-        // Lloyd's relaxation: iteratively move seeds towards their cell centroids
         if (relaxed) {
-            val relaxSteps = 3
-            val sampleStep = when (quality) {
-                Quality.DRAFT -> 6
-                Quality.BALANCED -> 4
-                Quality.ULTRA -> 3
-            }
-            for (step in 0 until relaxSteps) {
+            val sampleStep = when (quality) { Quality.DRAFT -> 6; Quality.BALANCED -> 4; Quality.ULTRA -> 3 }
+            for (pass in 0 until 3) {
                 val sumX = FloatArray(numPoints)
                 val sumY = FloatArray(numPoints)
                 val count = IntArray(numPoints)
                 for (sy in 0 until h step sampleStep) {
+                    val yf = sy.toFloat()
                     for (sx in 0 until w step sampleStep) {
-                        val nearest = findNearestIndex(
-                            sx.toFloat(), sy.toFloat(), px, py, numPoints, distanceMetric
-                        )
-                        sumX[nearest] += sx.toFloat()
-                        sumY[nearest] += sy.toFloat()
-                        count[nearest]++
+                        val xf = sx.toFloat()
+                        var bd = Float.MAX_VALUE; var bi = 0
+                        for (i in 0 until numPoints) {
+                            val dx = xf - px[i]; val dy = yf - py[i]
+                            val d = if (isEuclidean) dx * dx + dy * dy
+                                    else if (metricId == 1) abs(dx) + abs(dy)
+                                    else maxOf(abs(dx), abs(dy))
+                            if (d < bd) { bd = d; bi = i }
+                        }
+                        sumX[bi] += xf; sumY[bi] += yf; count[bi]++
                     }
                 }
                 for (i in 0 until numPoints) {
-                    if (count[i] > 0) {
-                        px[i] = sumX[i] / count[i]
-                        py[i] = sumY[i] / count[i]
-                    }
+                    if (count[i] > 0) { px[i] = sumX[i] / count[i]; py[i] = sumY[i] / count[i] }
                 }
             }
         }
 
-        // Animate: displace points with noise using animSpeed and animAmp
         if (time > 0f && animAmp > 0f) {
-            val avgCellSize = sqrt((w.toFloat() * h.toFloat()) / numPoints)
+            val avgCell = sqrt((w.toFloat() * h.toFloat()) / numPoints)
             for (i in 0 until numPoints) {
-                px[i] += noise.noise2D(i * 0.3f + 30f, time * 0.18f * animSpeed) * avgCellSize * animAmp
-                py[i] += noise.noise2D(i * 0.3f + 130f, time * 0.18f * animSpeed) * avgCellSize * animAmp
-                px[i] = px[i].coerceIn(0f, w.toFloat() - 1f)
-                py[i] = py[i].coerceIn(0f, h.toFloat() - 1f)
+                px[i] = (px[i] + noise.noise2D(i * 0.3f + 30f, time * 0.18f * animSpeed) * avgCell * animAmp).coerceIn(0f, w - 1f)
+                py[i] = (py[i] + noise.noise2D(i * 0.3f + 130f, time * 0.18f * animSpeed) * avgCell * animAmp).coerceIn(0f, h - 1f)
             }
+        }
+
+        // ── Spatial grid (3×3 search window) ──
+        val gridSize = (maxOf(w, h).toFloat() / sqrt(numPoints.toFloat())).coerceAtLeast(8f)
+        val invGridSize = 1f / gridSize
+        val gridCols = (w * invGridSize).toInt() + 1
+        val gridRows = (h * invGridSize).toInt() + 1
+        val gcM1 = gridCols - 1; val grM1 = gridRows - 1
+        val gridHeads = IntArray(gridCols * gridRows) { -1 }
+        val gridNext = IntArray(numPoints) { -1 }
+        for (i in 0 until numPoints) {
+            val gx = minOf((px[i] * invGridSize).toInt(), gcM1)
+            val gy = minOf((py[i] * invGridSize).toInt(), grM1)
+            val cell = gy * gridCols + gx
+            gridNext[i] = gridHeads[cell]; gridHeads[cell] = i
         }
 
         val pixels = IntArray(w * h)
 
-        // Find max F2-F1 for normalization (sample a few points)
+        // Sample maxEdgeDist for normalization
         var maxEdgeDist = 1f
-        val sampleCount = 50
-        for (s in 0 until sampleCount) {
-            val sx = rng.random() * w
-            val sy = rng.random() * h
-            val (f1, f2) = findF1F2BruteForce(sx, sy, px, py, numPoints, distanceMetric)
-            val edgeDist = f2 - f1
-            if (edgeDist > maxEdgeDist) maxEdgeDist = edgeDist
+        for (s in 0 until 50) {
+            val sx = rng.random() * w; val sy = rng.random() * h
+            var sf1 = Float.MAX_VALUE; var sf2 = Float.MAX_VALUE
+            for (i in 0 until numPoints) {
+                val dx = sx - px[i]; val dy = sy - py[i]
+                val d = if (isEuclidean) sqrt(dx * dx + dy * dy)
+                        else if (metricId == 1) abs(dx) + abs(dy)
+                        else maxOf(abs(dx), abs(dy))
+                if (d < sf1) { sf2 = sf1; sf1 = d }
+                else if (d < sf2) { sf2 = d }
+            }
+            val ed = sf2 - sf1
+            if (ed > maxEdgeDist) maxEdgeDist = ed
         }
 
-        // Pre-compute palette color ints for palette-cycle mode
         val paletteColors = palette.colorInts()
-
-        val step = when (quality) {
-            Quality.DRAFT -> 2
-            Quality.BALANCED -> 1
-            Quality.ULTRA -> 1
-        }
-
-        // Band index array for contour line detection (only needed when contourLineWidth > 0
-        // and mode is not smooth)
+        val paletteSize = paletteColors.size
+        val colorModeId = when (colorMode) { "palette-gradient" -> 1; "monochrome" -> 2; else -> 0 }
+        val lut = if (colorModeId == 1) palette.buildLut(256) else null
+        val bandsM1 = (bands - 1).coerceAtLeast(1)
+        val invMaxEdge = 1f / maxEdgeDist
+        val invBandsM1 = 1f / bandsM1
+        val step = when (quality) { Quality.DRAFT -> 2; else -> 1 }
         val drawContourLines = contourLineWidth > 0f && bandMode != "smooth"
-        val bandMap = if (drawContourLines) IntArray(w * h) { -1 } else null
+        val bandMap = if (drawContourLines) IntArray(w * h) else null
+        val isSmooth = bandMode == "smooth"
+        val invBands = 1f / bands
 
-        for (row in 0 until h step step) {
-            for (col in 0 until w step step) {
-                val xf = col.toFloat()
-                val yf = row.toFloat()
-                val (f1, f2, nearestIdx) = findF1F2WithIndex(
-                    xf, yf, px, py, numPoints, distanceMetric
-                )
-                val edgeDist = (f2 - f1) / maxEdgeDist
-                val normalized = edgeDist.coerceIn(0f, 1f)
-
-                // Quantise into bands
-                val bandFloat = normalized * bands
-                val bandIndex = floor(bandFloat).toInt().coerceIn(0, bands - 1)
-
-                val t = when (bandMode) {
-                    "smooth" -> {
-                        // Smooth continuous gradient across bands
-                        val frac = bandFloat - floor(bandFloat)
-                        val smoothFrac = if (frac < 1f / bands) {
-                            frac / (1f / bands)
-                        } else {
-                            1f
-                        }
-                        val base = bandIndex.toFloat() / (bands - 1).coerceAtLeast(1)
-                        val next = (bandIndex + 1).toFloat() / (bands - 1).coerceAtLeast(1)
-                        base + (next - base) * smoothFrac * 0.3f
-                    }
-                    else -> {
-                        // "hard" and "stepped" both use quantised bands
-                        bandIndex.toFloat() / (bands - 1).coerceAtLeast(1)
-                    }
-                }
-
-                // Color based on colorMode
-                val color = when (colorMode) {
-                    "palette-gradient" -> {
-                        // Continuous gradient mapping: use t directly across the full palette
-                        palette.lerpColor(t.coerceIn(0f, 1f))
-                    }
-                    "monochrome" -> {
-                        // Map band value to grayscale intensity
-                        val gray = (t.coerceIn(0f, 1f) * 255f).toInt().coerceIn(0, 255)
-                        Color.rgb(gray, gray, gray)
-                    }
-                    else -> {
-                        // "palette-cycle": cycle through discrete palette colors by band index
-                        paletteColors[bandIndex % paletteColors.size]
-                    }
-                }
-
-                if (step == 1) {
-                    pixels[row * w + col] = color
-                    bandMap?.set(row * w + col, bandIndex)
-                } else {
-                    for (dy in 0 until step) {
-                        for (dx in 0 until step) {
-                            val fx = col + dx
-                            val fy = row + dy
-                            if (fx < w && fy < h) {
-                                pixels[fy * w + fx] = color
-                                bandMap?.set(fy * w + fx, bandIndex)
+        if (isEuclidean) {
+            // ── EUCLIDEAN FAST PATH: no metric branch in inner loop ──
+            for (row in 0 until h step step) {
+                val y = row.toFloat()
+                val rowOff = row * w
+                val gy = minOf((y * invGridSize).toInt(), grM1)
+                val cyMin = maxOf(gy - 1, 0); val cyMax = minOf(gy + 1, grM1)
+                for (col in 0 until w step step) {
+                    val x = col.toFloat()
+                    val gx = minOf((x * invGridSize).toInt(), gcM1)
+                    val cxMin = maxOf(gx - 1, 0); val cxMax = minOf(gx + 1, gcM1)
+                    var f1 = Float.MAX_VALUE; var f2 = Float.MAX_VALUE
+                    for (cy in cyMin..cyMax) {
+                        val ro = cy * gridCols
+                        for (cx in cxMin..cxMax) {
+                            var idx = gridHeads[ro + cx]
+                            while (idx >= 0) {
+                                val dx = x - px[idx]; val dy = y - py[idx]
+                                val d = dx * dx + dy * dy
+                                if (d < f1) { f2 = f1; f1 = d }
+                                else if (d < f2) { f2 = d }
+                                idx = gridNext[idx]
                             }
+                        }
+                    }
+                    f1 = sqrt(f1); f2 = sqrt(f2)
+                    val normalized = ((f2 - f1) * invMaxEdge).coerceIn(0f, 1f)
+                    val bandFloat = normalized * bands
+                    val bandI = minOf(bandFloat.toInt(), bands - 1)
+                    val color = if (isSmooth) {
+                        val frac = bandFloat - bandI
+                        val smoothFrac = if (frac < invBands) frac * bands else 1f
+                        val base = bandI * invBandsM1
+                        val t = base + ((bandI + 1) * invBandsM1 - base) * smoothFrac * 0.3f
+                        when (colorModeId) {
+                            1 -> lut!![(t.coerceIn(0f, 1f) * 255f).toInt().coerceIn(0, 255)]
+                            2 -> { val g = (t.coerceIn(0f, 1f) * 255f).toInt().coerceIn(0, 255); Color.rgb(g, g, g) }
+                            else -> paletteColors[bandI % paletteSize]
+                        }
+                    } else {
+                        when (colorModeId) {
+                            1 -> { val t = (bandI * invBandsM1).coerceIn(0f, 1f); lut!![(t * 255f).toInt().coerceIn(0, 255)] }
+                            2 -> { val g = (bandI * invBandsM1 * 255f).toInt().coerceIn(0, 255); Color.rgb(g, g, g) }
+                            else -> paletteColors[bandI % paletteSize]
+                        }
+                    }
+                    if (step == 1) {
+                        pixels[rowOff + col] = color
+                        bandMap?.set(rowOff + col, bandI)
+                    } else {
+                        val i0 = rowOff + col
+                        pixels[i0] = color; bandMap?.set(i0, bandI)
+                        if (col + 1 < w) { pixels[i0 + 1] = color; bandMap?.set(i0 + 1, bandI) }
+                        if (row + 1 < h) {
+                            pixels[i0 + w] = color; bandMap?.set(i0 + w, bandI)
+                            if (col + 1 < w) { pixels[i0 + w + 1] = color; bandMap?.set(i0 + w + 1, bandI) }
+                        }
+                    }
+                }
+            }
+        } else {
+            // ── NON-EUCLIDEAN PATH ──
+            for (row in 0 until h step step) {
+                val y = row.toFloat()
+                val rowOff = row * w
+                val gy = minOf((y * invGridSize).toInt(), grM1)
+                val cyMin = maxOf(gy - 1, 0); val cyMax = minOf(gy + 1, grM1)
+                for (col in 0 until w step step) {
+                    val x = col.toFloat()
+                    val gx = minOf((x * invGridSize).toInt(), gcM1)
+                    val cxMin = maxOf(gx - 1, 0); val cxMax = minOf(gx + 1, gcM1)
+                    var f1 = Float.MAX_VALUE; var f2 = Float.MAX_VALUE
+                    for (cy in cyMin..cyMax) {
+                        val ro = cy * gridCols
+                        for (cx in cxMin..cxMax) {
+                            var idx = gridHeads[ro + cx]
+                            while (idx >= 0) {
+                                val dx = x - px[idx]; val dy = y - py[idx]
+                                val d = if (metricId == 1) abs(dx) + abs(dy)
+                                        else maxOf(abs(dx), abs(dy))
+                                if (d < f1) { f2 = f1; f1 = d }
+                                else if (d < f2) { f2 = d }
+                                idx = gridNext[idx]
+                            }
+                        }
+                    }
+                    val normalized = ((f2 - f1) * invMaxEdge).coerceIn(0f, 1f)
+                    val bandFloat = normalized * bands
+                    val bandI = minOf(bandFloat.toInt(), bands - 1)
+                    val color = if (isSmooth) {
+                        val frac = bandFloat - bandI
+                        val smoothFrac = if (frac < invBands) frac * bands else 1f
+                        val base = bandI * invBandsM1
+                        val t = base + ((bandI + 1) * invBandsM1 - base) * smoothFrac * 0.3f
+                        when (colorModeId) {
+                            1 -> lut!![(t.coerceIn(0f, 1f) * 255f).toInt().coerceIn(0, 255)]
+                            2 -> { val g = (t.coerceIn(0f, 1f) * 255f).toInt().coerceIn(0, 255); Color.rgb(g, g, g) }
+                            else -> paletteColors[bandI % paletteSize]
+                        }
+                    } else {
+                        when (colorModeId) {
+                            1 -> { val t = (bandI * invBandsM1).coerceIn(0f, 1f); lut!![(t * 255f).toInt().coerceIn(0, 255)] }
+                            2 -> { val g = (bandI * invBandsM1 * 255f).toInt().coerceIn(0, 255); Color.rgb(g, g, g) }
+                            else -> paletteColors[bandI % paletteSize]
+                        }
+                    }
+                    if (step == 1) {
+                        pixels[rowOff + col] = color
+                        bandMap?.set(rowOff + col, bandI)
+                    } else {
+                        val i0 = rowOff + col
+                        pixels[i0] = color; bandMap?.set(i0, bandI)
+                        if (col + 1 < w) { pixels[i0 + 1] = color; bandMap?.set(i0 + 1, bandI) }
+                        if (row + 1 < h) {
+                            pixels[i0 + w] = color; bandMap?.set(i0 + w, bandI)
+                            if (col + 1 < w) { pixels[i0 + w + 1] = color; bandMap?.set(i0 + w + 1, bandI) }
                         }
                     }
                 }
             }
         }
 
-        // Draw contour lines at band boundaries
+        // Contour lines: 4-neighbor check (fast path for lineRadius=1, 8-dir for larger)
         if (drawContourLines && bandMap != null) {
             val lineRadius = contourLineWidth.toInt().coerceAtLeast(1)
-            for (row in 0 until h) {
-                for (col in 0 until w) {
-                    val idx = row * w + col
-                    val myBand = bandMap[idx]
-                    if (myBand < 0) continue
-                    // Check neighbors within lineRadius for band boundary
-                    var isBoundary = false
-                    for (dr in -lineRadius..lineRadius) {
-                        if (isBoundary) break
-                        for (dc in -lineRadius..lineRadius) {
-                            if (dr == 0 && dc == 0) continue
-                            val nr = row + dr
-                            val nc = col + dc
-                            if (nr in 0 until h && nc in 0 until w) {
-                                val neighborBand = bandMap[nr * w + nc]
-                                if (neighborBand >= 0 && neighborBand != myBand) {
-                                    isBoundary = true
-                                    break
-                                }
-                            }
+            if (lineRadius == 1) {
+                for (row in 0 until h) {
+                    val rowOff = row * w
+                    for (col in 0 until w) {
+                        val idx = rowOff + col
+                        val mb = bandMap[idx]
+                        if ((col > 0 && bandMap[idx - 1] != mb) ||
+                            (col < w - 1 && bandMap[idx + 1] != mb) ||
+                            (row > 0 && bandMap[idx - w] != mb) ||
+                            (row < h - 1 && bandMap[idx + w] != mb)) {
+                            val base = pixels[idx]
+                            pixels[idx] = Color.rgb(
+                                (Color.red(base) shr 2),
+                                (Color.green(base) shr 2),
+                                (Color.blue(base) shr 2)
+                            )
                         }
                     }
-                    if (isBoundary) {
-                        // Darken the existing pixel color for the contour line
-                        val base = pixels[idx]
-                        val r = (Color.red(base) * 0.25f).toInt()
-                        val g = (Color.green(base) * 0.25f).toInt()
-                        val b = (Color.blue(base) * 0.25f).toInt()
-                        pixels[idx] = Color.rgb(r, g, b)
+                }
+            } else {
+                for (row in 0 until h) {
+                    val rowOff = row * w
+                    for (col in 0 until w) {
+                        val idx = rowOff + col
+                        val mb = bandMap[idx]
+                        var isBoundary = false
+                        for (dist in 1..lineRadius) {
+                            if (row - dist >= 0 && bandMap[(row - dist) * w + col] != mb) { isBoundary = true; break }
+                            if (row + dist < h && bandMap[(row + dist) * w + col] != mb) { isBoundary = true; break }
+                            if (col - dist >= 0 && bandMap[rowOff + col - dist] != mb) { isBoundary = true; break }
+                            if (col + dist < w && bandMap[rowOff + col + dist] != mb) { isBoundary = true; break }
+                            if (row - dist >= 0 && col - dist >= 0 && bandMap[(row - dist) * w + col - dist] != mb) { isBoundary = true; break }
+                            if (row - dist >= 0 && col + dist < w && bandMap[(row - dist) * w + col + dist] != mb) { isBoundary = true; break }
+                            if (row + dist < h && col - dist >= 0 && bandMap[(row + dist) * w + col - dist] != mb) { isBoundary = true; break }
+                            if (row + dist < h && col + dist < w && bandMap[(row + dist) * w + col + dist] != mb) { isBoundary = true; break }
+                        }
+                        if (isBoundary) {
+                            val base = pixels[idx]
+                            pixels[idx] = Color.rgb(
+                                (Color.red(base) shr 2),
+                                (Color.green(base) shr 2),
+                                (Color.blue(base) shr 2)
+                            )
+                        }
                     }
                 }
             }
@@ -267,90 +345,6 @@ class VoronoiContoursGenerator : Generator {
 
         bitmap.setPixels(pixels, 0, w, 0, 0, w, h)
         canvas.drawBitmap(bitmap, 0f, 0f, null)
-    }
-
-    /**
-     * Find the index of the nearest seed point.
-     */
-    private fun findNearestIndex(
-        x: Float, y: Float,
-        px: FloatArray, py: FloatArray, numPoints: Int,
-        metric: String
-    ): Int {
-        var bestDist = Float.MAX_VALUE
-        var bestIdx = 0
-        for (i in 0 until numPoints) {
-            val dx = x - px[i]
-            val dy = y - py[i]
-            val d = distanceFor(dx, dy, metric)
-            if (d < bestDist) {
-                bestDist = d
-                bestIdx = i
-            }
-        }
-        return bestIdx
-    }
-
-    /**
-     * Find the first and second nearest distances (F1, F2) from a point to the seed set
-     * using brute-force search over all points, with configurable distance metric.
-     */
-    private fun findF1F2BruteForce(
-        x: Float, y: Float,
-        px: FloatArray, py: FloatArray, numPoints: Int,
-        metric: String
-    ): Pair<Float, Float> {
-        var f1 = Float.MAX_VALUE
-        var f2 = Float.MAX_VALUE
-        for (i in 0 until numPoints) {
-            val dx = x - px[i]
-            val dy = y - py[i]
-            val d = distanceFor(dx, dy, metric)
-            if (d < f1) {
-                f2 = f1
-                f1 = d
-            } else if (d < f2) {
-                f2 = d
-            }
-        }
-        return Pair(f1, f2)
-    }
-
-    /**
-     * Find F1, F2, and the index of the nearest seed point.
-     */
-    private fun findF1F2WithIndex(
-        x: Float, y: Float,
-        px: FloatArray, py: FloatArray, numPoints: Int,
-        metric: String
-    ): Triple<Float, Float, Int> {
-        var f1 = Float.MAX_VALUE
-        var f2 = Float.MAX_VALUE
-        var nearestIdx = 0
-        for (i in 0 until numPoints) {
-            val dx = x - px[i]
-            val dy = y - py[i]
-            val d = distanceFor(dx, dy, metric)
-            if (d < f1) {
-                f2 = f1
-                f1 = d
-                nearestIdx = i
-            } else if (d < f2) {
-                f2 = d
-            }
-        }
-        return Triple(f1, f2, nearestIdx)
-    }
-
-    /**
-     * Compute distance from delta components using the selected metric.
-     */
-    private fun distanceFor(dx: Float, dy: Float, metric: String): Float {
-        return when (metric.lowercase()) {
-            "manhattan" -> abs(dx) + abs(dy)
-            "chebyshev" -> maxOf(abs(dx), abs(dy))
-            else -> sqrt(dx * dx + dy * dy)
-        }
     }
 
     override fun estimateCost(params: Map<String, Any>, quality: Quality): Float {
