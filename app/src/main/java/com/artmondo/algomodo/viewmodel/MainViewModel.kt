@@ -18,6 +18,7 @@ import com.artmondo.algomodo.data.palettes.CuratedPalettes
 import com.artmondo.algomodo.data.palettes.Palette
 import com.artmondo.algomodo.data.preferences.AppPreferences
 import com.artmondo.algomodo.generators.Generator
+import com.artmondo.algomodo.generators.ParamGroup
 import com.artmondo.algomodo.generators.Parameter
 import com.artmondo.algomodo.generators.Quality
 import com.artmondo.algomodo.rendering.PostFXSettings
@@ -247,12 +248,20 @@ class MainViewModel @Inject constructor(
      * Randomize a NumberParam to a safe range — avoids the bottom 15% of
      * the param range to prevent degenerate/blank output (zero density,
      * zero amplitude, zero count, etc.).
+     * For animation/speed params (FLOW_MOTION group or key containing "speed"),
+     * the result is guaranteed to be > 0.
      */
     private fun safeRandomStep(param: Parameter.NumberParam, rng: SeededRNG): Float {
         val steps = ((param.max - param.min) / param.step).toInt()
-        val minStep = (steps * 0.15f).toInt().coerceIn(1, steps)
-        val maxStep = (steps - 1).coerceAtLeast(minStep) // avoid absolute max
-        return param.min + rng.integer(minStep, maxStep) * param.step
+        val isAnimParam = param.group == ParamGroup.FLOW_MOTION ||
+                param.key.contains("speed", ignoreCase = true)
+        val floor = if (isAnimParam) (steps * 0.2f).toInt().coerceIn(1, steps)
+                    else (steps * 0.15f).toInt().coerceIn(1, steps)
+        val maxStep = (steps - 1).coerceAtLeast(floor) // avoid absolute max
+        val value = param.min + rng.integer(floor, maxStep) * param.step
+        // Extra guard: animation params must never be zero
+        return if (isAnimParam && value == 0f) (param.min + param.step).coerceAtMost(param.max)
+               else value
     }
 
     fun randomize() {
