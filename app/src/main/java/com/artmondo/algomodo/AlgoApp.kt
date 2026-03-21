@@ -58,10 +58,11 @@ class AlgoApp : Application() {
         GeneratorRegistry.register(MultibrotGenerator())
         GeneratorRegistry.register(NewtonGenerator())
         GeneratorRegistry.register(OrbitTrapsGenerator())
+        GeneratorRegistry.register(PythagorasTreeGenerator())
         GeneratorRegistry.register(RecursiveSubdivisionGenerator())
         GeneratorRegistry.register(StrangeAttractorDensityGenerator())
 
-        // Geometry (10)
+        // Geometry (11)
         GeneratorRegistry.register(ChladniGenerator())
         GeneratorRegistry.register(IslamicPatternsGenerator())
         GeneratorRegistry.register(MoireGenerator())
