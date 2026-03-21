@@ -10,6 +10,8 @@ import com.artmondo.algomodo.generators.Generator
 import com.artmondo.algomodo.generators.ParamGroup
 import com.artmondo.algomodo.generators.Parameter
 import com.artmondo.algomodo.generators.Quality
+import kotlin.math.abs
+import kotlin.math.sqrt
 
 /**
  * Voronoi neighbour-count band generator.
@@ -67,6 +69,7 @@ class VoronoiNeighborBandsGenerator : Generator {
         val w = bitmap.width
         val h = bitmap.height
         val numPoints = (params["cellCount"] as? Number)?.toInt() ?: 35
+        if (numPoints <= 0) { canvas.drawColor(Color.BLACK); return }
         val bandCount = (params["bandCount"] as? Number)?.toInt() ?: 4
         val bandMode = (params["bandMode"] as? String) ?: "flat"
         val borderWidth = (params["borderWidth"] as? Number)?.toFloat() ?: 1f
@@ -75,6 +78,12 @@ class VoronoiNeighborBandsGenerator : Generator {
         val relaxed = params["relaxed"] as? Boolean ?: false
         val animSpeed = (params["animSpeed"] as? Number)?.toFloat() ?: 0.4f
         val animAmp = (params["animAmp"] as? Number)?.toFloat() ?: 0.2f
+
+        val metricId = when (distanceMetric.lowercase()) {
+            "manhattan" -> 1; "chebyshev" -> 2; else -> 0
+        }
+        val isEuclidean = metricId == 0
+        val bandModeId = when (bandMode) { "gradient" -> 1; "alternating" -> 2; else -> 0 }
 
         val rng = SeededRNG(seed)
         val noise = SimplexNoise(seed)
@@ -86,146 +95,271 @@ class VoronoiNeighborBandsGenerator : Generator {
             py[i] = rng.random() * h
         }
 
-        // Lloyd relaxation for more uniform cells
+        // Lloyd relaxation using spatial grid
         if (relaxed) {
             val relaxStep = 4
             for (pass in 0 until 3) {
+                val rGs = (maxOf(w, h).toFloat() / sqrt(numPoints.toFloat())).coerceAtLeast(8f)
+                val rInv = 1f / rGs
+                val rGc = (w * rInv).toInt() + 1
+                val rGr = (h * rInv).toInt() + 1
+                val rGcM1 = rGc - 1; val rGrM1 = rGr - 1
+                val rGh = IntArray(rGc * rGr) { -1 }
+                val rGn = IntArray(numPoints) { -1 }
+                for (i in 0 until numPoints) {
+                    val gx = minOf((px[i] * rInv).toInt(), rGcM1)
+                    val gy = minOf((py[i] * rInv).toInt(), rGrM1)
+                    val cell = gy * rGc + gx
+                    rGn[i] = rGh[cell]; rGh[cell] = i
+                }
                 val sumX = FloatArray(numPoints)
                 val sumY = FloatArray(numPoints)
                 val count = IntArray(numPoints)
                 for (sy in 0 until h step relaxStep) {
+                    val yf = sy.toFloat()
+                    val gy = minOf((yf * rInv).toInt(), rGrM1)
+                    val cyMin = maxOf(gy - 1, 0); val cyMax = minOf(gy + 1, rGrM1)
                     for (sx in 0 until w step relaxStep) {
-                        val nearest = findNearestWithMetric(sx.toFloat(), sy.toFloat(), px, py, numPoints, distanceMetric)
-                        sumX[nearest] += sx.toFloat()
-                        sumY[nearest] += sy.toFloat()
-                        count[nearest]++
+                        val xf = sx.toFloat()
+                        val gx = minOf((xf * rInv).toInt(), rGcM1)
+                        val cxMin = maxOf(gx - 1, 0); val cxMax = minOf(gx + 1, rGcM1)
+                        var bd = Float.MAX_VALUE; var bi = 0
+                        for (cy in cyMin..cyMax) {
+                            val ro = cy * rGc
+                            for (cx in cxMin..cxMax) {
+                                var ii = rGh[ro + cx]
+                                while (ii >= 0) {
+                                    val dx = xf - px[ii]; val dy = yf - py[ii]
+                                    val d = if (isEuclidean) dx * dx + dy * dy
+                                            else if (metricId == 1) abs(dx) + abs(dy)
+                                            else maxOf(abs(dx), abs(dy))
+                                    if (d < bd) { bd = d; bi = ii }
+                                    ii = rGn[ii]
+                                }
+                            }
+                        }
+                        sumX[bi] += xf; sumY[bi] += yf; count[bi]++
                     }
                 }
                 for (i in 0 until numPoints) {
-                    if (count[i] > 0) {
-                        px[i] = sumX[i] / count[i]
-                        py[i] = sumY[i] / count[i]
-                    }
+                    if (count[i] > 0) { px[i] = sumX[i] / count[i]; py[i] = sumY[i] / count[i] }
                 }
             }
         }
 
         // Animate
         if (time > 0f) {
-            val speed = animSpeed / 0.4f
-            val amp = animAmp / 0.2f
+            val speed = animSpeed / 0.4f; val amp = animAmp / 0.2f
+            val wf = w.toFloat(); val hf = h.toFloat()
             for (i in 0 until numPoints) {
-                px[i] += noise.noise2D(i * 0.3f + 60f, time * 0.15f * speed) * w * 0.04f * amp
-                py[i] += noise.noise2D(i * 0.3f + 160f, time * 0.15f * speed) * h * 0.04f * amp
-                px[i] = px[i].coerceIn(0f, w.toFloat() - 1f)
-                py[i] = py[i].coerceIn(0f, h.toFloat() - 1f)
+                px[i] = (px[i] + noise.noise2D(i * 0.3f + 60f, time * 0.15f * speed) * wf * 0.04f * amp).coerceIn(0f, wf - 1f)
+                py[i] = (py[i] + noise.noise2D(i * 0.3f + 160f, time * 0.15f * speed) * hf * 0.04f * amp).coerceIn(0f, hf - 1f)
             }
         }
 
-        // Build cell assignment map at a lower resolution for speed
+        // ── Spatial grid (linked-list) ──
+        val gridSize = (maxOf(w, h).toFloat() / sqrt(numPoints.toFloat())).coerceAtLeast(8f)
+        val invGridSize = 1f / gridSize
+        val gridCols = (w * invGridSize).toInt() + 1
+        val gridRows = (h * invGridSize).toInt() + 1
+        val gcM1 = gridCols - 1; val grM1 = gridRows - 1
+        val gridHeads = IntArray(gridCols * gridRows) { -1 }
+        val gridNext = IntArray(numPoints) { -1 }
+        for (i in 0 until numPoints) {
+            val gx = minOf((px[i] * invGridSize).toInt(), gcM1)
+            val gy = minOf((py[i] * invGridSize).toInt(), grM1)
+            val cell = gy * gridCols + gx
+            gridNext[i] = gridHeads[cell]; gridHeads[cell] = i
+        }
+
+        // Build cell assignment map at reduced resolution using grid search
         val mapStep = when (quality) {
-            Quality.DRAFT -> 3
-            Quality.BALANCED -> 2
-            Quality.ULTRA -> 1
+            Quality.DRAFT -> 3; Quality.BALANCED -> 2; Quality.ULTRA -> 1
         }
         val mw = (w + mapStep - 1) / mapStep
         val mh = (h + mapStep - 1) / mapStep
         val cellMap = IntArray(mw * mh)
 
-        for (row in 0 until mh) {
-            for (col in 0 until mw) {
-                val rx = (col * mapStep).toFloat()
+        if (isEuclidean) {
+            for (row in 0 until mh) {
                 val ry = (row * mapStep).toFloat()
-                cellMap[row * mw + col] = findNearestWithMetric(rx, ry, px, py, numPoints, distanceMetric)
+                val gy = minOf((ry * invGridSize).toInt(), grM1)
+                val cyMin = maxOf(gy - 1, 0); val cyMax = minOf(gy + 1, grM1)
+                val mapRowOff = row * mw
+                for (col in 0 until mw) {
+                    val rx = (col * mapStep).toFloat()
+                    val gx = minOf((rx * invGridSize).toInt(), gcM1)
+                    val cxMin = maxOf(gx - 1, 0); val cxMax = minOf(gx + 1, gcM1)
+                    var bd = Float.MAX_VALUE; var bi = 0
+                    for (cy in cyMin..cyMax) {
+                        val ro = cy * gridCols
+                        for (cx in cxMin..cxMax) {
+                            var ii = gridHeads[ro + cx]
+                            while (ii >= 0) {
+                                val dx = rx - px[ii]; val dy = ry - py[ii]
+                                val d = dx * dx + dy * dy
+                                if (d < bd) { bd = d; bi = ii }
+                                ii = gridNext[ii]
+                            }
+                        }
+                    }
+                    cellMap[mapRowOff + col] = bi
+                }
+            }
+        } else {
+            for (row in 0 until mh) {
+                val ry = (row * mapStep).toFloat()
+                val gy = minOf((ry * invGridSize).toInt(), grM1)
+                val cyMin = maxOf(gy - 1, 0); val cyMax = minOf(gy + 1, grM1)
+                val mapRowOff = row * mw
+                for (col in 0 until mw) {
+                    val rx = (col * mapStep).toFloat()
+                    val gx = minOf((rx * invGridSize).toInt(), gcM1)
+                    val cxMin = maxOf(gx - 1, 0); val cxMax = minOf(gx + 1, gcM1)
+                    var bd = Float.MAX_VALUE; var bi = 0
+                    for (cy in cyMin..cyMax) {
+                        val ro = cy * gridCols
+                        for (cx in cxMin..cxMax) {
+                            var ii = gridHeads[ro + cx]
+                            while (ii >= 0) {
+                                val dx = rx - px[ii]; val dy = ry - py[ii]
+                                val d = if (metricId == 1) abs(dx) + abs(dy) else maxOf(abs(dx), abs(dy))
+                                if (d < bd) { bd = d; bi = ii }
+                                ii = gridNext[ii]
+                            }
+                        }
+                    }
+                    cellMap[mapRowOff + col] = bi
+                }
             }
         }
 
         // Count neighbours per cell by scanning the cell map for border transitions
         val neighbours = Array(numPoints) { mutableSetOf<Int>() }
         for (row in 0 until mh) {
+            val mapRowOff = row * mw
             for (col in 0 until mw) {
-                val c = cellMap[row * mw + col]
+                val c = cellMap[mapRowOff + col]
                 if (col + 1 < mw) {
-                    val right = cellMap[row * mw + col + 1]
-                    if (right != c) {
-                        neighbours[c].add(right)
-                        neighbours[right].add(c)
-                    }
+                    val right = cellMap[mapRowOff + col + 1]
+                    if (right != c) { neighbours[c].add(right); neighbours[right].add(c) }
                 }
                 if (row + 1 < mh) {
                     val below = cellMap[(row + 1) * mw + col]
-                    if (below != c) {
-                        neighbours[c].add(below)
-                        neighbours[below].add(c)
-                    }
+                    if (below != c) { neighbours[c].add(below); neighbours[below].add(c) }
                 }
             }
         }
 
-        // Map neighbour counts to palette
         val neighborCounts = IntArray(numPoints) { neighbours[it].size }
         val maxNeighbors = neighborCounts.maxOrNull()?.coerceAtLeast(1) ?: 1
         val minNeighbors = neighborCounts.minOrNull() ?: 0
+        val range = (maxNeighbors - minNeighbors).coerceAtLeast(1)
 
-        // Render full resolution
-        val pixels = IntArray(w * h)
-
-        val renderStep = when (quality) {
-            Quality.DRAFT -> 2
-            Quality.BALANCED -> 1
-            Quality.ULTRA -> 1
+        // Pre-compute cell colors (avoids per-pixel palette lookups)
+        val colors = palette.colorInts()
+        val colorsSize = colors.size
+        val lut = if (bandModeId == 1) palette.buildLut(256) else null
+        val cellColors = IntArray(numPoints)
+        for (i in 0 until numPoints) {
+            val nc = neighborCounts[i]
+            cellColors[i] = when (bandModeId) {
+                1 -> { // gradient
+                    val t = (nc - minNeighbors).toFloat() / range
+                    lut!![(t * 255f).toInt().coerceIn(0, 255)]
+                }
+                2 -> { // alternating
+                    val bandIdx = (nc - minNeighbors) % bandCount
+                    if (bandIdx % 2 == 0) colors.first() else colors.last()
+                }
+                else -> { // flat
+                    val bandIdx = (nc - minNeighbors) % bandCount
+                    colors[bandIdx % colorsSize]
+                }
+            }
         }
 
-        for (row in 0 until h step renderStep) {
-            for (col in 0 until w step renderStep) {
-                val nearest = findNearestWithMetric(col.toFloat(), row.toFloat(), px, py, numPoints, distanceMetric)
-                val nc = neighborCounts[nearest]
+        val pixels = IntArray(w * h)
+        val renderStep = when (quality) { Quality.DRAFT -> 2; else -> 1 }
 
-                // Check if on edge
-                var onEdge = false
-                if (showEdges) {
-                    for (d in 1..borderWidth.toInt().coerceAtLeast(1)) {
-                        if (col + d < w) {
-                            val adj = findNearestWithMetric((col + d).toFloat(), row.toFloat(), px, py, numPoints, distanceMetric)
-                            if (adj != nearest) { onEdge = true; break }
-                        }
-                        if (row + d < h) {
-                            val adj = findNearestWithMetric(col.toFloat(), (row + d).toFloat(), px, py, numPoints, distanceMetric)
-                            if (adj != nearest) { onEdge = true; break }
+        if (isEuclidean && !showEdges) {
+            // ── EUCLIDEAN NO-EDGE FAST PATH: nearest only, no F2 ──
+            for (row in 0 until h step renderStep) {
+                val y = row.toFloat()
+                val rowOff = row * w
+                val gy = minOf((y * invGridSize).toInt(), grM1)
+                val cyMin = maxOf(gy - 1, 0); val cyMax = minOf(gy + 1, grM1)
+                for (col in 0 until w step renderStep) {
+                    val x = col.toFloat()
+                    val gx = minOf((x * invGridSize).toInt(), gcM1)
+                    val cxMin = maxOf(gx - 1, 0); val cxMax = minOf(gx + 1, gcM1)
+                    var bd = Float.MAX_VALUE; var bi = 0
+                    for (cy in cyMin..cyMax) {
+                        val ro = cy * gridCols
+                        for (cx in cxMin..cxMax) {
+                            var ii = gridHeads[ro + cx]
+                            while (ii >= 0) {
+                                val dx = x - px[ii]; val dy = y - py[ii]
+                                val d = dx * dx + dy * dy
+                                if (d < bd) { bd = d; bi = ii }
+                                ii = gridNext[ii]
+                            }
                         }
                     }
-                }
-
-                val color = if (onEdge) {
-                    Color.BLACK
-                } else {
-                    val colors = palette.colorInts()
-                    val range = (maxNeighbors - minNeighbors).coerceAtLeast(1)
-                    val t = (nc - minNeighbors).toFloat() / range
-                    when (bandMode) {
-                        "gradient" -> palette.lerpColor(t)
-                        "alternating" -> {
-                            // Alternate between first and last palette colors based on neighbor band
-                            val bandIdx = ((nc - minNeighbors) % bandCount)
-                            if (bandIdx % 2 == 0) colors.first() else colors.last()
-                        }
-                        else -> {
-                            // "flat" - discrete color per neighbor band
-                            val bandIdx = ((nc - minNeighbors) % bandCount)
-                            colors[bandIdx % colors.size]
-                        }
+                    val color = cellColors[bi]
+                    if (renderStep == 1) {
+                        pixels[rowOff + col] = color
+                    } else {
+                        val i0 = rowOff + col
+                        pixels[i0] = color
+                        if (col + 1 < w) pixels[i0 + 1] = color
+                        if (row + 1 < h) { pixels[i0 + w] = color; if (col + 1 < w) pixels[i0 + w + 1] = color }
                     }
                 }
-
-                if (renderStep == 1) {
-                    pixels[row * w + col] = color
-                } else {
-                    for (dy in 0 until renderStep) {
-                        for (dx in 0 until renderStep) {
-                            val fx = col + dx
-                            val fy = row + dy
-                            if (fx < w && fy < h) pixels[fy * w + fx] = color
+            }
+        } else {
+            // ── GENERAL PATH with F2-F1 edge detection ──
+            val edgeThresh = borderWidth * 2f
+            val edgeThreshSq = edgeThresh * edgeThresh
+            for (row in 0 until h step renderStep) {
+                val y = row.toFloat()
+                val rowOff = row * w
+                val gy = minOf((y * invGridSize).toInt(), grM1)
+                val cyMin = maxOf(gy - 1, 0); val cyMax = minOf(gy + 1, grM1)
+                for (col in 0 until w step renderStep) {
+                    val x = col.toFloat()
+                    val gx = minOf((x * invGridSize).toInt(), gcM1)
+                    val cxMin = maxOf(gx - 1, 0); val cxMax = minOf(gx + 1, gcM1)
+                    var f1 = Float.MAX_VALUE; var f2 = Float.MAX_VALUE; var bi = 0
+                    for (cy in cyMin..cyMax) {
+                        val ro = cy * gridCols
+                        for (cx in cxMin..cxMax) {
+                            var ii = gridHeads[ro + cx]
+                            while (ii >= 0) {
+                                val dx = x - px[ii]; val dy = y - py[ii]
+                                val d = if (isEuclidean) dx * dx + dy * dy
+                                        else if (metricId == 1) abs(dx) + abs(dy)
+                                        else maxOf(abs(dx), abs(dy))
+                                if (d < f1) { f2 = f1; f1 = d; bi = ii }
+                                else if (d < f2) { f2 = d }
+                                ii = gridNext[ii]
+                            }
                         }
+                    }
+                    val sqrtF1 = if (isEuclidean) sqrt(f1) else 0f
+                    val isEdge = showEdges && if (isEuclidean)
+                        f2 < f1 + edgeThreshSq + 2f * edgeThresh * sqrtF1
+                    else (f2 - f1) < edgeThresh
+
+                    val color = if (isEdge) Color.BLACK else cellColors[bi]
+
+                    if (renderStep == 1) {
+                        pixels[rowOff + col] = color
+                    } else {
+                        val i0 = rowOff + col
+                        pixels[i0] = color
+                        if (col + 1 < w) pixels[i0 + 1] = color
+                        if (row + 1 < h) { pixels[i0 + w] = color; if (col + 1 < w) pixels[i0 + w + 1] = color }
                     }
                 }
             }
@@ -233,51 +367,6 @@ class VoronoiNeighborBandsGenerator : Generator {
 
         bitmap.setPixels(pixels, 0, w, 0, 0, w, h)
         canvas.drawBitmap(bitmap, 0f, 0f, null)
-    }
-
-    private fun computeDistance(dx: Float, dy: Float, metric: String): Float = when (metric) {
-        "Manhattan" -> kotlin.math.abs(dx) + kotlin.math.abs(dy)
-        "Chebyshev" -> maxOf(kotlin.math.abs(dx), kotlin.math.abs(dy))
-        else -> dx * dx + dy * dy // Euclidean (squared for comparison)
-    }
-
-    private fun findNearestWithMetric(
-        x: Float, y: Float,
-        px: FloatArray, py: FloatArray,
-        numPoints: Int,
-        metric: String
-    ): Int {
-        var bestDist = Float.MAX_VALUE
-        var bestIdx = 0
-        for (i in 0 until numPoints) {
-            val dx = x - px[i]
-            val dy = y - py[i]
-            val d = computeDistance(dx, dy, metric)
-            if (d < bestDist) {
-                bestDist = d
-                bestIdx = i
-            }
-        }
-        return bestIdx
-    }
-
-    private fun findNearest(
-        x: Float, y: Float,
-        px: FloatArray, py: FloatArray,
-        numPoints: Int
-    ): Int {
-        var bestDist = Float.MAX_VALUE
-        var bestIdx = 0
-        for (i in 0 until numPoints) {
-            val dx = x - px[i]
-            val dy = y - py[i]
-            val d = dx * dx + dy * dy
-            if (d < bestDist) {
-                bestDist = d
-                bestIdx = i
-            }
-        }
-        return bestIdx
     }
 
     override fun estimateCost(params: Map<String, Any>, quality: Quality): Float {

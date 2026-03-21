@@ -3,6 +3,8 @@ package com.artmondo.algomodo.generators.voronoi
 import android.graphics.Bitmap
 import android.graphics.Canvas
 import android.graphics.Color
+import android.graphics.Paint
+import android.graphics.RectF
 import com.artmondo.algomodo.core.rng.SeededRNG
 import com.artmondo.algomodo.core.rng.SimplexNoise
 import com.artmondo.algomodo.data.palettes.Palette
@@ -187,106 +189,145 @@ class VoronoiDepthGenerator : Generator {
         val specLut = FloatArray(256) { i -> specular * (i / 255f).pow(shininess) }
 
         val avgRadius = sqrt((w.toFloat() * h.toFloat()) / numPoints) * 0.5f
+        val invAvgRadius = 1f / avgRadius
         val edgeThresh = borderWidth * 2f
 
         val colors = palette.colorInts()
         val colorsSize = colors.size
         val lut = if (colorModeId != 0) palette.buildLut(256) else null
-        val pixels = IntArray(w * h)
-        val step = when (quality) { Quality.DRAFT -> 2; else -> 1 }
         val oneMinusAmbient = 1f - ambient
 
-        for (row in 0 until h step step) {
-            val y = row.toFloat()
-            val rowOff = row * w
-            val gy = minOf((y * invGridSize).toInt(), grM1)
-            val cyMin = maxOf(gy - 1, 0); val cyMax = minOf(gy + 1, grM1)
-            for (col in 0 until w step step) {
-                val x = col.toFloat()
-                val gx = minOf((x * invGridSize).toInt(), gcM1)
-                val cxMin = maxOf(gx - 1, 0); val cxMax = minOf(gx + 1, gcM1)
-                var bestDist = Float.MAX_VALUE; var secondDist = Float.MAX_VALUE; var bestIdx = 0
-                for (cy in cyMin..cyMax) {
-                    val ro = cy * gridCols
-                    for (cx in cxMin..cxMax) {
-                        var idx = gridHeads[ro + cx]
-                        while (idx >= 0) {
-                            val dx = x - px[idx]; val dy = y - py[idx]
-                            val d = if (isEuclidean) dx * dx + dy * dy
-                                    else if (metricId == 1) abs(dx) + abs(dy)
-                                    else maxOf(abs(dx), abs(dy))
-                            if (d < bestDist) { secondDist = bestDist; bestDist = d; bestIdx = idx }
-                            else if (d < secondDist) { secondDist = d }
-                            idx = gridNext[idx]
+        // Coarse rendering + bilinear upscale for speed
+        val renderScale = when (quality) { Quality.DRAFT -> 3; Quality.BALANCED -> 2; Quality.ULTRA -> 1 }
+        val rw = (w + renderScale - 1) / renderScale
+        val rh = (h + renderScale - 1) / renderScale
+        val rsf = renderScale.toFloat()
+        val pixels = IntArray(rw * rh)
+
+        if (isEuclidean) {
+            // ── EUCLIDEAN FAST PATH: no metric branch in inner loop ──
+            for (row in 0 until rh) {
+                val y = row * rsf
+                val rowOff = row * rw
+                val gy = minOf((y * invGridSize).toInt(), grM1)
+                val cyMin = maxOf(gy - 1, 0); val cyMax = minOf(gy + 1, grM1)
+                for (col in 0 until rw) {
+                    val x = col * rsf
+                    val gx = minOf((x * invGridSize).toInt(), gcM1)
+                    val cxMin = maxOf(gx - 1, 0); val cxMax = minOf(gx + 1, gcM1)
+                    var bestDist = Float.MAX_VALUE; var secondDist = Float.MAX_VALUE; var bestIdx = 0
+                    for (cy in cyMin..cyMax) {
+                        val ro = cy * gridCols
+                        for (cx in cxMin..cxMax) {
+                            var idx = gridHeads[ro + cx]
+                            while (idx >= 0) {
+                                val dx = x - px[idx]; val dy = y - py[idx]
+                                val d = dx * dx + dy * dy
+                                if (d < bestDist) { secondDist = bestDist; bestDist = d; bestIdx = idx }
+                                else if (d < secondDist) { secondDist = d }
+                                idx = gridNext[idx]
+                            }
                         }
                     }
-                }
-
-                // Border detection
-                if (showBorders && (secondDist - bestDist) < edgeThresh) {
-                    if (step == 1) {
-                        pixels[rowOff + col] = Color.BLACK
-                    } else {
-                        val i0 = rowOff + col
-                        pixels[i0] = Color.BLACK
-                        if (col + 1 < w) pixels[i0 + 1] = Color.BLACK
-                        if (row + 1 < h) { pixels[i0 + w] = Color.BLACK; if (col + 1 < w) pixels[i0 + w + 1] = Color.BLACK }
+                    if (showBorders && (secondDist - bestDist) < edgeThresh) {
+                        pixels[rowOff + col] = Color.BLACK; continue
                     }
-                    continue
-                }
-
-                // Surface normal from pixel to cell centre
-                val toCentreX = px[bestIdx] - col
-                val toCentreY = py[bestIdx] - row
-                val dist = sqrt(toCentreX * toCentreX + toCentreY * toCentreY)
-
-                val nx: Float; val ny: Float
-                if (dist > 0.001f) { nx = toCentreX / dist; ny = toCentreY / dist }
-                else { nx = 0f; ny = 0f }
-
-                val edgeFactor = (1f - (dist / avgRadius).coerceIn(0f, 1f))
-                val normalStrength = edgeFactor * depth
-                val snx = nx * normalStrength
-                val sny = ny * normalStrength
-                val snz = sqrt((1f - normalStrength * normalStrength).coerceAtLeast(0f))
-
-                // Diffuse
-                val diffuseDot = (snx * lightX + sny * lightY + snz * lightZ).coerceIn(0f, 1f)
-
-                // Specular via LUT
-                val specDot = (snx * hx + sny * hy + snz * hz).coerceIn(0f, 1f)
-                val specTerm = specLut[(specDot * 255f).toInt().coerceAtMost(255)]
-
-                val shading = (ambient + oneMinusAmbient * diffuseDot).coerceIn(0f, 1f)
-
-                // Base color
-                val baseColor = when (colorModeId) {
-                    1 -> { // By Position
-                        val t = ((px[bestIdx] / w + py[bestIdx] / h) * 0.5f).coerceIn(0f, 1f)
-                        lut!![(t * 255f).toInt().coerceIn(0, 255)]
+                    val toCentreX = px[bestIdx] - x
+                    val toCentreY = py[bestIdx] - y
+                    val dist = sqrt(toCentreX * toCentreX + toCentreY * toCentreY)
+                    val nx: Float; val ny: Float
+                    if (dist > 0.001f) { nx = toCentreX / dist; ny = toCentreY / dist }
+                    else { nx = 0f; ny = 0f }
+                    val edgeFactor = (1f - dist * invAvgRadius).coerceIn(0f, 1f)
+                    val normalStrength = edgeFactor * depth
+                    val snx = nx * normalStrength
+                    val sny = ny * normalStrength
+                    val ns2 = normalStrength * normalStrength
+                    val snz = 1f - 0.5f * ns2 // fast approx of sqrt(1 - ns²)
+                    val diffuseDot = (snx * lightX + sny * lightY + snz * lightZ).coerceIn(0f, 1f)
+                    val specDot = (snx * hx + sny * hy + snz * hz).coerceIn(0f, 1f)
+                    val specTerm = specLut[(specDot * 255f).toInt().coerceAtMost(255)]
+                    val shading = (ambient + oneMinusAmbient * diffuseDot).coerceIn(0f, 1f)
+                    val baseColor = when (colorModeId) {
+                        1 -> { val t = ((px[bestIdx] / w + py[bestIdx] / h) * 0.5f).coerceIn(0f, 1f); lut!![(t * 255f).toInt().coerceIn(0, 255)] }
+                        2 -> lut!![(snz.coerceIn(0f, 1f) * 255f).toInt().coerceIn(0, 255)]
+                        else -> colors[bestIdx % colorsSize]
                     }
-                    2 -> lut!![(snz.coerceIn(0f, 1f) * 255f).toInt().coerceIn(0, 255)] // By Normal-Z
-                    else -> colors[bestIdx % colorsSize]
+                    pixels[rowOff + col] = Color.rgb(
+                        (Color.red(baseColor) * shading + 255f * specTerm).toInt().coerceIn(0, 255),
+                        (Color.green(baseColor) * shading + 255f * specTerm).toInt().coerceIn(0, 255),
+                        (Color.blue(baseColor) * shading + 255f * specTerm).toInt().coerceIn(0, 255)
+                    )
                 }
-
-                val br = (Color.red(baseColor) * shading + 255f * specTerm).toInt().coerceIn(0, 255)
-                val bg = (Color.green(baseColor) * shading + 255f * specTerm).toInt().coerceIn(0, 255)
-                val bb = (Color.blue(baseColor) * shading + 255f * specTerm).toInt().coerceIn(0, 255)
-                val color = Color.rgb(br, bg, bb)
-
-                if (step == 1) {
-                    pixels[rowOff + col] = color
-                } else {
-                    val i0 = rowOff + col
-                    pixels[i0] = color
-                    if (col + 1 < w) pixels[i0 + 1] = color
-                    if (row + 1 < h) { pixels[i0 + w] = color; if (col + 1 < w) pixels[i0 + w + 1] = color }
+            }
+        } else {
+            // ── NON-EUCLIDEAN PATH ──
+            for (row in 0 until rh) {
+                val y = row * rsf
+                val rowOff = row * rw
+                val gy = minOf((y * invGridSize).toInt(), grM1)
+                val cyMin = maxOf(gy - 1, 0); val cyMax = minOf(gy + 1, grM1)
+                for (col in 0 until rw) {
+                    val x = col * rsf
+                    val gx = minOf((x * invGridSize).toInt(), gcM1)
+                    val cxMin = maxOf(gx - 1, 0); val cxMax = minOf(gx + 1, gcM1)
+                    var bestDist = Float.MAX_VALUE; var secondDist = Float.MAX_VALUE; var bestIdx = 0
+                    for (cy in cyMin..cyMax) {
+                        val ro = cy * gridCols
+                        for (cx in cxMin..cxMax) {
+                            var idx = gridHeads[ro + cx]
+                            while (idx >= 0) {
+                                val dx = x - px[idx]; val dy = y - py[idx]
+                                val d = if (metricId == 1) abs(dx) + abs(dy) else maxOf(abs(dx), abs(dy))
+                                if (d < bestDist) { secondDist = bestDist; bestDist = d; bestIdx = idx }
+                                else if (d < secondDist) { secondDist = d }
+                                idx = gridNext[idx]
+                            }
+                        }
+                    }
+                    if (showBorders && (secondDist - bestDist) < edgeThresh) {
+                        pixels[rowOff + col] = Color.BLACK; continue
+                    }
+                    val toCentreX = px[bestIdx] - x
+                    val toCentreY = py[bestIdx] - y
+                    val dist = sqrt(toCentreX * toCentreX + toCentreY * toCentreY)
+                    val nx: Float; val ny: Float
+                    if (dist > 0.001f) { nx = toCentreX / dist; ny = toCentreY / dist }
+                    else { nx = 0f; ny = 0f }
+                    val edgeFactor = (1f - dist * invAvgRadius).coerceIn(0f, 1f)
+                    val normalStrength = edgeFactor * depth
+                    val snx = nx * normalStrength
+                    val sny = ny * normalStrength
+                    val ns2 = normalStrength * normalStrength
+                    val snz = 1f - 0.5f * ns2
+                    val diffuseDot = (snx * lightX + sny * lightY + snz * lightZ).coerceIn(0f, 1f)
+                    val specDot = (snx * hx + sny * hy + snz * hz).coerceIn(0f, 1f)
+                    val specTerm = specLut[(specDot * 255f).toInt().coerceAtMost(255)]
+                    val shading = (ambient + oneMinusAmbient * diffuseDot).coerceIn(0f, 1f)
+                    val baseColor = when (colorModeId) {
+                        1 -> { val t = ((px[bestIdx] / w + py[bestIdx] / h) * 0.5f).coerceIn(0f, 1f); lut!![(t * 255f).toInt().coerceIn(0, 255)] }
+                        2 -> lut!![(snz.coerceIn(0f, 1f) * 255f).toInt().coerceIn(0, 255)]
+                        else -> colors[bestIdx % colorsSize]
+                    }
+                    pixels[rowOff + col] = Color.rgb(
+                        (Color.red(baseColor) * shading + 255f * specTerm).toInt().coerceIn(0, 255),
+                        (Color.green(baseColor) * shading + 255f * specTerm).toInt().coerceIn(0, 255),
+                        (Color.blue(baseColor) * shading + 255f * specTerm).toInt().coerceIn(0, 255)
+                    )
                 }
             }
         }
 
-        bitmap.setPixels(pixels, 0, w, 0, 0, w, h)
-        canvas.drawBitmap(bitmap, 0f, 0f, null)
+        if (renderScale == 1) {
+            bitmap.setPixels(pixels, 0, w, 0, 0, w, h)
+            canvas.drawBitmap(bitmap, 0f, 0f, null)
+        } else {
+            val smallBmp = Bitmap.createBitmap(rw, rh, Bitmap.Config.ARGB_8888)
+            smallBmp.setPixels(pixels, 0, rw, 0, 0, rw, rh)
+            val upPaint = Paint(Paint.FILTER_BITMAP_FLAG)
+            canvas.drawBitmap(smallBmp, null, RectF(0f, 0f, w.toFloat(), h.toFloat()), upPaint)
+            smallBmp.recycle()
+        }
     }
 
     override fun estimateCost(params: Map<String, Any>, quality: Quality): Float {
