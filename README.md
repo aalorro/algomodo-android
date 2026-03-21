@@ -6,7 +6,7 @@ Create stunning algorithmic art using pure mathematics — noise functions, cell
 
 ## Features
 
-- **116 generators** across 11 families (animation, cellular automata, fractals, geometry, graphs, image processing, noise, plotter, procedural, text, Voronoi)
+- **117 generators** across 11 families (animation, cellular automata, fractals, geometry, graphs, image processing, noise, plotter, procedural, text, Voronoi)
 - **Over 9.5 million unique parameter configurations** — before accounting for seeds, which multiply the space into the trillions
 - **Deterministic rendering** — same seed and parameters always produce the same output
 - **Animation support** — play, export as GIF or MP4
@@ -27,7 +27,7 @@ Create stunning algorithmic art using pure mathematics — noise functions, cell
 |--------|-------|---------|
 | Animation | 8 | Attractor Trails, Curl Fluid, Kaleidoscope, Plasma Feedback |
 | Cellular Automata | 14 | Game of Life, Reaction Diffusion, Turing Patterns, DLA |
-| Fractals | 9 | Mandelbrot, Julia, Burning Ship, Fractal Flames, Multibrot, Orbit Traps, Strange Attractors |
+| Fractals | 10 | Mandelbrot, Julia, Burning Ship, Fractal Flames, Multibrot, Orbit Traps, Pythagoras Tree, Strange Attractors |
 | Geometry | 11 | Islamic Patterns, L-System, Recursive Subdivision, Spirograph, Truchet Tiles |
 | Graphs | 11 | Geodesic, Constrained Delaunay, Anisotropic, Euler Trails, K-Nearest Neighbor, Gabriel, Planar |
 | Image Processing | 14 | Pixel Sort, Halftone, ASCII Art, Glitch Transform |
@@ -47,7 +47,7 @@ Create stunning algorithmic art using pure mathematics — noise functions, cell
 - **Reload** — re-render with current settings (useful after changing post-FX)
 
 **Tabs:**
-1. **Generators** — browse and select from 116 generators across 11 families
+1. **Generators** — browse and select from 117 generators across 11 families
 2. **Params** — adjust parameters, lock individual params to preserve during randomization
 3. **Export** — save images, export/import recipes
 4. **Settings** — theme, quality, FPS, post-processing

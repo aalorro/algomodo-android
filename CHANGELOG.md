@@ -2,6 +2,24 @@
 
 All notable changes to Algomodo will be documented in this file.
 
+## [1.5.2] - Android
+
+### New Generators (1)
+- Added Pythagoras Tree generator (fractals family)
+- Total generators: 117 across 11 families (up from 116)
+
+### Performance
+- Optimized all 11 Voronoi generators with spatial grids, linked-list indexing, and metric-split render paths (Euclidean/Manhattan/Chebyshev)
+- Voronoi Ridges: per-octave spatial grids, sharpness LUT, color LUTs, bilinear upscale for animation
+- Voronoi Weighted: per-row dy² caching, prevBest coherence hint, no-border fast path, sqrt-free power/multiplicative modes
+- Voronoi Crackle, Depth, Cells, Contours, Centroidal, Fractured, Mosaic, Neighbor Bands: inline abs, early-exit pruning, eliminated per-pixel allocations
+
+### Improvements
+- Added render debounce to StaticCanvas for smoother interaction during rapid parameter changes
+- Export panel keyboard actions for video start/end time inputs
+- Smarter animation parameter randomization (ensures non-zero speed values)
+- Recursive Subdivision minimum depth set to 3
+
 ## [1.5.1] - Android
 
 ### Improvements

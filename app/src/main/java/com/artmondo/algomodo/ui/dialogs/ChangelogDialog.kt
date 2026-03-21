@@ -18,6 +18,18 @@ fun ChangelogDialog(onDismiss: () -> Unit) {
         text = {
             Text(
                 text = """
+v1.5.2 (Android)
+New Generator:
+- Pythagoras Tree (fractals) — total: 117 generators
+
+Performance:
+- Optimized all 11 Voronoi generators (spatial grids, metric-split paths, sqrt elimination)
+
+Improvements:
+- Render debounce for smoother parameter changes
+- Export panel keyboard improvements
+- Smarter animation parameter randomization
+
 v1.5.1 (Android)
 Improvements:
 - Rewrote IFS/Barnsley (histogram rendering, lean/curl/spread, symmetry, tone mapping)
