@@ -9,6 +9,7 @@ import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.focus.onFocusChanged
+import androidx.compose.ui.platform.LocalFocusManager
 import androidx.compose.ui.text.TextRange
 import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.text.input.TextFieldValue
@@ -56,6 +57,7 @@ fun ExportPanel(
     generatorStyleName: String = "",
     modifier: Modifier = Modifier
 ) {
+    val focusManager = LocalFocusManager.current
     var showRecipeDialog by remember { mutableStateOf(false) }
 
     Column(
@@ -199,6 +201,7 @@ fun ExportPanel(
                         val v = startText.toIntOrNull()?.coerceAtLeast(0) ?: 0
                         startText = v.toString()
                         onVideoStartChange(v)
+                        focusManager.clearFocus()
                     }),
                     modifier = Modifier
                         .weight(1f)
@@ -220,6 +223,7 @@ fun ExportPanel(
                         val v = endText.toIntOrNull()?.coerceAtLeast(1) ?: 30
                         endText = v.toString()
                         onVideoEndChange(v)
+                        focusManager.clearFocus()
                     }),
                     modifier = Modifier
                         .weight(1f)
