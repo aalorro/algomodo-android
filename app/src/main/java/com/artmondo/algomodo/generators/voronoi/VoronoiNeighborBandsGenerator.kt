@@ -10,7 +10,6 @@ import com.artmondo.algomodo.generators.Generator
 import com.artmondo.algomodo.generators.ParamGroup
 import com.artmondo.algomodo.generators.Parameter
 import com.artmondo.algomodo.generators.Quality
-import kotlin.math.abs
 import kotlin.math.sqrt
 
 /**
@@ -129,10 +128,12 @@ class VoronoiNeighborBandsGenerator : Generator {
                             for (cx in cxMin..cxMax) {
                                 var ii = rGh[ro + cx]
                                 while (ii >= 0) {
-                                    val dx = xf - px[ii]; val dy = yf - py[ii]
-                                    val d = if (isEuclidean) dx * dx + dy * dy
-                                            else if (metricId == 1) abs(dx) + abs(dy)
-                                            else maxOf(abs(dx), abs(dy))
+                                    val ddx = xf - px[ii]; val ddy = yf - py[ii]
+                                    val d = when (metricId) {
+                                        1 -> { val ax = if (ddx < 0f) -ddx else ddx; val ay = if (ddy < 0f) -ddy else ddy; ax + ay }
+                                        2 -> { val ax = if (ddx < 0f) -ddx else ddx; val ay = if (ddy < 0f) -ddy else ddy; if (ax > ay) ax else ay }
+                                        else -> ddx * ddx + ddy * ddy
+                                    }
                                     if (d < bd) { bd = d; bi = ii }
                                     ii = rGn[ii]
                                 }
@@ -206,6 +207,34 @@ class VoronoiNeighborBandsGenerator : Generator {
                     cellMap[mapRowOff + col] = bi
                 }
             }
+        } else if (metricId == 1) {
+            for (row in 0 until mh) {
+                val ry = (row * mapStep).toFloat()
+                val gy = minOf((ry * invGridSize).toInt(), grM1)
+                val cyMin = maxOf(gy - 1, 0); val cyMax = minOf(gy + 1, grM1)
+                val mapRowOff = row * mw
+                for (col in 0 until mw) {
+                    val rx = (col * mapStep).toFloat()
+                    val gx = minOf((rx * invGridSize).toInt(), gcM1)
+                    val cxMin = maxOf(gx - 1, 0); val cxMax = minOf(gx + 1, gcM1)
+                    var bd = Float.MAX_VALUE; var bi = 0
+                    for (cy in cyMin..cyMax) {
+                        val ro = cy * gridCols
+                        for (cx in cxMin..cxMax) {
+                            var ii = gridHeads[ro + cx]
+                            while (ii >= 0) {
+                                val dx = rx - px[ii]; val dy = ry - py[ii]
+                                val adx = if (dx < 0f) -dx else dx
+                                val ady = if (dy < 0f) -dy else dy
+                                val d = adx + ady
+                                if (d < bd) { bd = d; bi = ii }
+                                ii = gridNext[ii]
+                            }
+                        }
+                    }
+                    cellMap[mapRowOff + col] = bi
+                }
+            }
         } else {
             for (row in 0 until mh) {
                 val ry = (row * mapStep).toFloat()
@@ -223,7 +252,9 @@ class VoronoiNeighborBandsGenerator : Generator {
                             var ii = gridHeads[ro + cx]
                             while (ii >= 0) {
                                 val dx = rx - px[ii]; val dy = ry - py[ii]
-                                val d = if (metricId == 1) abs(dx) + abs(dy) else maxOf(abs(dx), abs(dy))
+                                val adx = if (dx < 0f) -dx else dx
+                                val ady = if (dy < 0f) -dy else dy
+                                val d = if (adx > ady) adx else ady
                                 if (d < bd) { bd = d; bi = ii }
                                 ii = gridNext[ii]
                             }
@@ -256,7 +287,7 @@ class VoronoiNeighborBandsGenerator : Generator {
         val minNeighbors = neighborCounts.minOrNull() ?: 0
         val range = (maxNeighbors - minNeighbors).coerceAtLeast(1)
 
-        // Pre-compute cell colors (avoids per-pixel palette lookups)
+        // Pre-compute cell colors
         val colors = palette.colorInts()
         val colorsSize = colors.size
         val lut = if (bandModeId == 1) palette.buildLut(256) else null
@@ -264,18 +295,9 @@ class VoronoiNeighborBandsGenerator : Generator {
         for (i in 0 until numPoints) {
             val nc = neighborCounts[i]
             cellColors[i] = when (bandModeId) {
-                1 -> { // gradient
-                    val t = (nc - minNeighbors).toFloat() / range
-                    lut!![(t * 255f).toInt().coerceIn(0, 255)]
-                }
-                2 -> { // alternating
-                    val bandIdx = (nc - minNeighbors) % bandCount
-                    if (bandIdx % 2 == 0) colors.first() else colors.last()
-                }
-                else -> { // flat
-                    val bandIdx = (nc - minNeighbors) % bandCount
-                    colors[bandIdx % colorsSize]
-                }
+                1 -> { val t = (nc - minNeighbors).toFloat() / range; lut!![(t * 255f).toInt().coerceIn(0, 255)] }
+                2 -> { val bandIdx = (nc - minNeighbors) % bandCount; if (bandIdx % 2 == 0) colors.first() else colors.last() }
+                else -> { val bandIdx = (nc - minNeighbors) % bandCount; colors[bandIdx % colorsSize] }
             }
         }
 
@@ -283,7 +305,7 @@ class VoronoiNeighborBandsGenerator : Generator {
         val renderStep = when (quality) { Quality.DRAFT -> 2; else -> 1 }
 
         if (isEuclidean && !showEdges) {
-            // ── EUCLIDEAN NO-EDGE FAST PATH: nearest only, no F2 ──
+            // ── EUCLIDEAN NO-EDGE FAST PATH ──
             for (row in 0 until h step renderStep) {
                 val y = row.toFloat()
                 val rowOff = row * w
@@ -317,8 +339,8 @@ class VoronoiNeighborBandsGenerator : Generator {
                     }
                 }
             }
-        } else {
-            // ── GENERAL PATH with F2-F1 edge detection ──
+        } else if (isEuclidean) {
+            // ── EUCLIDEAN WITH EDGES ──
             val edgeThresh = borderWidth * 2f
             val edgeThreshSq = edgeThresh * edgeThresh
             for (row in 0 until h step renderStep) {
@@ -337,22 +359,100 @@ class VoronoiNeighborBandsGenerator : Generator {
                             var ii = gridHeads[ro + cx]
                             while (ii >= 0) {
                                 val dx = x - px[ii]; val dy = y - py[ii]
-                                val d = if (isEuclidean) dx * dx + dy * dy
-                                        else if (metricId == 1) abs(dx) + abs(dy)
-                                        else maxOf(abs(dx), abs(dy))
+                                val d = dx * dx + dy * dy
                                 if (d < f1) { f2 = f1; f1 = d; bi = ii }
                                 else if (d < f2) { f2 = d }
                                 ii = gridNext[ii]
                             }
                         }
                     }
-                    val sqrtF1 = if (isEuclidean) sqrt(f1) else 0f
-                    val isEdge = showEdges && if (isEuclidean)
-                        f2 < f1 + edgeThreshSq + 2f * edgeThresh * sqrtF1
-                    else (f2 - f1) < edgeThresh
-
+                    val sqrtF1 = sqrt(f1)
+                    val isEdge = f2 < f1 + edgeThreshSq + 2f * edgeThresh * sqrtF1
                     val color = if (isEdge) Color.BLACK else cellColors[bi]
-
+                    if (renderStep == 1) {
+                        pixels[rowOff + col] = color
+                    } else {
+                        val i0 = rowOff + col
+                        pixels[i0] = color
+                        if (col + 1 < w) pixels[i0 + 1] = color
+                        if (row + 1 < h) { pixels[i0 + w] = color; if (col + 1 < w) pixels[i0 + w + 1] = color }
+                    }
+                }
+            }
+        } else if (metricId == 1) {
+            // ── MANHATTAN PATH: inline abs, early exit on |dx| ──
+            val edgeThresh = borderWidth * 2f
+            for (row in 0 until h step renderStep) {
+                val y = row.toFloat()
+                val rowOff = row * w
+                val gy = minOf((y * invGridSize).toInt(), grM1)
+                val cyMin = maxOf(gy - 1, 0); val cyMax = minOf(gy + 1, grM1)
+                for (col in 0 until w step renderStep) {
+                    val x = col.toFloat()
+                    val gx = minOf((x * invGridSize).toInt(), gcM1)
+                    val cxMin = maxOf(gx - 1, 0); val cxMax = minOf(gx + 1, gcM1)
+                    var f1 = Float.MAX_VALUE; var f2 = Float.MAX_VALUE; var bi = 0
+                    for (cy in cyMin..cyMax) {
+                        val ro = cy * gridCols
+                        for (cx in cxMin..cxMax) {
+                            var ii = gridHeads[ro + cx]
+                            while (ii >= 0) {
+                                val dx = x - px[ii]; val dy = y - py[ii]
+                                val adx = if (dx < 0f) -dx else dx
+                                if (adx < f1) {
+                                    val ady = if (dy < 0f) -dy else dy
+                                    val d = adx + ady
+                                    if (d < f1) { f2 = f1; f1 = d; bi = ii }
+                                    else if (d < f2) { f2 = d }
+                                }
+                                ii = gridNext[ii]
+                            }
+                        }
+                    }
+                    val isEdge = showEdges && (f2 - f1) < edgeThresh
+                    val color = if (isEdge) Color.BLACK else cellColors[bi]
+                    if (renderStep == 1) {
+                        pixels[rowOff + col] = color
+                    } else {
+                        val i0 = rowOff + col
+                        pixels[i0] = color
+                        if (col + 1 < w) pixels[i0 + 1] = color
+                        if (row + 1 < h) { pixels[i0 + w] = color; if (col + 1 < w) pixels[i0 + w + 1] = color }
+                    }
+                }
+            }
+        } else {
+            // ── CHEBYSHEV PATH: inline abs/max, early exit on |dx| ──
+            val edgeThresh = borderWidth * 2f
+            for (row in 0 until h step renderStep) {
+                val y = row.toFloat()
+                val rowOff = row * w
+                val gy = minOf((y * invGridSize).toInt(), grM1)
+                val cyMin = maxOf(gy - 1, 0); val cyMax = minOf(gy + 1, grM1)
+                for (col in 0 until w step renderStep) {
+                    val x = col.toFloat()
+                    val gx = minOf((x * invGridSize).toInt(), gcM1)
+                    val cxMin = maxOf(gx - 1, 0); val cxMax = minOf(gx + 1, gcM1)
+                    var f1 = Float.MAX_VALUE; var f2 = Float.MAX_VALUE; var bi = 0
+                    for (cy in cyMin..cyMax) {
+                        val ro = cy * gridCols
+                        for (cx in cxMin..cxMax) {
+                            var ii = gridHeads[ro + cx]
+                            while (ii >= 0) {
+                                val dx = x - px[ii]; val dy = y - py[ii]
+                                val adx = if (dx < 0f) -dx else dx
+                                if (adx < f1) {
+                                    val ady = if (dy < 0f) -dy else dy
+                                    val d = if (adx > ady) adx else ady
+                                    if (d < f1) { f2 = f1; f1 = d; bi = ii }
+                                    else if (d < f2) { f2 = d }
+                                }
+                                ii = gridNext[ii]
+                            }
+                        }
+                    }
+                    val isEdge = showEdges && (f2 - f1) < edgeThresh
+                    val color = if (isEdge) Color.BLACK else cellColors[bi]
                     if (renderStep == 1) {
                         pixels[rowOff + col] = color
                     } else {

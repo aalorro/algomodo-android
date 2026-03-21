@@ -10,7 +10,6 @@ import com.artmondo.algomodo.generators.Generator
 import com.artmondo.algomodo.generators.ParamGroup
 import com.artmondo.algomodo.generators.Parameter
 import com.artmondo.algomodo.generators.Quality
-import kotlin.math.abs
 import kotlin.math.sqrt
 
 /**
@@ -268,8 +267,8 @@ class VoronoiFracturedGenerator : Generator {
                     }
                 }
             }
-        } else {
-            // ── NON-EUCLIDEAN PATH ──
+        } else if (metricId == 1) {
+            // ── MANHATTAN PATH: inline abs, no branches in inner loop ──
             for (row in 0 until h step step) {
                 val y = row.toFloat()
                 val rowOff = row * w
@@ -279,6 +278,7 @@ class VoronoiFracturedGenerator : Generator {
                 val cyMin1 = maxOf(gy1v - 1, 0); val cyMax1 = minOf(gy1v + 1, gr1M1)
                 for (col in 0 until w step step) {
                     val x = col.toFloat()
+                    // Level 0
                     val gx0v = minOf((x * invGs0).toInt(), gc0M1)
                     val cxMin0 = maxOf(gx0v - 1, 0); val cxMax0 = minOf(gx0v + 1, gc0M1)
                     var f1a = Float.MAX_VALUE; var f2a = Float.MAX_VALUE; var near0 = 0
@@ -288,14 +288,18 @@ class VoronoiFracturedGenerator : Generator {
                             var ii = gh0[ro + cx]
                             while (ii >= 0) {
                                 val dx = x - px0[ii]; val dy = y - py0[ii]
-                                val d = if (metricId == 1) abs(dx) + abs(dy) else maxOf(abs(dx), abs(dy))
-                                if (d < f1a) { f2a = f1a; f1a = d; near0 = ii }
-                                else if (d < f2a) { f2a = d }
+                                val adx = if (dx < 0f) -dx else dx
+                                if (adx < f1a) {
+                                    val ady = if (dy < 0f) -dy else dy
+                                    val d = adx + ady
+                                    if (d < f1a) { f2a = f1a; f1a = d; near0 = ii }
+                                    else if (d < f2a) { f2a = d }
+                                }
                                 ii = gn0[ii]
                             }
                         }
                     }
-
+                    // Level 1
                     val gx1v = minOf((x * invGs1).toInt(), gc1M1)
                     val cxMin1 = maxOf(gx1v - 1, 0); val cxMax1 = minOf(gx1v + 1, gc1M1)
                     var f1b = Float.MAX_VALUE; var f2b = Float.MAX_VALUE; var near1 = 0
@@ -305,9 +309,113 @@ class VoronoiFracturedGenerator : Generator {
                             var ii = gh1[ro + cx]
                             while (ii >= 0) {
                                 val dx = x - px1[ii]; val dy = y - py1[ii]
-                                val d = if (metricId == 1) abs(dx) + abs(dy) else maxOf(abs(dx), abs(dy))
-                                if (d < f1b) { f2b = f1b; f1b = d; near1 = ii }
-                                else if (d < f2b) { f2b = d }
+                                val adx = if (dx < 0f) -dx else dx
+                                if (adx < f1b) {
+                                    val ady = if (dy < 0f) -dy else dy
+                                    val d = adx + ady
+                                    if (d < f1b) { f2b = f1b; f1b = d; near1 = ii }
+                                    else if (d < f2b) { f2b = d }
+                                }
+                                ii = gn1[ii]
+                            }
+                        }
+                    }
+
+                    val isCrack = crackWidth > 0f && (f2a - f1a) < crackThresh
+                    val isFracture = fractureWidth > 0f && (f2b - f1b) < fractureThresh
+                    val combinedIndex = near0 * 7 + near1
+
+                    val baseColor = when (colorModeId) {
+                        1 -> {
+                            val t = if (numPoints > 1) near0.toFloat() / (numPoints - 1).toFloat() else 0f
+                            lut!![(t * 255f).toInt().coerceIn(0, 255)]
+                        }
+                        2 -> {
+                            val baseC = colors[0]
+                            val br = 0.5f + 0.5f * ((combinedIndex * 4973) and 0xFF) / 255f
+                            Color.rgb((Color.red(baseC) * br).toInt().coerceIn(0, 255),
+                                (Color.green(baseC) * br).toInt().coerceIn(0, 255),
+                                (Color.blue(baseC) * br).toInt().coerceIn(0, 255))
+                        }
+                        else -> colors[(combinedIndex and 0x7FFFFFFF) % colorsSize]
+                    }
+
+                    val color = if (shadeStrength > 0f) {
+                        val nx = ((x - px0[near0]) * invCellRadius).coerceIn(-1f, 1f)
+                        val ny = ((y - py0[near0]) * invCellRadius).coerceIn(-1f, 1f)
+                        val shade = 1f + (nx * lightDirX + ny * lightDirY) * shadeStrength * 0.5f
+                        Color.rgb((Color.red(baseColor) * shade).toInt().coerceIn(0, 255),
+                            (Color.green(baseColor) * shade).toInt().coerceIn(0, 255),
+                            (Color.blue(baseColor) * shade).toInt().coerceIn(0, 255))
+                    } else baseColor
+
+                    val finalColor = when {
+                        isCrack -> Color.BLACK
+                        isFracture -> Color.rgb((Color.red(color) * 0.4f).toInt(),
+                            (Color.green(color) * 0.4f).toInt(),
+                            (Color.blue(color) * 0.4f).toInt())
+                        else -> color
+                    }
+
+                    if (step == 1) {
+                        pixels[rowOff + col] = finalColor
+                    } else {
+                        val i0 = rowOff + col
+                        pixels[i0] = finalColor
+                        if (col + 1 < w) pixels[i0 + 1] = finalColor
+                        if (row + 1 < h) { pixels[i0 + w] = finalColor; if (col + 1 < w) pixels[i0 + w + 1] = finalColor }
+                    }
+                }
+            }
+        } else {
+            // ── CHEBYSHEV PATH: inline abs/max, early exit on |dx| ──
+            for (row in 0 until h step step) {
+                val y = row.toFloat()
+                val rowOff = row * w
+                val gy0v = minOf((y * invGs0).toInt(), gr0M1)
+                val cyMin0 = maxOf(gy0v - 1, 0); val cyMax0 = minOf(gy0v + 1, gr0M1)
+                val gy1v = minOf((y * invGs1).toInt(), gr1M1)
+                val cyMin1 = maxOf(gy1v - 1, 0); val cyMax1 = minOf(gy1v + 1, gr1M1)
+                for (col in 0 until w step step) {
+                    val x = col.toFloat()
+                    // Level 0
+                    val gx0v = minOf((x * invGs0).toInt(), gc0M1)
+                    val cxMin0 = maxOf(gx0v - 1, 0); val cxMax0 = minOf(gx0v + 1, gc0M1)
+                    var f1a = Float.MAX_VALUE; var f2a = Float.MAX_VALUE; var near0 = 0
+                    for (cy in cyMin0..cyMax0) {
+                        val ro = cy * gc0
+                        for (cx in cxMin0..cxMax0) {
+                            var ii = gh0[ro + cx]
+                            while (ii >= 0) {
+                                val dx = x - px0[ii]; val dy = y - py0[ii]
+                                val adx = if (dx < 0f) -dx else dx
+                                if (adx < f1a) {
+                                    val ady = if (dy < 0f) -dy else dy
+                                    val d = if (adx > ady) adx else ady
+                                    if (d < f1a) { f2a = f1a; f1a = d; near0 = ii }
+                                    else if (d < f2a) { f2a = d }
+                                }
+                                ii = gn0[ii]
+                            }
+                        }
+                    }
+                    // Level 1
+                    val gx1v = minOf((x * invGs1).toInt(), gc1M1)
+                    val cxMin1 = maxOf(gx1v - 1, 0); val cxMax1 = minOf(gx1v + 1, gc1M1)
+                    var f1b = Float.MAX_VALUE; var f2b = Float.MAX_VALUE; var near1 = 0
+                    for (cy in cyMin1..cyMax1) {
+                        val ro = cy * gc1
+                        for (cx in cxMin1..cxMax1) {
+                            var ii = gh1[ro + cx]
+                            while (ii >= 0) {
+                                val dx = x - px1[ii]; val dy = y - py1[ii]
+                                val adx = if (dx < 0f) -dx else dx
+                                if (adx < f1b) {
+                                    val ady = if (dy < 0f) -dy else dy
+                                    val d = if (adx > ady) adx else ady
+                                    if (d < f1b) { f2b = f1b; f1b = d; near1 = ii }
+                                    else if (d < f2b) { f2b = d }
+                                }
                                 ii = gn1[ii]
                             }
                         }
