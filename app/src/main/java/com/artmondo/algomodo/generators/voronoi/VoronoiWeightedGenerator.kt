@@ -236,6 +236,7 @@ class VoronoiWeightedGenerator : Generator {
                             var bestIdx = prevBest
                             var secondDist = Float.MAX_VALUE
                             for (i in 0 until numPoints) {
+                                if (i == prevBest) continue
                                 dx = x - px[i]
                                 val distSq = dx * dx + dySq[i]
                                 // Filter: skip sqrt when point can't beat secondDist
@@ -280,6 +281,7 @@ class VoronoiWeightedGenerator : Generator {
                             var bestDist = sqrt(dx * dx + dySq[prevBest]) - weights[prevBest]
                             var bestIdx = prevBest
                             for (i in 0 until numPoints) {
+                                if (i == prevBest) continue
                                 dx = x - px[i]
                                 val distSq = dx * dx + dySq[i]
                                 // Aggressive filter using bestDist: d = sqrt(distSq) - w >= bestDist
