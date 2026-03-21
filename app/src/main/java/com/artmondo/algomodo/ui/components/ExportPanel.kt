@@ -12,7 +12,9 @@ import androidx.compose.ui.focus.onFocusChanged
 import androidx.compose.ui.text.TextRange
 import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.text.input.TextFieldValue
+import androidx.compose.foundation.text.KeyboardActions
 import androidx.compose.foundation.text.KeyboardOptions
+import androidx.compose.ui.text.input.ImeAction
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.unit.dp
 import com.artmondo.algomodo.viewmodel.ExportUiState
@@ -192,7 +194,12 @@ fun ExportPanel(
                     onValueChange = { startText = it.filter { c -> c.isDigit() }.take(4) },
                     label = { Text("Start (s)") },
                     singleLine = true,
-                    keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
+                    keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number, imeAction = ImeAction.Done),
+                    keyboardActions = KeyboardActions(onDone = {
+                        val v = startText.toIntOrNull()?.coerceAtLeast(0) ?: 0
+                        startText = v.toString()
+                        onVideoStartChange(v)
+                    }),
                     modifier = Modifier
                         .weight(1f)
                         .onFocusChanged { focus ->
@@ -208,7 +215,12 @@ fun ExportPanel(
                     onValueChange = { endText = it.filter { c -> c.isDigit() }.take(4) },
                     label = { Text("End (s)") },
                     singleLine = true,
-                    keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
+                    keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number, imeAction = ImeAction.Done),
+                    keyboardActions = KeyboardActions(onDone = {
+                        val v = endText.toIntOrNull()?.coerceAtLeast(1) ?: 30
+                        endText = v.toString()
+                        onVideoEndChange(v)
+                    }),
                     modifier = Modifier
                         .weight(1f)
                         .onFocusChanged { focus ->
