@@ -135,6 +135,11 @@ private fun StaticCanvas(
     }
 
     LaunchedEffect(generator.id, params, seed, palette, quality, postFX, staticTime, renderTrigger) {
+        // Debounce: let rapid changes (surprise-me / random clicks) settle
+        // before starting an expensive render. The coroutine is cancelled
+        // during this delay if inputs change again, so only the final
+        // request actually renders.
+        kotlinx.coroutines.delay(180)
         val myGeneration = renderGeneration.incrementAndGet()
         isRendering = true
         var newBitmap: Bitmap? = null
