@@ -36,6 +36,7 @@ import androidx.compose.ui.unit.sp
 import androidx.hilt.navigation.compose.hiltViewModel
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.artmondo.algomodo.audio.AudioPlayer
+import com.artmondo.algomodo.generators.AspectRatio
 import com.artmondo.algomodo.core.registry.GeneratorRegistry
 import com.artmondo.algomodo.ui.components.*
 import com.artmondo.algomodo.ui.dialogs.*
@@ -215,19 +216,21 @@ fun MainScreen(
             }
         }
 
+        val isPortraitExpanded = isCanvasExpanded && state.aspectRatio == AspectRatio.PORTRAIT
+
         // ===== TOP SECTION: Canvas + Palette =====
         Row(
             modifier = Modifier
                 .fillMaxWidth()
                 .then(if (!isCanvasExpanded) Modifier.weight(0.9f) else Modifier)
         ) {
-            // Canvas (square) with info button overlay
+            // Canvas with info button overlay
             Box(
                 modifier = (if (isCanvasExpanded) Modifier.fillMaxWidth() else Modifier.fillMaxHeight())
                     .then(canvasGestureModifier)
             ) {
                 val canvasModifier = if (isCanvasExpanded)
-                    Modifier.fillMaxWidth().aspectRatio(1f)
+                    Modifier.fillMaxWidth().aspectRatio(state.aspectRatio.asFloat())
                 else
                     Modifier.fillMaxHeight().aspectRatio(1f)
 
@@ -245,6 +248,7 @@ fun MainScreen(
                         seed = state.seed,
                         palette = state.palette,
                         quality = state.quality,
+                        aspectRatio = state.aspectRatio,
                         postFX = state.postFX,
                         isAnimating = state.isAnimating,
                         animationFps = state.animationFps,
@@ -314,6 +318,24 @@ fun MainScreen(
                         )
                     }
                 }
+
+                // Portrait expanded: translucent button overlay on canvas
+                if (isPortraitExpanded) {
+                    ActionButtonsRow(
+                        state = state,
+                        canUndo = canUndo,
+                        canRedo = canRedo,
+                        viewModel = viewModel,
+                        exportViewModel = exportViewModel,
+                        context = context,
+                        renderParams = renderParams,
+                        audioPlayer = audioPlayer,
+                        isAudioPlaying = isAudioPlaying,
+                        onAudioPlayingChange = { isAudioPlaying = it },
+                        translucent = true,
+                        modifier = Modifier.align(Alignment.BottomCenter)
+                    )
+                }
             }
 
             // Vertical palette strip — hidden when canvas is expanded
@@ -330,67 +352,20 @@ fun MainScreen(
         }
 
         // ===== ACTION BUTTONS =====
-        Row(
-            modifier = Modifier
-                .fillMaxWidth()
-                .background(MaterialTheme.colorScheme.surface)
-                .padding(horizontal = 4.dp, vertical = 2.dp),
-            horizontalArrangement = Arrangement.SpaceEvenly,
-            verticalAlignment = Alignment.CenterVertically
-        ) {
-            CanvasButton(Icons.Filled.Undo, "Undo", enabled = canUndo) { viewModel.undo() }
-
-            // Play button with one-time tooltip
-            val playTooltipState = rememberTooltipState(isPersistent = true)
-            var playTooltipShown by remember { mutableStateOf(false) }
-            LaunchedEffect(Unit) {
-                if (!playTooltipShown) {
-                    delay(800)
-                    playTooltipShown = true
-                    playTooltipState.show()
-                    delay(8000)
-                    playTooltipState.dismiss()
-                }
-            }
-            TooltipBox(
-                positionProvider = TooltipDefaults.rememberPlainTooltipPositionProvider(),
-                tooltip = { PlainTooltip { Text("Press play to animate") } },
-                state = playTooltipState
-            ) {
-                CanvasButton(
-                    if (state.isAnimating) Icons.Filled.Pause else Icons.Filled.PlayArrow,
-                    if (state.isAnimating) "Pause" else "Play",
-                    enabled = state.generator?.supportsAnimation == true
-                ) {
-                    viewModel.toggleAnimation()
-                    // Sync audio with animation
-                    if (state.isAudioLoaded) {
-                        if (!state.isAnimating) {
-                            // Was paused, now playing
-                            audioPlayer.play()
-                            isAudioPlaying = true
-                        } else {
-                            // Was playing, now pausing
-                            audioPlayer.pause()
-                            isAudioPlaying = false
-                        }
-                    }
-                }
-            }
-            CanvasButton(Icons.Filled.Casino, "Rand") { viewModel.randomize() }
-            CanvasButton(Icons.Filled.Redo, "Redo", enabled = canRedo) { viewModel.redo() }
-            ShinyCanvasButton { viewModel.surpriseMe() }
-            CanvasButton(Icons.Filled.Refresh, "Reload") { viewModel.reload() }
-            CanvasButton(Icons.Filled.Clear, "Clear") { viewModel.clearCanvas() }
-            CanvasButton(Icons.Filled.Save, "Save") {
-                state.generator?.let { gen ->
-                    exportViewModel.quickSave(
-                        context, gen, renderParams, state.seed, state.palette,
-                        state.quality, state.postFX, state.isAnimating,
-                        snapshotTime = state.snapshotTime
-                    )
-                }
-            }
+        if (!isPortraitExpanded) {
+            ActionButtonsRow(
+                state = state,
+                canUndo = canUndo,
+                canRedo = canRedo,
+                viewModel = viewModel,
+                exportViewModel = exportViewModel,
+                context = context,
+                renderParams = renderParams,
+                audioPlayer = audioPlayer,
+                isAudioPlaying = isAudioPlaying,
+                onAudioPlayingChange = { isAudioPlaying = it },
+                translucent = false
+            )
         }
 
         // ===== SEARCH + SEED ROW =====
@@ -613,23 +588,26 @@ fun MainScreen(
                         },
                         onExportPng = {
                             val gen = state.generator ?: return@ExportPanel
-                            exportViewModel.exportPng(context, gen, renderParams, state.seed, state.palette, state.quality, state.postFX, 1080, 1080, state.snapshotTime)
+                            val ar = state.aspectRatio
+                            exportViewModel.exportPng(context, gen, renderParams, state.seed, state.palette, state.quality, state.postFX, ar.exportWidth(), ar.exportHeight(), state.snapshotTime)
                         },
                         onExportJpg = {
                             val gen = state.generator ?: return@ExportPanel
-                            exportViewModel.exportJpg(context, gen, renderParams, state.seed, state.palette, state.quality, state.postFX, 1080, 1080, state.snapshotTime)
+                            val ar = state.aspectRatio
+                            exportViewModel.exportJpg(context, gen, renderParams, state.seed, state.palette, state.quality, state.postFX, ar.exportWidth(), ar.exportHeight(), state.snapshotTime)
                         },
                         onExportSvg = {
                             val gen = state.generator ?: return@ExportPanel
-                            exportViewModel.exportSvg(context, gen, renderParams, state.seed, state.palette, 1080, 1080)
+                            val ar = state.aspectRatio
+                            exportViewModel.exportSvg(context, gen, renderParams, state.seed, state.palette, ar.exportWidth(), ar.exportHeight())
                         },
                         onExportGif = {
                             val gen = state.generator ?: return@ExportPanel
-                            exportViewModel.exportGif(context, gen, renderParams, state.seed, state.palette, state.quality, state.animationFps)
+                            exportViewModel.exportGif(context, gen, renderParams, state.seed, state.palette, state.quality, state.animationFps, state.aspectRatio)
                         },
                         onExportVideo = {
                             val gen = state.generator ?: return@ExportPanel
-                            exportViewModel.exportVideo(context, gen, renderParams, state.seed, state.palette, state.quality, state.animationFps, audioUri = state.audioUri)
+                            exportViewModel.exportVideo(context, gen, renderParams, state.seed, state.palette, state.quality, state.animationFps, aspectRatio = state.aspectRatio, audioUri = state.audioUri)
                         },
                         onExportRecipe = { fileName ->
                             val json = viewModel.exportRecipeJson()
@@ -663,6 +641,7 @@ fun MainScreen(
                     SettingsPanel(
                         theme = state.theme,
                         quality = state.quality,
+                        aspectRatio = state.aspectRatio,
                         performanceMode = state.performanceMode,
                         showFps = state.showFps,
                         interactionEnabled = state.interactionEnabled,
@@ -670,6 +649,7 @@ fun MainScreen(
                         postFX = state.postFX,
                         onThemeChange = { viewModel.setTheme(it) },
                         onQualityChange = { viewModel.setQuality(it) },
+                        onAspectRatioChange = { viewModel.setAspectRatio(it) },
                         onPerformanceModeChange = { viewModel.setPerformanceMode(it) },
                         onShowFpsChange = { viewModel.setShowFps(it) },
                         onInteractionChange = { viewModel.setInteractionEnabled(it) },
@@ -759,6 +739,86 @@ private fun ShinyCanvasButton(onClick: () -> Unit) {
             }
         }
         Text("Surprise", fontSize = 8.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
+    }
+}
+
+@OptIn(ExperimentalMaterial3Api::class)
+@Composable
+private fun ActionButtonsRow(
+    state: com.artmondo.algomodo.viewmodel.MainUiState,
+    canUndo: Boolean,
+    canRedo: Boolean,
+    viewModel: MainViewModel,
+    exportViewModel: ExportViewModel,
+    context: Context,
+    renderParams: Map<String, Any>,
+    audioPlayer: AudioPlayer,
+    isAudioPlaying: Boolean,
+    onAudioPlayingChange: (Boolean) -> Unit,
+    translucent: Boolean,
+    modifier: Modifier = Modifier
+) {
+    Row(
+        modifier = modifier
+            .fillMaxWidth()
+            .background(
+                if (translucent) MaterialTheme.colorScheme.surface.copy(alpha = 0.6f)
+                else MaterialTheme.colorScheme.surface
+            )
+            .padding(horizontal = 4.dp, vertical = 2.dp),
+        horizontalArrangement = Arrangement.SpaceEvenly,
+        verticalAlignment = Alignment.CenterVertically
+    ) {
+        CanvasButton(Icons.Filled.Undo, "Undo", enabled = canUndo) { viewModel.undo() }
+
+        val playTooltipState = rememberTooltipState(isPersistent = true)
+        var playTooltipShown by remember { mutableStateOf(false) }
+        LaunchedEffect(Unit) {
+            if (!playTooltipShown) {
+                delay(800)
+                playTooltipShown = true
+                playTooltipState.show()
+                delay(8000)
+                playTooltipState.dismiss()
+            }
+        }
+        TooltipBox(
+            positionProvider = TooltipDefaults.rememberPlainTooltipPositionProvider(),
+            tooltip = { PlainTooltip { Text("Press play to animate") } },
+            state = playTooltipState
+        ) {
+            CanvasButton(
+                if (state.isAnimating) Icons.Filled.Pause else Icons.Filled.PlayArrow,
+                if (state.isAnimating) "Pause" else "Play",
+                enabled = state.generator?.supportsAnimation == true
+            ) {
+                viewModel.toggleAnimation()
+                if (state.isAudioLoaded) {
+                    if (!state.isAnimating) {
+                        audioPlayer.play()
+                        onAudioPlayingChange(true)
+                    } else {
+                        audioPlayer.pause()
+                        onAudioPlayingChange(false)
+                    }
+                }
+            }
+        }
+        CanvasButton(Icons.Filled.Casino, "Rand") { viewModel.randomize() }
+        CanvasButton(Icons.Filled.Redo, "Redo", enabled = canRedo) { viewModel.redo() }
+        ShinyCanvasButton { viewModel.surpriseMe() }
+        CanvasButton(Icons.Filled.Refresh, "Reload") { viewModel.reload() }
+        CanvasButton(Icons.Filled.Clear, "Clear") { viewModel.clearCanvas() }
+        CanvasButton(Icons.Filled.Save, "Save") {
+            state.generator?.let { gen ->
+                exportViewModel.quickSave(
+                    context, gen, renderParams, state.seed, state.palette,
+                    state.quality, state.postFX, state.isAnimating,
+                    aspectRatio = state.aspectRatio,
+                    snapshotTime = state.snapshotTime
+                )
+            }
+        }
     }
 }
 

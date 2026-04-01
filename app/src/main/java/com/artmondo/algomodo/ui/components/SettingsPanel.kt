@@ -8,6 +8,7 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import com.artmondo.algomodo.generators.AspectRatio
 import com.artmondo.algomodo.generators.Quality
 import com.artmondo.algomodo.rendering.PostFXSettings
 
@@ -16,6 +17,7 @@ import com.artmondo.algomodo.rendering.PostFXSettings
 fun SettingsPanel(
     theme: String,
     quality: Quality,
+    aspectRatio: AspectRatio,
     performanceMode: Boolean,
     showFps: Boolean,
     interactionEnabled: Boolean,
@@ -23,6 +25,7 @@ fun SettingsPanel(
     postFX: PostFXSettings,
     onThemeChange: (String) -> Unit,
     onQualityChange: (Quality) -> Unit,
+    onAspectRatioChange: (AspectRatio) -> Unit,
     onPerformanceModeChange: (Boolean) -> Unit,
     onShowFpsChange: (Boolean) -> Unit,
     onInteractionChange: (Boolean) -> Unit,
@@ -63,6 +66,18 @@ fun SettingsPanel(
                 SegmentedButton(selected = quality == Quality.DRAFT, onClick = { onQualityChange(Quality.DRAFT) }, shape = SegmentedButtonDefaults.itemShape(0, 3)) { Text("Draft", fontSize = 12.sp, maxLines = 1, overflow = TextOverflow.Clip) }
                 SegmentedButton(selected = quality == Quality.BALANCED, onClick = { onQualityChange(Quality.BALANCED) }, shape = SegmentedButtonDefaults.itemShape(1, 3)) { Text("Mid", fontSize = 12.sp, maxLines = 1, overflow = TextOverflow.Clip) }
                 SegmentedButton(selected = quality == Quality.ULTRA, onClick = { onQualityChange(Quality.ULTRA) }, shape = SegmentedButtonDefaults.itemShape(2, 3)) { Text("Ultra", fontSize = 12.sp, maxLines = 1, overflow = TextOverflow.Clip) }
+            }
+        }
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            horizontalArrangement = Arrangement.SpaceBetween,
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            Text("Ratio", style = MaterialTheme.typography.bodyMedium)
+            SingleChoiceSegmentedButtonRow {
+                SegmentedButton(selected = aspectRatio == AspectRatio.SQUARE, onClick = { onAspectRatioChange(AspectRatio.SQUARE) }, shape = SegmentedButtonDefaults.itemShape(0, 3)) { Text("1:1", fontSize = 12.sp, maxLines = 1, overflow = TextOverflow.Clip) }
+                SegmentedButton(selected = aspectRatio == AspectRatio.PORTRAIT, onClick = { onAspectRatioChange(AspectRatio.PORTRAIT) }, shape = SegmentedButtonDefaults.itemShape(1, 3)) { Text("3:4", fontSize = 12.sp, maxLines = 1, overflow = TextOverflow.Clip) }
+                SegmentedButton(selected = aspectRatio == AspectRatio.LANDSCAPE, onClick = { onAspectRatioChange(AspectRatio.LANDSCAPE) }, shape = SegmentedButtonDefaults.itemShape(2, 3)) { Text("4:3", fontSize = 12.sp, maxLines = 1, overflow = TextOverflow.Clip) }
             }
         }
 

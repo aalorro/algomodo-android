@@ -9,6 +9,7 @@ import android.os.Build
 import android.os.Environment
 import android.provider.MediaStore
 import com.artmondo.algomodo.data.palettes.Palette
+import com.artmondo.algomodo.generators.AspectRatio
 import com.artmondo.algomodo.generators.Generator
 import com.artmondo.algomodo.generators.Quality
 import java.io.*
@@ -24,6 +25,7 @@ object GifExporter {
         palette: Palette,
         quality: Quality,
         resolution: Int,
+        aspectRatio: AspectRatio = AspectRatio.SQUARE,
         durationSeconds: Int,
         fps: Int,
         boomerang: Boolean,
@@ -33,10 +35,12 @@ object GifExporter {
     ): Uri? {
         val totalFrames = durationSeconds * fps
         val frameDelay = 1000 / fps
-        val pixelCount = resolution * resolution
+        val bmpWidth = aspectRatio.width(resolution)
+        val bmpHeight = aspectRatio.height(resolution)
+        val pixelCount = bmpWidth * bmpHeight
 
         // Reuse a single Bitmap + Canvas across all frames
-        val bitmap = Bitmap.createBitmap(resolution, resolution, Bitmap.Config.ARGB_8888)
+        val bitmap = Bitmap.createBitmap(bmpWidth, bmpHeight, Bitmap.Config.ARGB_8888)
         val canvas = Canvas(bitmap)
         val reusablePixels = IntArray(pixelCount)
 
@@ -56,7 +60,7 @@ object GifExporter {
             val time = i.toFloat() / fps
             canvas.drawColor(android.graphics.Color.BLACK)
             generator.renderCanvas(canvas, bitmap, params, seed, palette, quality, time)
-            bitmap.getPixels(reusablePixels, 0, resolution, 0, 0, resolution, resolution)
+            bitmap.getPixels(reusablePixels, 0, bmpWidth, 0, 0, bmpWidth, bmpHeight)
 
             encoder.addFrame(bitmap, reusablePixels)
             onProgress(i.toFloat() / totalOutputFrames * 0.9f)
@@ -68,7 +72,7 @@ object GifExporter {
                 val time = i.toFloat() / fps
                 canvas.drawColor(android.graphics.Color.BLACK)
                 generator.renderCanvas(canvas, bitmap, params, seed, palette, quality, time)
-                bitmap.getPixels(reusablePixels, 0, resolution, 0, 0, resolution, resolution)
+                bitmap.getPixels(reusablePixels, 0, bmpWidth, 0, 0, bmpWidth, bmpHeight)
 
                 encoder.addFrame(bitmap, reusablePixels)
                 val progress = (totalFrames + (totalFrames - 2 - i)).toFloat()

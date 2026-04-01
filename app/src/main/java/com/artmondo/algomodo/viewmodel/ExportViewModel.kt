@@ -8,6 +8,7 @@ import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import com.artmondo.algomodo.data.palettes.Palette
 import com.artmondo.algomodo.export.*
+import com.artmondo.algomodo.generators.AspectRatio
 import com.artmondo.algomodo.generators.Generator
 import com.artmondo.algomodo.generators.Quality
 import com.artmondo.algomodo.rendering.PostFXProcessor
@@ -80,13 +81,15 @@ class ExportViewModel @Inject constructor() : ViewModel() {
         quality: Quality,
         postFX: PostFXSettings,
         isAnimating: Boolean,
+        aspectRatio: AspectRatio = AspectRatio.SQUARE,
         snapshotTime: Float = 0f
     ) {
         viewModelScope.launch(Dispatchers.IO) {
             _state.update { it.copy(isExporting = true, error = null) }
             try {
-                val size = 1080
-                val bitmap = Bitmap.createBitmap(size, size, Bitmap.Config.ARGB_8888)
+                val w = aspectRatio.exportWidth()
+                val h = aspectRatio.exportHeight()
+                val bitmap = Bitmap.createBitmap(w, h, Bitmap.Config.ARGB_8888)
                 val canvas = Canvas(bitmap)
                 generator.renderCanvas(canvas, bitmap, params, seed, palette, quality, snapshotTime)
                 PostFXProcessor.apply(bitmap, postFX)
@@ -193,7 +196,8 @@ class ExportViewModel @Inject constructor() : ViewModel() {
         seed: Int,
         palette: Palette,
         quality: Quality,
-        fps: Int
+        fps: Int,
+        aspectRatio: AspectRatio = AspectRatio.SQUARE
     ) {
         val s = _state.value
         viewModelScope.launch(Dispatchers.IO) {
@@ -207,6 +211,7 @@ class ExportViewModel @Inject constructor() : ViewModel() {
                     palette = palette,
                     quality = quality,
                     resolution = s.gifResolution,
+                    aspectRatio = aspectRatio,
                     durationSeconds = s.gifDuration,
                     fps = fps,
                     boomerang = s.gifBoomerang,
@@ -231,6 +236,7 @@ class ExportViewModel @Inject constructor() : ViewModel() {
         palette: Palette,
         quality: Quality,
         fps: Int,
+        aspectRatio: AspectRatio = AspectRatio.SQUARE,
         audioUri: Uri? = null
     ) {
         val s = _state.value
@@ -246,8 +252,8 @@ class ExportViewModel @Inject constructor() : ViewModel() {
                     seed = seed,
                     palette = palette,
                     quality = quality,
-                    width = resolution,
-                    height = resolution,
+                    width = aspectRatio.width(resolution),
+                    height = aspectRatio.height(resolution),
                     fps = fps,
                     durationSeconds = durationSeconds,
                     timeOffsetSec = s.videoStartSec.toFloat(),

@@ -20,6 +20,7 @@ import com.artmondo.algomodo.data.preferences.AppPreferences
 import com.artmondo.algomodo.generators.Generator
 import com.artmondo.algomodo.generators.ParamGroup
 import com.artmondo.algomodo.generators.Parameter
+import com.artmondo.algomodo.generators.AspectRatio
 import com.artmondo.algomodo.generators.Quality
 import com.artmondo.algomodo.rendering.PostFXSettings
 import dagger.hilt.android.lifecycle.HiltViewModel
@@ -48,6 +49,7 @@ data class MainUiState(
     val palette: Palette = CuratedPalettes.default,
     val postFX: PostFXSettings = PostFXSettings(),
     val quality: Quality = Quality.DRAFT,
+    val aspectRatio: AspectRatio = AspectRatio.SQUARE,
     val isAnimating: Boolean = false,
     val animationFps: Int = 24,
     val seedLocked: Boolean = false,
@@ -111,6 +113,16 @@ class MainViewModel @Inject constructor(
                         else -> Quality.BALANCED
                     }
                     _state.update { s -> s.copy(quality = quality) }
+                }
+            }
+            launch {
+                prefs.aspectRatio.collect { ar ->
+                    val aspectRatio = when (ar) {
+                        "portrait" -> AspectRatio.PORTRAIT
+                        "landscape" -> AspectRatio.LANDSCAPE
+                        else -> AspectRatio.SQUARE
+                    }
+                    _state.update { s -> s.copy(aspectRatio = aspectRatio) }
                 }
             }
         }
@@ -446,6 +458,17 @@ class MainViewModel @Inject constructor(
             })
         }
         _state.update { it.copy(quality = quality, renderTrigger = it.renderTrigger + 1) }
+    }
+
+    fun setAspectRatio(aspectRatio: AspectRatio) {
+        viewModelScope.launch {
+            prefs.setAspectRatio(when (aspectRatio) {
+                AspectRatio.SQUARE -> "square"
+                AspectRatio.PORTRAIT -> "portrait"
+                AspectRatio.LANDSCAPE -> "landscape"
+            })
+        }
+        _state.update { it.copy(aspectRatio = aspectRatio, renderTrigger = it.renderTrigger + 1) }
     }
 
     fun setPerformanceMode(enabled: Boolean) {

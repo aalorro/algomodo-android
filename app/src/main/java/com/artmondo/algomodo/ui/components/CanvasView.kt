@@ -29,6 +29,7 @@ import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.viewinterop.AndroidView
 import com.artmondo.algomodo.data.palettes.Palette
+import com.artmondo.algomodo.generators.AspectRatio
 import com.artmondo.algomodo.generators.Generator
 import com.artmondo.algomodo.generators.Quality
 import com.artmondo.algomodo.rendering.PostFXProcessor
@@ -45,6 +46,7 @@ fun AlgoCanvas(
     seed: Int,
     palette: Palette,
     quality: Quality,
+    aspectRatio: AspectRatio = AspectRatio.SQUARE,
     postFX: PostFXSettings,
     isAnimating: Boolean,
     animationFps: Int,
@@ -56,7 +58,7 @@ fun AlgoCanvas(
     if (generator == null) {
         Box(
             modifier = modifier
-                .aspectRatio(1f)
+                .aspectRatio(aspectRatio.asFloat())
                 .background(Color.Black),
             contentAlignment = Alignment.Center
         ) {}
@@ -73,6 +75,7 @@ fun AlgoCanvas(
             seed = seed,
             palette = palette,
             quality = quality,
+            aspectRatio = aspectRatio,
             fps = animationFps,
             showFps = showFps,
             renderTrigger = renderTrigger,
@@ -94,6 +97,7 @@ fun AlgoCanvas(
             seed = seed,
             palette = palette,
             quality = quality,
+            aspectRatio = aspectRatio,
             postFX = postFX,
             staticTime = staticTime,
             renderTrigger = renderTrigger,
@@ -113,6 +117,7 @@ private fun StaticCanvas(
     seed: Int,
     palette: Palette,
     quality: Quality,
+    aspectRatio: AspectRatio = AspectRatio.SQUARE,
     postFX: PostFXSettings,
     staticTime: Float = if (generator.supportsAnimation) 2.0f else 0f,
     renderTrigger: Int,
@@ -134,7 +139,7 @@ private fun StaticCanvas(
         renderedBitmap = null
     }
 
-    LaunchedEffect(generator.id, params, seed, palette, quality, postFX, staticTime, renderTrigger) {
+    LaunchedEffect(generator.id, params, seed, palette, quality, aspectRatio, postFX, staticTime, renderTrigger) {
         // Debounce: let rapid changes (surprise-me / random clicks) settle
         // before starting an expensive render. The coroutine is cancelled
         // during this delay if inputs change again, so only the final
@@ -154,7 +159,9 @@ private fun StaticCanvas(
                     Quality.BALANCED -> 540
                     Quality.ULTRA -> 810
                 }
-                val bitmap = Bitmap.createBitmap(size, size, Bitmap.Config.ARGB_8888)
+                val bmpWidth = aspectRatio.width(size)
+                val bmpHeight = aspectRatio.height(size)
+                val bitmap = Bitmap.createBitmap(bmpWidth, bmpHeight, Bitmap.Config.ARGB_8888)
                 newBitmap = bitmap
                 val canvas = Canvas(bitmap)
                 canvas.drawColor(android.graphics.Color.BLACK)
@@ -165,7 +172,7 @@ private fun StaticCanvas(
                     // Safety net: if output is nearly all-black, re-render at time=0
                     // to catch generators with scroll/animation offsets that push
                     // content off canvas at time=2.0
-                    if (generator.supportsAnimation && isBitmapBlank(bitmap, size)) {
+                    if (generator.supportsAnimation && isBitmapBlank(bitmap)) {
                         canvas.drawColor(android.graphics.Color.BLACK)
                         generator.renderCanvas(canvas, bitmap, params, seed, palette, quality, 0f)
                         PostFXProcessor.apply(bitmap, postFX)
@@ -178,8 +185,8 @@ private fun StaticCanvas(
                         strokeWidth = 4f
                         style = android.graphics.Paint.Style.STROKE
                     }
-                    canvas.drawLine(0f, 0f, size.toFloat(), size.toFloat(), errPaint)
-                    canvas.drawLine(size.toFloat(), 0f, 0f, size.toFloat(), errPaint)
+                    canvas.drawLine(0f, 0f, bmpWidth.toFloat(), bmpHeight.toFloat(), errPaint)
+                    canvas.drawLine(bmpWidth.toFloat(), 0f, 0f, bmpHeight.toFloat(), errPaint)
                 }
             }
             // Back on Main thread — safe to swap bitmap state without
@@ -199,7 +206,7 @@ private fun StaticCanvas(
 
     Box(
         modifier = modifier
-            .aspectRatio(1f)
+            .aspectRatio(aspectRatio.asFloat())
             .background(Color.Black)
     ) {
         renderedBitmap?.let { bmp ->
@@ -264,6 +271,7 @@ private fun AnimationCanvas(
     seed: Int,
     palette: Palette,
     quality: Quality,
+    aspectRatio: AspectRatio = AspectRatio.SQUARE,
     fps: Int,
     showFps: Boolean,
     renderTrigger: Int,
@@ -331,8 +339,9 @@ private fun AnimationCanvas(
                             Quality.BALANCED -> 540
                             Quality.ULTRA -> 810
                         }
-                        val size = minOf(w, h).coerceAtMost(maxSize)
-                        var bitmap = Bitmap.createBitmap(size, size, Bitmap.Config.ARGB_8888)
+                        val bmpWidth = aspectRatio.width(maxSize).coerceAtMost(w)
+                        val bmpHeight = aspectRatio.height(maxSize).coerceAtMost(h)
+                        var bitmap = Bitmap.createBitmap(bmpWidth, bmpHeight, Bitmap.Config.ARGB_8888)
                         var bitmapCanvas = Canvas(bitmap)
                         val fpsPaint = android.graphics.Paint().apply {
                             color = android.graphics.Color.GREEN
@@ -380,9 +389,9 @@ private fun AnimationCanvas(
 
                             val canvas = holder.lockCanvas() ?: continue
                             canvas.drawColor(android.graphics.Color.BLACK)
-                            val scale = minOf(canvas.width.toFloat() / size, canvas.height.toFloat() / size)
-                            val dx = (canvas.width - size * scale) / 2f
-                            val dy = (canvas.height - size * scale) / 2f
+                            val scale = minOf(canvas.width.toFloat() / bmpWidth, canvas.height.toFloat() / bmpHeight)
+                            val dx = (canvas.width - bmpWidth * scale) / 2f
+                            val dy = (canvas.height - bmpHeight * scale) / 2f
                             canvas.save()
                             canvas.translate(dx, dy)
                             canvas.scale(scale, scale)
@@ -420,7 +429,7 @@ private fun AnimationCanvas(
             }
         },
         modifier = modifier
-            .aspectRatio(1f)
+            .aspectRatio(aspectRatio.asFloat())
     )
 }
 
@@ -488,16 +497,19 @@ private fun MilestoneProgressBar(progress: Float, modifier: Modifier = Modifier)
 }
 
 /** Spot-check whether a bitmap is nearly all-black by sampling pixels. */
-private fun isBitmapBlank(bitmap: Bitmap, size: Int): Boolean {
-    val step = (size / 8).coerceAtLeast(1)
+private fun isBitmapBlank(bitmap: Bitmap): Boolean {
+    val w = bitmap.width
+    val h = bitmap.height
+    val stepX = (w / 8).coerceAtLeast(1)
+    val stepY = (h / 8).coerceAtLeast(1)
     // Bulk read — avoids per-pixel JNI overhead of getPixel()
-    val pixels = IntArray(size * size)
-    bitmap.getPixels(pixels, 0, size, 0, 0, size, size)
+    val pixels = IntArray(w * h)
+    bitmap.getPixels(pixels, 0, w, 0, 0, w, h)
     var totalBrightness = 0L
     var samples = 0
-    for (y in step until size step step) {
-        val rowOff = y * size
-        for (x in step until size step step) {
+    for (y in stepY until h step stepY) {
+        val rowOff = y * w
+        for (x in stepX until w step stepX) {
             val px = pixels[rowOff + x]
             val r = (px shr 16) and 0xFF
             val g = (px shr 8) and 0xFF

@@ -11,6 +11,18 @@ enum class Quality {
     ULTRA
 }
 
+enum class AspectRatio(val widthRatio: Int, val heightRatio: Int, val label: String) {
+    SQUARE(1, 1, "1:1"),
+    PORTRAIT(3, 4, "3:4"),
+    LANDSCAPE(4, 3, "4:3");
+
+    fun width(size: Int): Int = if (widthRatio >= heightRatio) size else size * widthRatio / heightRatio
+    fun height(size: Int): Int = if (heightRatio >= widthRatio) size else size * heightRatio / widthRatio
+    fun asFloat(): Float = widthRatio.toFloat() / heightRatio.toFloat()
+    fun exportWidth(): Int = width(1080)
+    fun exportHeight(): Int = height(1080)
+}
+
 enum class ParamGroup(val displayName: String) {
     COMPOSITION("Composition"),
     GEOMETRY("Geometry"),
