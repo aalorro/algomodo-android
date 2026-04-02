@@ -43,6 +43,7 @@ class TextMatrixGenerator : Generator {
         Parameter.NumberParam("Drop Speed", "dropSpeed", ParamGroup.FLOW_MOTION, "Vertical fall speed of each column", 1f, 20f, 0.5f, 5f),
         Parameter.NumberParam("Trail Length", "trailLength", ParamGroup.GEOMETRY, "Number of characters in each falling trail", 4f, 40f, 1f, 15f),
         Parameter.NumberParam("Brightness", "brightness", ParamGroup.COLOR, "Base brightness of characters", 0.3f, 1f, 0.05f, 0.8f),
+        Parameter.NumberParam("Font Size", "fontScale", ParamGroup.GEOMETRY, "Character size multiplier", 0.3f, 3f, 0.1f, 1f),
         Parameter.NumberParam("Speed", "speed", ParamGroup.FLOW_MOTION, "Animation speed multiplier", 0.1f, 3f, 0.1f, 1f)
     )
 
@@ -53,6 +54,7 @@ class TextMatrixGenerator : Generator {
         "dropSpeed" to 5f,
         "trailLength" to 15f,
         "brightness" to 0.8f,
+        "fontScale" to 1f,
         "speed" to 1f
     )
 
@@ -73,6 +75,7 @@ class TextMatrixGenerator : Generator {
         val trailLength = (params["trailLength"] as? Number)?.toInt() ?: 15
         val charSetName = (params["charSet"] as? String) ?: "katakana"
         val brightness = (params["brightness"] as? Number)?.toFloat() ?: 0.8f
+        val fontScale = (params["fontScale"] as? Number)?.toFloat() ?: 1f
         val customText = (params["customText"] as? String) ?: ""
 
         val rng = SeededRNG(seed)
@@ -95,7 +98,7 @@ class TextMatrixGenerator : Generator {
         }
 
         val colWidth = w / columns
-        val fontSize = colWidth * 0.9f
+        val fontSize = colWidth * 0.9f * fontScale
         val rowHeight = fontSize * 1.2f
         val rows = (h / rowHeight).toInt() + 2
         val isHighQuality = quality != Quality.DRAFT
