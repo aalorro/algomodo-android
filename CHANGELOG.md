@@ -2,6 +2,25 @@
 
 All notable changes to Algomodo will be documented in this file.
 
+## [1.6.0] - Android
+
+### New Features
+- Aspect ratio support across all generators and UI (square, landscape, portrait)
+- Generator label overlay on expanded canvas
+
+### Improvements
+- Steiner Networks: subtree coloring and optimized color mode calculations
+- Gabriel Graph: smooth sweeping highlight-circles animation with pulsing glow
+- Gabriel Graph: Delaunay overlay now shows only non-Gabriel edges with improved visibility
+- Improved canvas layout and aspect ratio handling for all orientations
+- Cleaner splash screen (app logo only)
+
+### Bug Fixes
+- Fixed highlight-circles animation in Gabriel Graph (was non-functional)
+- Fixed Show Delaunay toggle in Gabriel Graph (was invisible at 12% opacity)
+- Fixed expanded canvas layout with correct aspect ratio sizing
+- Fixed animation canvas not recreating SurfaceView on aspect ratio change
+
 ## [1.5.2] - Android
 
 ### New Generators (1)

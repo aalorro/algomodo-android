@@ -18,6 +18,24 @@ fun ChangelogDialog(onDismiss: () -> Unit) {
         text = {
             Text(
                 text = """
+v1.6.0 (Android)
+New Features:
+- Aspect ratio support across all generators and UI (square, landscape, portrait)
+- Generator label overlay on expanded canvas
+
+Improvements:
+- Steiner Networks: subtree coloring and optimized color mode calculations
+- Gabriel Graph: smooth sweeping highlight-circles animation with pulsing glow
+- Gabriel Graph: Delaunay overlay shows only non-Gabriel edges with improved visibility
+- Improved canvas layout for all orientations
+- Cleaner splash screen (app logo only)
+
+Bug Fixes:
+- Fixed highlight-circles animation in Gabriel Graph
+- Fixed Show Delaunay toggle in Gabriel Graph
+- Fixed expanded canvas aspect ratio sizing
+- Fixed animation canvas on aspect ratio change
+
 v1.5.2 (Android)
 New Generator:
 - Pythagoras Tree (fractals) — total: 117 generators

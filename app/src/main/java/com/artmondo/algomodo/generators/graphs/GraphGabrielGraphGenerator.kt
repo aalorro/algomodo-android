@@ -165,15 +165,21 @@ class GraphGabrielGraphGenerator : Generator {
 
         canvas.drawColor(Color.BLACK)
 
-        // Draw Delaunay background if requested
+        // Draw non-Gabriel Delaunay edges if requested
         if (showDelaunay) {
+            val gabrielSet = sortedGabriel.map { (a, b) ->
+                packEdge(minOf(a, b), maxOf(a, b))
+            }.toHashSet()
             val faintPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
                 style = Paint.Style.STROKE
-                strokeWidth = 0.5f
-                color = Color.argb(30, 255, 255, 255)
+                strokeWidth = 1f
+                color = Color.argb(80, 255, 255, 255)
             }
             for ((i, j) in delaunayList) {
-                canvas.drawLine(px[i], py[i], px[j], py[j], faintPaint)
+                val key = packEdge(minOf(i, j), maxOf(i, j))
+                if (key !in gabrielSet) {
+                    canvas.drawLine(px[i], py[i], px[j], py[j], faintPaint)
+                }
             }
         }
 
