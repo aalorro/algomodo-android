@@ -10,6 +10,7 @@ import com.artmondo.algomodo.generators.Generator
 import com.artmondo.algomodo.generators.ParamGroup
 import com.artmondo.algomodo.generators.Parameter
 import com.artmondo.algomodo.generators.Quality
+import kotlin.math.atan2
 import kotlin.math.sqrt
 
 /**
@@ -68,9 +69,22 @@ class VoronoiMosaicGenerator : Generator {
         val w = bitmap.width
         val h = bitmap.height
         val numPoints = (params["cellCount"] as? Number)?.toInt() ?: 60
+        if (numPoints <= 0) { canvas.drawColor(Color.BLACK); return }
         val gap = (params["groutWidth"] as? Number)?.toFloat() ?: 3f
         val groutColor = (params["groutColor"] as? String) ?: "grey"
         val cellShading = (params["tileStyle"] as? String) ?: "flat"
+        val colorMode = (params["colorMode"] as? String) ?: "palette-cycle"
+        val distanceMetric = (params["distanceMetric"] as? String) ?: "Euclidean"
+        val relaxed = params["relaxed"] as? Boolean ?: true
+        val animSpeed = (params["animSpeed"] as? Number)?.toFloat() ?: 0.4f
+        val animAmp = (params["animAmp"] as? Number)?.toFloat() ?: 0.2f
+
+        val metricId = when (distanceMetric.lowercase()) {
+            "manhattan" -> 1; "chebyshev" -> 2; else -> 0
+        }
+        val isEuclidean = metricId == 0
+        val colorModeId = when (colorMode) { "palette-angle" -> 1; "palette-distance" -> 2; else -> 0 }
+        val tileStyleId = when (cellShading) { "raised" -> 1; "inset" -> 2; else -> 0 }
 
         val rng = SeededRNG(seed)
         val noise = SimplexNoise(seed)
@@ -82,89 +96,309 @@ class VoronoiMosaicGenerator : Generator {
             py[i] = rng.random() * h
         }
 
-        // Animate
-        if (time > 0f) {
-            for (i in 0 until numPoints) {
-                px[i] += noise.noise2D(i * 0.3f + 80f, time * 0.12f) * w * 0.03f
-                py[i] += noise.noise2D(i * 0.3f + 180f, time * 0.12f) * h * 0.03f
-                px[i] = px[i].coerceIn(0f, w.toFloat() - 1f)
-                py[i] = py[i].coerceIn(0f, h.toFloat() - 1f)
+        // Lloyd relaxation using spatial grid
+        if (relaxed) {
+            val relaxStep = 4
+            for (pass in 0 until 3) {
+                val rGs = (maxOf(w, h).toFloat() / sqrt(numPoints.toFloat())).coerceAtLeast(8f)
+                val rInv = 1f / rGs
+                val rGc = (w * rInv).toInt() + 1
+                val rGr = (h * rInv).toInt() + 1
+                val rGcM1 = rGc - 1; val rGrM1 = rGr - 1
+                val rGh = IntArray(rGc * rGr) { -1 }
+                val rGn = IntArray(numPoints) { -1 }
+                for (i in 0 until numPoints) {
+                    val gx = minOf((px[i] * rInv).toInt(), rGcM1)
+                    val gy = minOf((py[i] * rInv).toInt(), rGrM1)
+                    val cell = gy * rGc + gx
+                    rGn[i] = rGh[cell]; rGh[cell] = i
+                }
+                val sumX = FloatArray(numPoints)
+                val sumY = FloatArray(numPoints)
+                val count = IntArray(numPoints)
+                for (sy in 0 until h step relaxStep) {
+                    val yf = sy.toFloat()
+                    val gy = minOf((yf * rInv).toInt(), rGrM1)
+                    val cyMin = maxOf(gy - 1, 0); val cyMax = minOf(gy + 1, rGrM1)
+                    for (sx in 0 until w step relaxStep) {
+                        val xf = sx.toFloat()
+                        val gx = minOf((xf * rInv).toInt(), rGcM1)
+                        val cxMin = maxOf(gx - 1, 0); val cxMax = minOf(gx + 1, rGcM1)
+                        var bd = Float.MAX_VALUE; var bi = 0
+                        for (cy in cyMin..cyMax) {
+                            val ro = cy * rGc
+                            for (cx in cxMin..cxMax) {
+                                var ii = rGh[ro + cx]
+                                while (ii >= 0) {
+                                    val ddx = xf - px[ii]; val ddy = yf - py[ii]
+                                    val d = when (metricId) {
+                                        1 -> { val ax = if (ddx < 0f) -ddx else ddx; val ay = if (ddy < 0f) -ddy else ddy; ax + ay }
+                                        2 -> { val ax = if (ddx < 0f) -ddx else ddx; val ay = if (ddy < 0f) -ddy else ddy; if (ax > ay) ax else ay }
+                                        else -> ddx * ddx + ddy * ddy
+                                    }
+                                    if (d < bd) { bd = d; bi = ii }
+                                    ii = rGn[ii]
+                                }
+                            }
+                        }
+                        sumX[bi] += xf; sumY[bi] += yf; count[bi]++
+                    }
+                }
+                for (i in 0 until numPoints) {
+                    if (count[i] > 0) { px[i] = sumX[i] / count[i]; py[i] = sumY[i] / count[i] }
+                }
             }
         }
 
+        // Animate
+        if (time > 0f) {
+            val speed = animSpeed / 0.4f; val amp = animAmp / 0.2f
+            val wf = w.toFloat(); val hf = h.toFloat()
+            for (i in 0 until numPoints) {
+                px[i] = (px[i] + noise.noise2D(i * 0.3f + 80f, time * 0.12f * speed) * wf * 0.03f * amp).coerceIn(0f, wf - 1f)
+                py[i] = (py[i] + noise.noise2D(i * 0.3f + 180f, time * 0.12f * speed) * hf * 0.03f * amp).coerceIn(0f, hf - 1f)
+            }
+        }
+
+        // ── Spatial grid (linked-list) ──
+        val gridSize = (maxOf(w, h).toFloat() / sqrt(numPoints.toFloat())).coerceAtLeast(8f)
+        val invGridSize = 1f / gridSize
+        val gridCols = (w * invGridSize).toInt() + 1
+        val gridRows = (h * invGridSize).toInt() + 1
+        val gcM1 = gridCols - 1; val grM1 = gridRows - 1
+        val gridHeads = IntArray(gridCols * gridRows) { -1 }
+        val gridNext = IntArray(numPoints) { -1 }
+        for (i in 0 until numPoints) {
+            val gx = minOf((px[i] * invGridSize).toInt(), gcM1)
+            val gy = minOf((py[i] * invGridSize).toInt(), grM1)
+            val cell = gy * gridCols + gx
+            gridNext[i] = gridHeads[cell]; gridHeads[cell] = i
+        }
+
         val colors = palette.colorInts()
+        val colorsSize = colors.size
         val groutColorInt = when (groutColor) {
             "white" -> Color.WHITE
             "black" -> Color.BLACK
             "palette-last" -> colors.lastOrNull() ?: Color.BLACK
-            else -> Color.rgb(128, 128, 128) // "grey"
+            else -> Color.rgb(128, 128, 128)
         }
 
-        val pixels = IntArray(w * h)
-
-        // Sample max edge distance for gap threshold scaling
-        var maxEdgeDist = 1f
-        for (s in 0 until 60) {
-            val sx = rng.random() * w
-            val sy = rng.random() * h
-            val (f1, f2) = findF1F2BruteForce(sx, sy, px, py, numPoints)
-            val ed = f2 - f1
-            if (ed > maxEdgeDist) maxEdgeDist = ed
+        // Pre-compute cell colors
+        val lut = if (colorModeId != 0) palette.buildLut(256) else null
+        val cellColors = IntArray(numPoints)
+        when (colorModeId) {
+            1 -> {
+                val halfW = w / 2f; val halfH = h / 2f
+                val invTwoPi = 1f / (2f * Math.PI.toFloat())
+                for (i in 0 until numPoints) {
+                    val angle = atan2(py[i] - halfH, px[i] - halfW)
+                    val t = ((angle + Math.PI.toFloat()) * invTwoPi).coerceIn(0f, 1f)
+                    cellColors[i] = lut!![(t * 255f).toInt().coerceIn(0, 255)]
+                }
+            }
+            2 -> {
+                val halfW = w / 2f; val halfH = h / 2f
+                val maxDist = sqrt((w * w + h * h).toFloat()) / 2f
+                val invMaxDist = 1f / maxDist
+                for (i in 0 until numPoints) {
+                    val dx = px[i] - halfW; val dy = py[i] - halfH
+                    val t = (sqrt(dx * dx + dy * dy) * invMaxDist).coerceIn(0f, 1f)
+                    cellColors[i] = lut!![(t * 255f).toInt().coerceIn(0, 255)]
+                }
+            }
+            else -> { for (i in 0 until numPoints) cellColors[i] = colors[i % colorsSize] }
         }
 
         val gapThreshold = gap * 2f
+        val pixels = IntArray(w * h)
+        val step = when (quality) { Quality.DRAFT -> 2; else -> 1 }
 
-        val step = when (quality) {
-            Quality.DRAFT -> 2
-            Quality.BALANCED -> 1
-            Quality.ULTRA -> 1
-        }
-
-        for (row in 0 until h step step) {
-            for (col in 0 until w step step) {
-                val (f1, f2, nearestIdx) = findF1F2WithIndexBruteForce(
-                    col.toFloat(), row.toFloat(), px, py, numPoints
-                )
-                val edgeDist = f2 - f1
-
-                val isGrout = edgeDist < gapThreshold
-
-                val color = if (isGrout) {
-                    groutColorInt
-                } else {
-                    val baseColor = colors[nearestIdx % colors.size]
-                    when (cellShading) {
-                        "raised" -> {
-                            // Lighten towards cell centre to simulate raised tile
-                            val distToEdge = (edgeDist / gapThreshold.coerceAtLeast(1f)).coerceIn(1f, 3f)
-                            val factor = (0.85f + (distToEdge - 1f) * 0.05f).coerceIn(0.85f, 1.15f)
-                            val r = (Color.red(baseColor) * factor).toInt().coerceIn(0, 255)
-                            val g = (Color.green(baseColor) * factor).toInt().coerceIn(0, 255)
-                            val b = (Color.blue(baseColor) * factor).toInt().coerceIn(0, 255)
-                            Color.rgb(r, g, b)
+        if (isEuclidean && tileStyleId == 0) {
+            // ── EUCLIDEAN FLAT FAST PATH ──
+            val gapThreshSq = gapThreshold * gapThreshold
+            for (row in 0 until h step step) {
+                val y = row.toFloat()
+                val rowOff = row * w
+                val gy = minOf((y * invGridSize).toInt(), grM1)
+                val cyMin = maxOf(gy - 1, 0); val cyMax = minOf(gy + 1, grM1)
+                for (col in 0 until w step step) {
+                    val x = col.toFloat()
+                    val gx = minOf((x * invGridSize).toInt(), gcM1)
+                    val cxMin = maxOf(gx - 1, 0); val cxMax = minOf(gx + 1, gcM1)
+                    var f1 = Float.MAX_VALUE; var f2 = Float.MAX_VALUE; var nearIdx = 0
+                    for (cy in cyMin..cyMax) {
+                        val ro = cy * gridCols
+                        for (cx in cxMin..cxMax) {
+                            var ii = gridHeads[ro + cx]
+                            while (ii >= 0) {
+                                val dx = x - px[ii]; val dy = y - py[ii]
+                                val d = dx * dx + dy * dy
+                                if (d < f1) { f2 = f1; f1 = d; nearIdx = ii }
+                                else if (d < f2) { f2 = d }
+                                ii = gridNext[ii]
+                            }
                         }
-                        "inset" -> {
-                            // Darken towards cell centre to simulate inset tile
-                            val distToEdge = (edgeDist / gapThreshold.coerceAtLeast(1f)).coerceIn(1f, 3f)
-                            val factor = (1.15f - (distToEdge - 1f) * 0.05f).coerceIn(0.85f, 1.15f)
-                            val r = (Color.red(baseColor) * factor).toInt().coerceIn(0, 255)
-                            val g = (Color.green(baseColor) * factor).toInt().coerceIn(0, 255)
-                            val b = (Color.blue(baseColor) * factor).toInt().coerceIn(0, 255)
-                            Color.rgb(r, g, b)
-                        }
-                        else -> baseColor // "flat"
+                    }
+                    val sqrtF1 = sqrt(f1)
+                    val isGrout = f2 < f1 + gapThreshSq + 2f * gapThreshold * sqrtF1
+                    val color = if (isGrout) groutColorInt else cellColors[nearIdx]
+                    if (step == 1) {
+                        pixels[rowOff + col] = color
+                    } else {
+                        val i0 = rowOff + col
+                        pixels[i0] = color
+                        if (col + 1 < w) pixels[i0 + 1] = color
+                        if (row + 1 < h) { pixels[i0 + w] = color; if (col + 1 < w) pixels[i0 + w + 1] = color }
                     }
                 }
-
-                if (step == 1) {
-                    pixels[row * w + col] = color
-                } else {
-                    for (dy in 0 until step) {
-                        for (dx in 0 until step) {
-                            val fx = col + dx
-                            val fy = row + dy
-                            if (fx < w && fy < h) pixels[fy * w + fx] = color
+            }
+        } else if (metricId == 1) {
+            // ── MANHATTAN PATH: inline abs, early exit on |dx| ──
+            val gapThreshInv = 1f / gapThreshold.coerceAtLeast(1f)
+            for (row in 0 until h step step) {
+                val y = row.toFloat()
+                val rowOff = row * w
+                val gy = minOf((y * invGridSize).toInt(), grM1)
+                val cyMin = maxOf(gy - 1, 0); val cyMax = minOf(gy + 1, grM1)
+                for (col in 0 until w step step) {
+                    val x = col.toFloat()
+                    val gx = minOf((x * invGridSize).toInt(), gcM1)
+                    val cxMin = maxOf(gx - 1, 0); val cxMax = minOf(gx + 1, gcM1)
+                    var f1 = Float.MAX_VALUE; var f2 = Float.MAX_VALUE; var nearIdx = 0
+                    for (cy in cyMin..cyMax) {
+                        val ro = cy * gridCols
+                        for (cx in cxMin..cxMax) {
+                            var ii = gridHeads[ro + cx]
+                            while (ii >= 0) {
+                                val dx = x - px[ii]; val dy = y - py[ii]
+                                val adx = if (dx < 0f) -dx else dx
+                                if (adx < f1) {
+                                    val ady = if (dy < 0f) -dy else dy
+                                    val d = adx + ady
+                                    if (d < f1) { f2 = f1; f1 = d; nearIdx = ii }
+                                    else if (d < f2) { f2 = d }
+                                }
+                                ii = gridNext[ii]
+                            }
                         }
+                    }
+                    val edgeDist = f2 - f1
+                    val isGrout = edgeDist < gapThreshold
+                    val color = if (isGrout) groutColorInt
+                    else {
+                        val baseColor = cellColors[nearIdx]
+                        when (tileStyleId) {
+                            1 -> { val distToEdge = (edgeDist * gapThreshInv).coerceIn(1f, 3f); val factor = (0.85f + (distToEdge - 1f) * 0.05f).coerceIn(0.85f, 1.15f); Color.rgb((Color.red(baseColor) * factor).toInt().coerceIn(0, 255), (Color.green(baseColor) * factor).toInt().coerceIn(0, 255), (Color.blue(baseColor) * factor).toInt().coerceIn(0, 255)) }
+                            2 -> { val distToEdge = (edgeDist * gapThreshInv).coerceIn(1f, 3f); val factor = (1.15f - (distToEdge - 1f) * 0.05f).coerceIn(0.85f, 1.15f); Color.rgb((Color.red(baseColor) * factor).toInt().coerceIn(0, 255), (Color.green(baseColor) * factor).toInt().coerceIn(0, 255), (Color.blue(baseColor) * factor).toInt().coerceIn(0, 255)) }
+                            else -> baseColor
+                        }
+                    }
+                    if (step == 1) {
+                        pixels[rowOff + col] = color
+                    } else {
+                        val i0 = rowOff + col
+                        pixels[i0] = color
+                        if (col + 1 < w) pixels[i0 + 1] = color
+                        if (row + 1 < h) { pixels[i0 + w] = color; if (col + 1 < w) pixels[i0 + w + 1] = color }
+                    }
+                }
+            }
+        } else if (metricId == 2) {
+            // ── CHEBYSHEV PATH: inline abs/max, early exit on |dx| ──
+            val gapThreshInv = 1f / gapThreshold.coerceAtLeast(1f)
+            for (row in 0 until h step step) {
+                val y = row.toFloat()
+                val rowOff = row * w
+                val gy = minOf((y * invGridSize).toInt(), grM1)
+                val cyMin = maxOf(gy - 1, 0); val cyMax = minOf(gy + 1, grM1)
+                for (col in 0 until w step step) {
+                    val x = col.toFloat()
+                    val gx = minOf((x * invGridSize).toInt(), gcM1)
+                    val cxMin = maxOf(gx - 1, 0); val cxMax = minOf(gx + 1, gcM1)
+                    var f1 = Float.MAX_VALUE; var f2 = Float.MAX_VALUE; var nearIdx = 0
+                    for (cy in cyMin..cyMax) {
+                        val ro = cy * gridCols
+                        for (cx in cxMin..cxMax) {
+                            var ii = gridHeads[ro + cx]
+                            while (ii >= 0) {
+                                val dx = x - px[ii]; val dy = y - py[ii]
+                                val adx = if (dx < 0f) -dx else dx
+                                if (adx < f1) {
+                                    val ady = if (dy < 0f) -dy else dy
+                                    val d = if (adx > ady) adx else ady
+                                    if (d < f1) { f2 = f1; f1 = d; nearIdx = ii }
+                                    else if (d < f2) { f2 = d }
+                                }
+                                ii = gridNext[ii]
+                            }
+                        }
+                    }
+                    val edgeDist = f2 - f1
+                    val isGrout = edgeDist < gapThreshold
+                    val color = if (isGrout) groutColorInt
+                    else {
+                        val baseColor = cellColors[nearIdx]
+                        when (tileStyleId) {
+                            1 -> { val distToEdge = (edgeDist * gapThreshInv).coerceIn(1f, 3f); val factor = (0.85f + (distToEdge - 1f) * 0.05f).coerceIn(0.85f, 1.15f); Color.rgb((Color.red(baseColor) * factor).toInt().coerceIn(0, 255), (Color.green(baseColor) * factor).toInt().coerceIn(0, 255), (Color.blue(baseColor) * factor).toInt().coerceIn(0, 255)) }
+                            2 -> { val distToEdge = (edgeDist * gapThreshInv).coerceIn(1f, 3f); val factor = (1.15f - (distToEdge - 1f) * 0.05f).coerceIn(0.85f, 1.15f); Color.rgb((Color.red(baseColor) * factor).toInt().coerceIn(0, 255), (Color.green(baseColor) * factor).toInt().coerceIn(0, 255), (Color.blue(baseColor) * factor).toInt().coerceIn(0, 255)) }
+                            else -> baseColor
+                        }
+                    }
+                    if (step == 1) {
+                        pixels[rowOff + col] = color
+                    } else {
+                        val i0 = rowOff + col
+                        pixels[i0] = color
+                        if (col + 1 < w) pixels[i0 + 1] = color
+                        if (row + 1 < h) { pixels[i0 + w] = color; if (col + 1 < w) pixels[i0 + w + 1] = color }
+                    }
+                }
+            }
+        } else {
+            // ── EUCLIDEAN GENERAL PATH (raised/inset tile styles) ──
+            val gapThreshInv = 1f / gapThreshold.coerceAtLeast(1f)
+            for (row in 0 until h step step) {
+                val y = row.toFloat()
+                val rowOff = row * w
+                val gy = minOf((y * invGridSize).toInt(), grM1)
+                val cyMin = maxOf(gy - 1, 0); val cyMax = minOf(gy + 1, grM1)
+                for (col in 0 until w step step) {
+                    val x = col.toFloat()
+                    val gx = minOf((x * invGridSize).toInt(), gcM1)
+                    val cxMin = maxOf(gx - 1, 0); val cxMax = minOf(gx + 1, gcM1)
+                    var f1 = Float.MAX_VALUE; var f2 = Float.MAX_VALUE; var nearIdx = 0
+                    for (cy in cyMin..cyMax) {
+                        val ro = cy * gridCols
+                        for (cx in cxMin..cxMax) {
+                            var ii = gridHeads[ro + cx]
+                            while (ii >= 0) {
+                                val dx = x - px[ii]; val dy = y - py[ii]
+                                val d = dx * dx + dy * dy
+                                if (d < f1) { f2 = f1; f1 = d; nearIdx = ii }
+                                else if (d < f2) { f2 = d }
+                                ii = gridNext[ii]
+                            }
+                        }
+                    }
+                    val edgeDist = sqrt(f2) - sqrt(f1)
+                    val isGrout = edgeDist < gapThreshold
+                    val color = if (isGrout) groutColorInt
+                    else {
+                        val baseColor = cellColors[nearIdx]
+                        when (tileStyleId) {
+                            1 -> { val distToEdge = (edgeDist * gapThreshInv).coerceIn(1f, 3f); val factor = (0.85f + (distToEdge - 1f) * 0.05f).coerceIn(0.85f, 1.15f); Color.rgb((Color.red(baseColor) * factor).toInt().coerceIn(0, 255), (Color.green(baseColor) * factor).toInt().coerceIn(0, 255), (Color.blue(baseColor) * factor).toInt().coerceIn(0, 255)) }
+                            2 -> { val distToEdge = (edgeDist * gapThreshInv).coerceIn(1f, 3f); val factor = (1.15f - (distToEdge - 1f) * 0.05f).coerceIn(0.85f, 1.15f); Color.rgb((Color.red(baseColor) * factor).toInt().coerceIn(0, 255), (Color.green(baseColor) * factor).toInt().coerceIn(0, 255), (Color.blue(baseColor) * factor).toInt().coerceIn(0, 255)) }
+                            else -> baseColor
+                        }
+                    }
+                    if (step == 1) {
+                        pixels[rowOff + col] = color
+                    } else {
+                        val i0 = rowOff + col
+                        pixels[i0] = color
+                        if (col + 1 < w) pixels[i0 + 1] = color
+                        if (row + 1 < h) { pixels[i0 + w] = color; if (col + 1 < w) pixels[i0 + w + 1] = color }
                     }
                 }
             }
@@ -172,50 +406,6 @@ class VoronoiMosaicGenerator : Generator {
 
         bitmap.setPixels(pixels, 0, w, 0, 0, w, h)
         canvas.drawBitmap(bitmap, 0f, 0f, null)
-    }
-
-    private data class F1F2Result(val f1: Float, val f2: Float, val nearestIdx: Int)
-
-    private fun findF1F2BruteForce(
-        x: Float, y: Float,
-        px: FloatArray, py: FloatArray, numPoints: Int
-    ): Pair<Float, Float> {
-        var f1 = Float.MAX_VALUE
-        var f2 = Float.MAX_VALUE
-        for (i in 0 until numPoints) {
-            val dx = x - px[i]
-            val dy = y - py[i]
-            val d = sqrt(dx * dx + dy * dy)
-            if (d < f1) {
-                f2 = f1
-                f1 = d
-            } else if (d < f2) {
-                f2 = d
-            }
-        }
-        return Pair(f1, f2)
-    }
-
-    private fun findF1F2WithIndexBruteForce(
-        x: Float, y: Float,
-        px: FloatArray, py: FloatArray, numPoints: Int
-    ): F1F2Result {
-        var f1 = Float.MAX_VALUE
-        var f2 = Float.MAX_VALUE
-        var nearestIdx = 0
-        for (i in 0 until numPoints) {
-            val dx = x - px[i]
-            val dy = y - py[i]
-            val d = sqrt(dx * dx + dy * dy)
-            if (d < f1) {
-                f2 = f1
-                f1 = d
-                nearestIdx = i
-            } else if (d < f2) {
-                f2 = d
-            }
-        }
-        return F1F2Result(f1, f2, nearestIdx)
     }
 
     override fun estimateCost(params: Map<String, Any>, quality: Quality): Float {

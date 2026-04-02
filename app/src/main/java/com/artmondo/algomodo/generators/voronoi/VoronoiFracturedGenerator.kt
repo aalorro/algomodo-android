@@ -16,8 +16,8 @@ import kotlin.math.sqrt
  * Fractured / multi-level Voronoi generator.
  *
  * Creates a hierarchical Voronoi pattern where each cell is subdivided by
- * a secondary (and optionally tertiary) set of seed points, producing a
- * shattered-glass or fractured-rock appearance.
+ * a secondary set of seed points, producing a shattered-glass or
+ * fractured-rock appearance.
  */
 class VoronoiFracturedGenerator : Generator {
 
@@ -69,122 +69,401 @@ class VoronoiFracturedGenerator : Generator {
     ) {
         val w = bitmap.width
         val h = bitmap.height
+        val wf = w.toFloat()
+        val hf = h.toFloat()
         val numPoints = (params["shardCount"] as? Number)?.toInt() ?: 25
-        val fractureCount = (params["fractureCount"] as? Number)?.toInt() ?: 60
-        val fractureLevels = 2
-        val irregularity = 0.5f
+        if (numPoints <= 0) { canvas.drawColor(Color.BLACK); return }
+        val fractureCount = ((params["fractureCount"] as? Number)?.toInt() ?: 60).coerceAtMost(500)
+        val crackWidth = (params["crackWidth"] as? Number)?.toFloat() ?: 1.5f
+        val fractureWidth = (params["fractureWidth"] as? Number)?.toFloat() ?: 0.8f
+        val shadeStrength = (params["shadeStrength"] as? Number)?.toFloat() ?: 0.5f
+        val colorMode = (params["colorMode"] as? String) ?: "palette-cycle"
+        val distanceMetric = (params["distanceMetric"] as? String) ?: "Euclidean"
+        val animSpeed = (params["animSpeed"] as? Number)?.toFloat() ?: 0.3f
+        val animAmp = (params["animAmp"] as? Number)?.toFloat() ?: 0.15f
+
+        val metricId = when (distanceMetric.lowercase()) {
+            "manhattan" -> 1; "chebyshev" -> 2; else -> 0
+        }
+        val isEuclidean = metricId == 0
+        val colorModeId = when (colorMode) { "palette-gradient" -> 1; "monochrome" -> 2; else -> 0 }
 
         val noise = SimplexNoise(seed)
 
-        // Generate point sets for each fracture level
-        // Level 0: numPoints, Level 1: numPoints*3, Level 2: numPoints*9, etc.
-        data class PointSet(
-            val px: FloatArray,
-            val py: FloatArray,
-            val count: Int,
-            val grid: Array<MutableList<Int>>,
-            val gridCols: Int,
-            val gridRows: Int,
-            val cellW: Float,
-            val cellH: Float
-        )
+        // ── Level 0: Primary shards ──
+        val rng0 = SeededRNG(seed)
+        val px0 = FloatArray(numPoints)
+        val py0 = FloatArray(numPoints)
+        for (i in 0 until numPoints) {
+            px0[i] = rng0.random() * w
+            py0[i] = rng0.random() * h
+        }
 
-        val levels = mutableListOf<PointSet>()
+        // ── Level 1: Fracture lines (jittered grid) ──
+        val rng1 = SeededRNG(seed + 7919)
+        val px1 = FloatArray(fractureCount)
+        val py1 = FloatArray(fractureCount)
+        val cols1 = sqrt(fractureCount.toFloat()).toInt().coerceAtLeast(1)
+        val rows1 = (fractureCount + cols1 - 1) / cols1
+        val stepW = wf / cols1
+        val stepH = hf / rows1
+        var fi = 0
+        for (r in 0 until rows1) {
+            for (c in 0 until cols1) {
+                if (fi >= fractureCount) break
+                px1[fi] = ((c + 0.5f) * stepW + (rng1.random() - 0.5f) * stepW * 0.5f).coerceIn(0f, wf - 1f)
+                py1[fi] = ((r + 0.5f) * stepH + (rng1.random() - 0.5f) * stepH * 0.5f).coerceIn(0f, hf - 1f)
+                fi++
+            }
+        }
 
-        for (level in 0 until fractureLevels) {
-            val rng = SeededRNG(seed + level * 7919)
-            val count = if (level == 0) numPoints else fractureCount.coerceAtMost(500)
+        // Animate
+        if (time > 0f && animSpeed > 0f && animAmp > 0f) {
+            val amp = animAmp * 0.15f
+            for (i in 0 until numPoints) {
+                px0[i] = (px0[i] + noise.noise2D(i * 0.2f, time * animSpeed) * wf * amp).coerceIn(0f, wf - 1f)
+                py0[i] = (py0[i] + noise.noise2D(i * 0.2f + 500f, time * animSpeed) * hf * amp).coerceIn(0f, hf - 1f)
+            }
+            val speed1 = animSpeed * 0.5f
+            for (i in 0 until fractureCount) {
+                px1[i] = (px1[i] + noise.noise2D(i * 0.2f + 100f, time * speed1) * wf * amp).coerceIn(0f, wf - 1f)
+                py1[i] = (py1[i] + noise.noise2D(i * 0.2f + 600f, time * speed1) * hf * amp).coerceIn(0f, hf - 1f)
+            }
+        }
 
-            val lpx = FloatArray(count)
-            val lpy = FloatArray(count)
+        // ── Spatial grid for level 0 (linked-list) ──
+        val gs0 = (maxOf(w, h).toFloat() / sqrt(numPoints.toFloat())).coerceAtLeast(8f)
+        val invGs0 = 1f / gs0
+        val gc0 = (w * invGs0).toInt() + 1
+        val gr0 = (h * invGs0).toInt() + 1
+        val gc0M1 = gc0 - 1; val gr0M1 = gr0 - 1
+        val gh0 = IntArray(gc0 * gr0) { -1 }
+        val gn0 = IntArray(numPoints) { -1 }
+        for (i in 0 until numPoints) {
+            val gx = minOf((px0[i] * invGs0).toInt(), gc0M1)
+            val gy = minOf((py0[i] * invGs0).toInt(), gr0M1)
+            val cell = gy * gc0 + gx
+            gn0[i] = gh0[cell]; gh0[cell] = i
+        }
 
-            if (level == 0) {
-                for (i in 0 until count) {
-                    lpx[i] = rng.random() * w
-                    lpy[i] = rng.random() * h
-                }
-            } else {
-                // Sub-level points: create a jittered grid with irregularity
-                val cols = sqrt(count.toFloat()).toInt().coerceAtLeast(1)
-                val rows = (count + cols - 1) / cols
-                val stepW = w.toFloat() / cols
-                val stepH = h.toFloat() / rows
-                var idx = 0
-                for (r in 0 until rows) {
-                    for (c in 0 until cols) {
-                        if (idx >= count) break
-                        val baseX = (c + 0.5f) * stepW
-                        val baseY = (r + 0.5f) * stepH
-                        lpx[idx] = baseX + (rng.random() - 0.5f) * stepW * irregularity
-                        lpy[idx] = baseY + (rng.random() - 0.5f) * stepH * irregularity
-                        lpx[idx] = lpx[idx].coerceIn(0f, w.toFloat() - 1f)
-                        lpy[idx] = lpy[idx].coerceIn(0f, h.toFloat() - 1f)
-                        idx++
+        // ── Spatial grid for level 1 (linked-list) ──
+        val gs1 = (maxOf(w, h).toFloat() / sqrt(fractureCount.toFloat())).coerceAtLeast(8f)
+        val invGs1 = 1f / gs1
+        val gc1 = (w * invGs1).toInt() + 1
+        val gr1 = (h * invGs1).toInt() + 1
+        val gc1M1 = gc1 - 1; val gr1M1 = gr1 - 1
+        val gh1 = IntArray(gc1 * gr1) { -1 }
+        val gn1 = IntArray(fractureCount) { -1 }
+        for (i in 0 until fractureCount) {
+            val gx = minOf((px1[i] * invGs1).toInt(), gc1M1)
+            val gy = minOf((py1[i] * invGs1).toInt(), gr1M1)
+            val cell = gy * gc1 + gx
+            gn1[i] = gh1[cell]; gh1[cell] = i
+        }
+
+        // Pre-compute constants
+        val colors = palette.colorInts()
+        val colorsSize = colors.size
+        val lut = if (colorModeId == 1) palette.buildLut(256) else null
+        val lightDirX = 0.7071f; val lightDirY = 0.7071f
+        val cellRadius = sqrt(wf * hf / numPoints.toFloat()) * 0.5f
+        val invCellRadius = 1f / cellRadius
+        val crackThresh = crackWidth * 3f
+        val fractureThresh = fractureWidth * 2f
+
+        val pixels = IntArray(w * h)
+        val step = when (quality) { Quality.DRAFT -> 2; else -> 1 }
+
+        if (isEuclidean) {
+            // ── EUCLIDEAN FAST PATH: no metric branch in inner loops ──
+            for (row in 0 until h step step) {
+                val y = row.toFloat()
+                val rowOff = row * w
+                val gy0v = minOf((y * invGs0).toInt(), gr0M1)
+                val cyMin0 = maxOf(gy0v - 1, 0); val cyMax0 = minOf(gy0v + 1, gr0M1)
+                val gy1v = minOf((y * invGs1).toInt(), gr1M1)
+                val cyMin1 = maxOf(gy1v - 1, 0); val cyMax1 = minOf(gy1v + 1, gr1M1)
+                for (col in 0 until w step step) {
+                    val x = col.toFloat()
+                    // Level 0: find F1, F2 in primary grid
+                    val gx0v = minOf((x * invGs0).toInt(), gc0M1)
+                    val cxMin0 = maxOf(gx0v - 1, 0); val cxMax0 = minOf(gx0v + 1, gc0M1)
+                    var f1a = Float.MAX_VALUE; var f2a = Float.MAX_VALUE; var near0 = 0
+                    for (cy in cyMin0..cyMax0) {
+                        val ro = cy * gc0
+                        for (cx in cxMin0..cxMax0) {
+                            var ii = gh0[ro + cx]
+                            while (ii >= 0) {
+                                val dx = x - px0[ii]; val dy = y - py0[ii]
+                                val d = dx * dx + dy * dy
+                                if (d < f1a) { f2a = f1a; f1a = d; near0 = ii }
+                                else if (d < f2a) { f2a = d }
+                                ii = gn0[ii]
+                            }
+                        }
+                    }
+                    // Level 1: find F1, F2 in fracture grid
+                    val gx1v = minOf((x * invGs1).toInt(), gc1M1)
+                    val cxMin1 = maxOf(gx1v - 1, 0); val cxMax1 = minOf(gx1v + 1, gc1M1)
+                    var f1b = Float.MAX_VALUE; var f2b = Float.MAX_VALUE; var near1 = 0
+                    for (cy in cyMin1..cyMax1) {
+                        val ro = cy * gc1
+                        for (cx in cxMin1..cxMax1) {
+                            var ii = gh1[ro + cx]
+                            while (ii >= 0) {
+                                val dx = x - px1[ii]; val dy = y - py1[ii]
+                                val d = dx * dx + dy * dy
+                                if (d < f1b) { f2b = f1b; f1b = d; near1 = ii }
+                                else if (d < f2b) { f2b = d }
+                                ii = gn1[ii]
+                            }
+                        }
+                    }
+
+                    // Edge detection (squared distance gap — matches original behavior)
+                    val isCrack = crackWidth > 0f && (f2a - f1a) < crackThresh
+                    val isFracture = fractureWidth > 0f && (f2b - f1b) < fractureThresh
+
+                    val combinedIndex = near0 * 7 + near1
+                    val baseColor = when (colorModeId) {
+                        1 -> {
+                            val t = if (numPoints > 1) near0.toFloat() / (numPoints - 1).toFloat() else 0f
+                            lut!![(t * 255f).toInt().coerceIn(0, 255)]
+                        }
+                        2 -> {
+                            val baseC = colors[0]
+                            val br = 0.5f + 0.5f * ((combinedIndex * 4973) and 0xFF) / 255f
+                            Color.rgb((Color.red(baseC) * br).toInt().coerceIn(0, 255),
+                                (Color.green(baseC) * br).toInt().coerceIn(0, 255),
+                                (Color.blue(baseC) * br).toInt().coerceIn(0, 255))
+                        }
+                        else -> colors[(combinedIndex and 0x7FFFFFFF) % colorsSize]
+                    }
+
+                    val color = if (shadeStrength > 0f) {
+                        val nx = ((x - px0[near0]) * invCellRadius).coerceIn(-1f, 1f)
+                        val ny = ((y - py0[near0]) * invCellRadius).coerceIn(-1f, 1f)
+                        val shade = 1f + (nx * lightDirX + ny * lightDirY) * shadeStrength * 0.5f
+                        Color.rgb((Color.red(baseColor) * shade).toInt().coerceIn(0, 255),
+                            (Color.green(baseColor) * shade).toInt().coerceIn(0, 255),
+                            (Color.blue(baseColor) * shade).toInt().coerceIn(0, 255))
+                    } else baseColor
+
+                    val finalColor = when {
+                        isCrack -> Color.BLACK
+                        isFracture -> Color.rgb((Color.red(color) * 0.4f).toInt(),
+                            (Color.green(color) * 0.4f).toInt(),
+                            (Color.blue(color) * 0.4f).toInt())
+                        else -> color
+                    }
+
+                    if (step == 1) {
+                        pixels[rowOff + col] = finalColor
+                    } else {
+                        val i0 = rowOff + col
+                        pixels[i0] = finalColor
+                        if (col + 1 < w) pixels[i0 + 1] = finalColor
+                        if (row + 1 < h) { pixels[i0 + w] = finalColor; if (col + 1 < w) pixels[i0 + w + 1] = finalColor }
                     }
                 }
             }
-
-            // Animate
-            if (time > 0f) {
-                val speed = 0.1f / (level + 1)
-                for (i in 0 until count) {
-                    lpx[i] += noise.noise2D(i * 0.2f + level * 100f, time * speed) * w * 0.02f
-                    lpy[i] += noise.noise2D(i * 0.2f + level * 100f + 500f, time * speed) * h * 0.02f
-                    lpx[i] = lpx[i].coerceIn(0f, w.toFloat() - 1f)
-                    lpy[i] = lpy[i].coerceIn(0f, h.toFloat() - 1f)
-                }
-            }
-
-            // Build grid lookup
-            val gridCols = (sqrt(count.toFloat()) * 1.5f).toInt().coerceAtLeast(1)
-            val gridRows = gridCols
-            val cellW = w.toFloat() / gridCols
-            val cellH = h.toFloat() / gridRows
-            val grid = Array(gridRows * gridCols) { mutableListOf<Int>() }
-            for (i in 0 until count) {
-                val gc = (lpx[i] / cellW).toInt().coerceIn(0, gridCols - 1)
-                val gr = (lpy[i] / cellH).toInt().coerceIn(0, gridRows - 1)
-                grid[gr * gridCols + gc].add(i)
-            }
-
-            levels.add(PointSet(lpx, lpy, count, grid, gridCols, gridRows, cellW, cellH))
-        }
-
-        val pixels = IntArray(w * h)
-        val colors = palette.colorInts()
-
-        val step = when (quality) {
-            Quality.DRAFT -> 2
-            Quality.BALANCED -> 1
-            Quality.ULTRA -> 1
-        }
-
-        for (row in 0 until h step step) {
-            for (col in 0 until w step step) {
-                // Combine nearest cell index from each level
-                var combinedIndex = 0
-                for (level in levels.indices) {
-                    val ps = levels[level]
-                    val nearest = findNearestInGrid(
-                        col.toFloat(), row.toFloat(),
-                        ps.px, ps.py, ps.count,
-                        ps.grid, ps.gridCols, ps.gridRows, ps.cellW, ps.cellH
-                    )
-                    combinedIndex = combinedIndex * 7 + nearest
-                }
-
-                val colorIdx = (combinedIndex and 0x7FFFFFFF) % colors.size
-                val color = colors[colorIdx]
-
-                if (step == 1) {
-                    pixels[row * w + col] = color
-                } else {
-                    for (dy in 0 until step) {
-                        for (dx in 0 until step) {
-                            val fx = col + dx
-                            val fy = row + dy
-                            if (fx < w && fy < h) pixels[fy * w + fx] = color
+        } else if (metricId == 1) {
+            // ── MANHATTAN PATH: inline abs, no branches in inner loop ──
+            for (row in 0 until h step step) {
+                val y = row.toFloat()
+                val rowOff = row * w
+                val gy0v = minOf((y * invGs0).toInt(), gr0M1)
+                val cyMin0 = maxOf(gy0v - 1, 0); val cyMax0 = minOf(gy0v + 1, gr0M1)
+                val gy1v = minOf((y * invGs1).toInt(), gr1M1)
+                val cyMin1 = maxOf(gy1v - 1, 0); val cyMax1 = minOf(gy1v + 1, gr1M1)
+                for (col in 0 until w step step) {
+                    val x = col.toFloat()
+                    // Level 0
+                    val gx0v = minOf((x * invGs0).toInt(), gc0M1)
+                    val cxMin0 = maxOf(gx0v - 1, 0); val cxMax0 = minOf(gx0v + 1, gc0M1)
+                    var f1a = Float.MAX_VALUE; var f2a = Float.MAX_VALUE; var near0 = 0
+                    for (cy in cyMin0..cyMax0) {
+                        val ro = cy * gc0
+                        for (cx in cxMin0..cxMax0) {
+                            var ii = gh0[ro + cx]
+                            while (ii >= 0) {
+                                val dx = x - px0[ii]; val dy = y - py0[ii]
+                                val adx = if (dx < 0f) -dx else dx
+                                if (adx < f1a) {
+                                    val ady = if (dy < 0f) -dy else dy
+                                    val d = adx + ady
+                                    if (d < f1a) { f2a = f1a; f1a = d; near0 = ii }
+                                    else if (d < f2a) { f2a = d }
+                                }
+                                ii = gn0[ii]
+                            }
                         }
+                    }
+                    // Level 1
+                    val gx1v = minOf((x * invGs1).toInt(), gc1M1)
+                    val cxMin1 = maxOf(gx1v - 1, 0); val cxMax1 = minOf(gx1v + 1, gc1M1)
+                    var f1b = Float.MAX_VALUE; var f2b = Float.MAX_VALUE; var near1 = 0
+                    for (cy in cyMin1..cyMax1) {
+                        val ro = cy * gc1
+                        for (cx in cxMin1..cxMax1) {
+                            var ii = gh1[ro + cx]
+                            while (ii >= 0) {
+                                val dx = x - px1[ii]; val dy = y - py1[ii]
+                                val adx = if (dx < 0f) -dx else dx
+                                if (adx < f1b) {
+                                    val ady = if (dy < 0f) -dy else dy
+                                    val d = adx + ady
+                                    if (d < f1b) { f2b = f1b; f1b = d; near1 = ii }
+                                    else if (d < f2b) { f2b = d }
+                                }
+                                ii = gn1[ii]
+                            }
+                        }
+                    }
+
+                    val isCrack = crackWidth > 0f && (f2a - f1a) < crackThresh
+                    val isFracture = fractureWidth > 0f && (f2b - f1b) < fractureThresh
+                    val combinedIndex = near0 * 7 + near1
+
+                    val baseColor = when (colorModeId) {
+                        1 -> {
+                            val t = if (numPoints > 1) near0.toFloat() / (numPoints - 1).toFloat() else 0f
+                            lut!![(t * 255f).toInt().coerceIn(0, 255)]
+                        }
+                        2 -> {
+                            val baseC = colors[0]
+                            val br = 0.5f + 0.5f * ((combinedIndex * 4973) and 0xFF) / 255f
+                            Color.rgb((Color.red(baseC) * br).toInt().coerceIn(0, 255),
+                                (Color.green(baseC) * br).toInt().coerceIn(0, 255),
+                                (Color.blue(baseC) * br).toInt().coerceIn(0, 255))
+                        }
+                        else -> colors[(combinedIndex and 0x7FFFFFFF) % colorsSize]
+                    }
+
+                    val color = if (shadeStrength > 0f) {
+                        val nx = ((x - px0[near0]) * invCellRadius).coerceIn(-1f, 1f)
+                        val ny = ((y - py0[near0]) * invCellRadius).coerceIn(-1f, 1f)
+                        val shade = 1f + (nx * lightDirX + ny * lightDirY) * shadeStrength * 0.5f
+                        Color.rgb((Color.red(baseColor) * shade).toInt().coerceIn(0, 255),
+                            (Color.green(baseColor) * shade).toInt().coerceIn(0, 255),
+                            (Color.blue(baseColor) * shade).toInt().coerceIn(0, 255))
+                    } else baseColor
+
+                    val finalColor = when {
+                        isCrack -> Color.BLACK
+                        isFracture -> Color.rgb((Color.red(color) * 0.4f).toInt(),
+                            (Color.green(color) * 0.4f).toInt(),
+                            (Color.blue(color) * 0.4f).toInt())
+                        else -> color
+                    }
+
+                    if (step == 1) {
+                        pixels[rowOff + col] = finalColor
+                    } else {
+                        val i0 = rowOff + col
+                        pixels[i0] = finalColor
+                        if (col + 1 < w) pixels[i0 + 1] = finalColor
+                        if (row + 1 < h) { pixels[i0 + w] = finalColor; if (col + 1 < w) pixels[i0 + w + 1] = finalColor }
+                    }
+                }
+            }
+        } else {
+            // ── CHEBYSHEV PATH: inline abs/max, early exit on |dx| ──
+            for (row in 0 until h step step) {
+                val y = row.toFloat()
+                val rowOff = row * w
+                val gy0v = minOf((y * invGs0).toInt(), gr0M1)
+                val cyMin0 = maxOf(gy0v - 1, 0); val cyMax0 = minOf(gy0v + 1, gr0M1)
+                val gy1v = minOf((y * invGs1).toInt(), gr1M1)
+                val cyMin1 = maxOf(gy1v - 1, 0); val cyMax1 = minOf(gy1v + 1, gr1M1)
+                for (col in 0 until w step step) {
+                    val x = col.toFloat()
+                    // Level 0
+                    val gx0v = minOf((x * invGs0).toInt(), gc0M1)
+                    val cxMin0 = maxOf(gx0v - 1, 0); val cxMax0 = minOf(gx0v + 1, gc0M1)
+                    var f1a = Float.MAX_VALUE; var f2a = Float.MAX_VALUE; var near0 = 0
+                    for (cy in cyMin0..cyMax0) {
+                        val ro = cy * gc0
+                        for (cx in cxMin0..cxMax0) {
+                            var ii = gh0[ro + cx]
+                            while (ii >= 0) {
+                                val dx = x - px0[ii]; val dy = y - py0[ii]
+                                val adx = if (dx < 0f) -dx else dx
+                                if (adx < f1a) {
+                                    val ady = if (dy < 0f) -dy else dy
+                                    val d = if (adx > ady) adx else ady
+                                    if (d < f1a) { f2a = f1a; f1a = d; near0 = ii }
+                                    else if (d < f2a) { f2a = d }
+                                }
+                                ii = gn0[ii]
+                            }
+                        }
+                    }
+                    // Level 1
+                    val gx1v = minOf((x * invGs1).toInt(), gc1M1)
+                    val cxMin1 = maxOf(gx1v - 1, 0); val cxMax1 = minOf(gx1v + 1, gc1M1)
+                    var f1b = Float.MAX_VALUE; var f2b = Float.MAX_VALUE; var near1 = 0
+                    for (cy in cyMin1..cyMax1) {
+                        val ro = cy * gc1
+                        for (cx in cxMin1..cxMax1) {
+                            var ii = gh1[ro + cx]
+                            while (ii >= 0) {
+                                val dx = x - px1[ii]; val dy = y - py1[ii]
+                                val adx = if (dx < 0f) -dx else dx
+                                if (adx < f1b) {
+                                    val ady = if (dy < 0f) -dy else dy
+                                    val d = if (adx > ady) adx else ady
+                                    if (d < f1b) { f2b = f1b; f1b = d; near1 = ii }
+                                    else if (d < f2b) { f2b = d }
+                                }
+                                ii = gn1[ii]
+                            }
+                        }
+                    }
+
+                    val isCrack = crackWidth > 0f && (f2a - f1a) < crackThresh
+                    val isFracture = fractureWidth > 0f && (f2b - f1b) < fractureThresh
+                    val combinedIndex = near0 * 7 + near1
+
+                    val baseColor = when (colorModeId) {
+                        1 -> {
+                            val t = if (numPoints > 1) near0.toFloat() / (numPoints - 1).toFloat() else 0f
+                            lut!![(t * 255f).toInt().coerceIn(0, 255)]
+                        }
+                        2 -> {
+                            val baseC = colors[0]
+                            val br = 0.5f + 0.5f * ((combinedIndex * 4973) and 0xFF) / 255f
+                            Color.rgb((Color.red(baseC) * br).toInt().coerceIn(0, 255),
+                                (Color.green(baseC) * br).toInt().coerceIn(0, 255),
+                                (Color.blue(baseC) * br).toInt().coerceIn(0, 255))
+                        }
+                        else -> colors[(combinedIndex and 0x7FFFFFFF) % colorsSize]
+                    }
+
+                    val color = if (shadeStrength > 0f) {
+                        val nx = ((x - px0[near0]) * invCellRadius).coerceIn(-1f, 1f)
+                        val ny = ((y - py0[near0]) * invCellRadius).coerceIn(-1f, 1f)
+                        val shade = 1f + (nx * lightDirX + ny * lightDirY) * shadeStrength * 0.5f
+                        Color.rgb((Color.red(baseColor) * shade).toInt().coerceIn(0, 255),
+                            (Color.green(baseColor) * shade).toInt().coerceIn(0, 255),
+                            (Color.blue(baseColor) * shade).toInt().coerceIn(0, 255))
+                    } else baseColor
+
+                    val finalColor = when {
+                        isCrack -> Color.BLACK
+                        isFracture -> Color.rgb((Color.red(color) * 0.4f).toInt(),
+                            (Color.green(color) * 0.4f).toInt(),
+                            (Color.blue(color) * 0.4f).toInt())
+                        else -> color
+                    }
+
+                    if (step == 1) {
+                        pixels[rowOff + col] = finalColor
+                    } else {
+                        val i0 = rowOff + col
+                        pixels[i0] = finalColor
+                        if (col + 1 < w) pixels[i0 + 1] = finalColor
+                        if (row + 1 < h) { pixels[i0 + w] = finalColor; if (col + 1 < w) pixels[i0 + w + 1] = finalColor }
                     }
                 }
             }
@@ -192,39 +471,6 @@ class VoronoiFracturedGenerator : Generator {
 
         bitmap.setPixels(pixels, 0, w, 0, 0, w, h)
         canvas.drawBitmap(bitmap, 0f, 0f, null)
-    }
-
-    private fun findNearestInGrid(
-        x: Float, y: Float,
-        px: FloatArray, py: FloatArray, count: Int,
-        grid: Array<MutableList<Int>>,
-        gridCols: Int, gridRows: Int,
-        cellW: Float, cellH: Float
-    ): Int {
-        val gc = (x / cellW).toInt().coerceIn(0, gridCols - 1)
-        val gr = (y / cellH).toInt().coerceIn(0, gridRows - 1)
-
-        var bestDist = Float.MAX_VALUE
-        var bestIdx = 0
-
-        for (dr in -2..2) {
-            for (dc in -2..2) {
-                val ngr = gr + dr
-                val ngc = gc + dc
-                if (ngr < 0 || ngr >= gridRows || ngc < 0 || ngc >= gridCols) continue
-                for (pi in grid[ngr * gridCols + ngc]) {
-                    val dx = x - px[pi]
-                    val dy = y - py[pi]
-                    val d = dx * dx + dy * dy
-                    if (d < bestDist) {
-                        bestDist = d
-                        bestIdx = pi
-                    }
-                }
-            }
-        }
-
-        return bestIdx
     }
 
     override fun estimateCost(params: Map<String, Any>, quality: Quality): Float {

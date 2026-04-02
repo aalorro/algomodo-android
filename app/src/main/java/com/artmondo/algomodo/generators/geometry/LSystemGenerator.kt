@@ -4,6 +4,7 @@ import android.graphics.Bitmap
 import android.graphics.Canvas
 import android.graphics.Color
 import android.graphics.Paint
+import android.graphics.Path
 import com.artmondo.algomodo.core.rng.SeededRNG
 import com.artmondo.algomodo.data.palettes.Palette
 import com.artmondo.algomodo.generators.Generator
@@ -169,12 +170,12 @@ class LSystemGenerator : Generator {
     private fun rewrite(axiom: String, rules: Map<Char, String>, iterations: Int): String {
         var current = axiom
         for (i in 0 until iterations) {
-            val sb = StringBuilder()
+            val sb = StringBuilder(current.length * 4)
             for (ch in current) {
                 sb.append(rules[ch] ?: ch.toString())
             }
             current = sb.toString()
-            if (current.length > 2_000_000) break
+            if (current.length > 600_000) break
         }
         return current
     }
@@ -329,31 +330,58 @@ class LSystemGenerator : Generator {
         }
 
         val paletteColors = palette.colorInts()
+        // Quantized palette LUT for gradient mode — limits batch count to ~64
+        val paletteLut = palette.buildLut(64)
 
+        // --- Pre-compute color and width per segment ---
+        val segColors = IntArray(visibleCount)
+        val segWidths = FloatArray(visibleCount)
         for (i in 0 until visibleCount) {
             val seg = segments[i]
-            val orderFrac = i.toFloat() / segments.size
-
-            // Color by mode
-            paint.color = when (colorMode) {
+            segColors[i] = when (colorMode) {
                 "depth" -> {
                     val t = (seg.depth.toFloat() / maxDepth).coerceIn(0f, 1f)
-                    palette.lerpColor(t)
+                    paletteLut[(t * 63f).toInt().coerceIn(0, 63)]
                 }
                 "single" -> paletteColors[0]
-                else -> palette.lerpColor(orderFrac) // "gradient"
+                else -> {
+                    val orderFrac = i.toFloat() / segments.size
+                    paletteLut[(orderFrac * 63f).toInt().coerceIn(0, 63)]
+                }
             }
-
-            // Stroke width: taper by depth or use fixed lineWidth
-            paint.strokeWidth = if (taper) {
+            segWidths[i] = if (taper) {
                 val depthFrac = seg.depth.toFloat() / maxDepth
-                (lineWidth * (1f - depthFrac * 0.8f)).coerceAtLeast(0.3f)
-            } else {
-                lineWidth
-            }
-
-            canvas.drawLine(seg.x1, seg.y1, seg.x2, seg.y2, paint)
+                // Quantize to 0.5 increments to improve batching
+                ((lineWidth * (1f - depthFrac * 0.8f)).coerceAtLeast(0.3f) * 2f).toInt() / 2f
+            } else lineWidth
         }
+
+        // --- Batched path drawing: group consecutive same-styled segments ---
+        var curColor = segColors[0]
+        var curWidth = segWidths[0]
+        var path = Path()
+        val seg0 = segments[0]
+        path.moveTo(seg0.x1, seg0.y1)
+        path.lineTo(seg0.x2, seg0.y2)
+
+        for (i in 1 until visibleCount) {
+            if (segColors[i] != curColor || segWidths[i] != curWidth) {
+                // Flush current batch
+                paint.color = curColor
+                paint.strokeWidth = curWidth
+                canvas.drawPath(path, paint)
+                path = Path()
+                curColor = segColors[i]
+                curWidth = segWidths[i]
+            }
+            val seg = segments[i]
+            path.moveTo(seg.x1, seg.y1)
+            path.lineTo(seg.x2, seg.y2)
+        }
+        // Flush final batch
+        paint.color = curColor
+        paint.strokeWidth = curWidth
+        canvas.drawPath(path, paint)
     }
 
     override fun renderVector(

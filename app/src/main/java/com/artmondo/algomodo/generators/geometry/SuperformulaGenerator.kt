@@ -243,9 +243,9 @@ class SuperformulaGenerator : Generator {
 
             when (animMode) {
                 "morph" -> {
-                    ringN1 = baseN1 + sin(time * speed * 0.25f + ring * 0.5f) * 0.5f
-                    ringN2 = baseN2 + sin(time * speed * 0.15f + ring * 0.7f) * 0.2f
-                    ringN3 = baseN3 + cos(time * speed * 0.18f + ring * 0.4f) * 0.2f
+                    ringN1 = baseN1 + sin(time * speed * 2f + ring * 0.5f) * baseN1 * 0.4f
+                    ringN2 = baseN2 + sin(time * speed * 1.3f + ring * 0.7f) * baseN2 * 0.3f
+                    ringN3 = baseN3 + cos(time * speed * 1.6f + ring * 0.4f) * baseN3 * 0.3f
                     ringScale = baseScale
                 }
                 "breathe" -> {

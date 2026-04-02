@@ -3,6 +3,9 @@ package com.artmondo.algomodo.generators.animation
 import android.graphics.Bitmap
 import android.graphics.Canvas
 import android.graphics.Color
+import android.graphics.Paint
+import android.graphics.Rect
+import android.graphics.RectF
 import com.artmondo.algomodo.core.rng.SeededRNG
 import com.artmondo.algomodo.data.palettes.Palette
 import com.artmondo.algomodo.generators.Generator
@@ -160,26 +163,46 @@ class PlasmaFeedbackGenerator : Generator {
         val pi = PI.toFloat()
         val twoPi = 2f * pi
 
-        val pixels = IntArray(w * h)
+        // --- Pre-compute LUTs ---
+        val paletteLut = palette.buildLut(256)
+        val invContrast = 1f / contrast
 
-        for (py in 0 until h) {
+        // Contrast LUT: maps normalized [-1,1] (indexed 0..512) to contrasted value
+        val contrastLutSize = 513
+        val contrastLut = FloatArray(contrastLutSize) { i ->
+            val normalized = (i.toFloat() / (contrastLutSize - 1)) * 2f - 1f  // [-1, 1]
+            if (contrast != 1f) {
+                val sign = if (normalized >= 0f) 1f else -1f
+                sign * abs(normalized).pow(invContrast)
+            } else normalized
+        }
+
+        // --- Coarse grid sampling + bilinear upscale ---
+        val gridStep = when (quality) {
+            Quality.DRAFT -> 4
+            Quality.BALANCED -> 2
+            Quality.ULTRA -> 1
+        }
+        val cw = (w + gridStep - 1) / gridStep + 1
+        val ch = (h + gridStep - 1) / gridStep + 1
+        val coarsePixels = IntArray(cw * ch)
+
+        for (cy in 0 until ch) {
+            val py = (cy * gridStep).coerceAtMost(h - 1)
             val baseY = py.toFloat() / dim
-            for (px in 0 until w) {
+            for (cx in 0 until cw) {
+                val px = (cx * gridStep).coerceAtMost(w - 1)
                 val baseX = px.toFloat() / dim
 
                 var nx = baseX
                 var ny = baseY
 
-                // Double domain warp for turbulent feedback structure
+                // Double domain warp
                 if (warp > 0f) {
-                    // First warp pass
                     val dx1 = sin(ny * warpF1 * twoPi + t * 1.3f + warpPhase1) * warp * 0.3f
                     val dy1 = cos(nx * warpF2 * twoPi + t * 1.1f + warpPhase2) * warp * 0.3f
-
-                    // Second warp pass (feeds back from first)
                     val dx2 = sin((ny + dy1) * warpF3 * twoPi + t * 0.7f) * warp * 0.2f
                     val dy2 = cos((nx + dx1) * warpF4 * twoPi + t * 0.9f) * warp * 0.2f
-
                     nx += dx1 + dx2
                     ny += dy1 + dy2
                 }
@@ -193,7 +216,6 @@ class PlasmaFeedbackGenerator : Generator {
                     var lx = nx * f
                     var ly = ny * f
 
-                    // Rotational twist: rotate sample coords by a sine-driven angle
                     if (twist > 0f) {
                         val twistAngle = sin(
                             (nx + ny) * 3f + t * 0.5f * (i + 1) + angleOffsets[i]
@@ -202,70 +224,48 @@ class PlasmaFeedbackGenerator : Generator {
                         val sinA = sin(twistAngle)
                         val rlx = lx * cosA - ly * sinA
                         val rly = lx * sinA + ly * cosA
-                        lx = rlx
-                        ly = rly
+                        lx = rlx; ly = rly
                     }
 
                     val timeScaleX = t * (i + 1) * 0.3f
                     val timeScaleY = t * (i + 1) * 0.27f
-
-                    // Primary interference: sin × cos
                     val sinPart = sin(lx * twoPi + timeScaleX + phaseX[i])
                     val cosPart = cos(ly * twoPi + timeScaleY + phaseY[i])
-
-                    // Cross diagonal term for richer interference
                     val cross = sin((lx + ly) * pi + t * 0.2f * (i + 1))
-
-                    // Radial distance term for circular structure
-                    val dist = sqrt(
-                        (nx - 0.5f) * (nx - 0.5f) + (ny - 0.5f) * (ny - 0.5f)
-                    )
+                    val dist = sqrt((nx - 0.5f) * (nx - 0.5f) + (ny - 0.5f) * (ny - 0.5f))
                     val radial = sin(dist * f * twoPi * 0.8f - t * (i + 1) * 0.15f)
 
                     value += amps[i] * (sinPart * cosPart + cross * 0.4f + radial * 0.2f)
                     maxAmp += amps[i] * 1.6f
                 }
 
-                // Normalize to [-1, 1]
+                // Normalize and apply contrast via LUT
                 val normalized = (value / maxAmp).coerceIn(-1f, 1f)
+                val lutIdx = ((normalized * 0.5f + 0.5f) * (contrastLutSize - 1)).toInt()
+                val contrasted = contrastLut[lutIdx]
 
-                // Apply contrast: power-curve sharpening
-                val contrasted = if (contrast != 1f) {
-                    val sign = if (normalized >= 0f) 1f else -1f
-                    sign * abs(normalized).pow(1f / contrast)
-                } else {
-                    normalized
-                }
-
-                // Apply blend mode
+                // Blend mode
                 val blended = when (blend) {
-                    "additive" -> {
-                        // abs() for symmetric bright plasma
-                        abs(contrasted)
-                    }
-                    "bands" -> {
-                        // sin() creates animated colour rings
-                        sin(contrasted * 4f * pi + t * 1.5f) * 0.5f + 0.5f
-                    }
+                    "additive" -> abs(contrasted)
+                    "bands" -> sin(contrasted * 4f * pi + t * 1.5f) * 0.5f + 0.5f
                     "ripple" -> {
-                        // Two-frequency sine interference
                         val r1 = sin(contrasted * 6f * pi + t)
                         val r2 = sin(contrasted * 10f * pi - t * 1.3f)
                         (r1 * 0.6f + r2 * 0.4f) * 0.5f + 0.5f
                     }
-                    else -> {
-                        // smooth: linear map [-1,1] → [0,1]
-                        contrasted * 0.5f + 0.5f
-                    }
+                    else -> contrasted * 0.5f + 0.5f
                 }
 
-                val palVal = blended.coerceIn(0f, 1f)
-                pixels[py * w + px] = palette.lerpColor(palVal)
+                coarsePixels[cy * cw + cx] = paletteLut[(blended.coerceIn(0f, 1f) * 255f).toInt()]
             }
         }
 
-        bitmap.setPixels(pixels, 0, w, 0, 0, w, h)
-        canvas.drawBitmap(bitmap, 0f, 0f, null)
+        // Upscale coarse grid to full resolution with bilinear filtering
+        val coarseBmp = Bitmap.createBitmap(cw, ch, Bitmap.Config.ARGB_8888)
+        coarseBmp.setPixels(coarsePixels, 0, cw, 0, 0, cw, ch)
+        val upscalePaint = Paint(Paint.FILTER_BITMAP_FLAG)
+        canvas.drawBitmap(coarseBmp, Rect(0, 0, cw, ch), RectF(0f, 0f, w.toFloat(), h.toFloat()), upscalePaint)
+        coarseBmp.recycle()
     }
 
     override fun estimateCost(params: Map<String, Any>, quality: Quality): Float {

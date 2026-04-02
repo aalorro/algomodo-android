@@ -3,15 +3,20 @@ package com.artmondo.algomodo.ui.screens
 import android.content.Context
 import android.content.Intent
 import android.net.Uri
+import androidx.activity.compose.BackHandler
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.PickVisualMediaRequest
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
+import androidx.compose.foundation.border
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.pager.HorizontalPager
 import androidx.compose.foundation.pager.rememberPagerState
 import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.foundation.text.BasicTextField
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.material.icons.Icons
@@ -21,19 +26,40 @@ import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.SolidColor
 import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.text.TextStyle
 import androidx.compose.ui.unit.DpOffset
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.hilt.navigation.compose.hiltViewModel
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
+import com.artmondo.algomodo.audio.AudioPlayer
+import com.artmondo.algomodo.generators.AspectRatio
+import com.artmondo.algomodo.core.registry.GeneratorRegistry
 import com.artmondo.algomodo.ui.components.*
 import com.artmondo.algomodo.ui.dialogs.*
 import com.artmondo.algomodo.viewmodel.ExportViewModel
 import com.artmondo.algomodo.viewmodel.MainViewModel
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
+import androidx.compose.foundation.gestures.awaitEachGesture
+import androidx.compose.foundation.gestures.awaitFirstDown
+import androidx.compose.ui.input.pointer.pointerInput
+import kotlin.math.abs
+import kotlin.math.roundToInt
+import androidx.compose.ui.layout.Measurable
+import androidx.compose.ui.layout.layout
+import androidx.compose.ui.unit.Constraints
+import androidx.compose.animation.core.LinearEasing
+import androidx.compose.animation.core.RepeatMode
+import androidx.compose.animation.core.animateFloat
+import androidx.compose.animation.core.infiniteRepeatable
+import androidx.compose.animation.core.rememberInfiniteTransition
+import androidx.compose.animation.core.tween
+import androidx.compose.ui.graphics.lerp
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
@@ -47,13 +73,37 @@ fun MainScreen(
     val canUndo by viewModel.canUndo.collectAsStateWithLifecycle()
     val canRedo by viewModel.canRedo.collectAsStateWithLifecycle()
 
-    // Merge sourceImage into params so image-family generators receive it
-    val renderParams = if (state.sourceImage != null)
-        state.params + ("_sourceImage" to state.sourceImage!!)
-    else state.params
+    // Merge sourceImage and audioAnalysis into params so generators receive them
+    val renderParams = buildMap<String, Any> {
+        putAll(state.params)
+        state.sourceImage?.let { put("_sourceImage", it) }
+        state.audioAnalysis?.let { put("_audioAnalysis", it) }
+    }
 
     val context = LocalContext.current
     val scope = rememberCoroutineScope()
+
+    // Back button exit confirmation
+    var showExitDialog by remember { mutableStateOf(false) }
+    val activity = context as? android.app.Activity
+    BackHandler { showExitDialog = true }
+
+    if (showExitDialog) {
+        AlertDialog(
+            onDismissRequest = { showExitDialog = false },
+            title = { Text("Exit Algomodo?") },
+            confirmButton = {
+                TextButton(onClick = { activity?.finish() }) {
+                    Text("Exit")
+                }
+            },
+            dismissButton = {
+                TextButton(onClick = { showExitDialog = false }) {
+                    Text("Cancel")
+                }
+            }
+        )
+    }
 
     // Dialogs
     var showAbout by remember { mutableStateOf(false) }
@@ -61,13 +111,53 @@ fun MainScreen(
     var showChangelog by remember { mutableStateOf(false) }
     var showPrivacy by remember { mutableStateOf(false) }
     var showDonation by remember { mutableStateOf(false) }
+    var showUseCases by remember { mutableStateOf(false) }
+    var showReportBug by remember { mutableStateOf(false) }
     var showOriginalImage by remember { mutableStateOf(false) }
+    var isCanvasExpanded by remember { mutableStateOf(false) }
 
     // Image picker
     val imagePickerLauncher = rememberLauncherForActivityResult(
         contract = ActivityResultContracts.PickVisualMedia()
     ) { uri ->
         uri?.let { loadBitmapFromUri(context, it) { bitmap -> viewModel.setSourceImage(bitmap) } }
+    }
+
+    // Audio player — lives at MainScreen level so it persists across tab switches
+    val audioPlayer = remember { AudioPlayer(context) }
+    var isAudioPlaying by remember { mutableStateOf(false) }
+    var audioSliderPosition by remember { mutableFloatStateOf(0f) }
+    var isAudioSeeking by remember { mutableStateOf(false) }
+
+    // Poll playback position
+    LaunchedEffect(isAudioPlaying) {
+        while (isAudioPlaying) {
+            if (!isAudioSeeking) {
+                val pos = audioPlayer.currentPositionMs
+                val dur = audioPlayer.durationMs
+                if (dur > 0) audioSliderPosition = pos.toFloat() / dur
+            }
+            delay(100)
+        }
+    }
+
+    // Cleanup on dispose
+    DisposableEffect(Unit) {
+        onDispose { audioPlayer.release() }
+    }
+
+    // Audio file picker — loads player directly, then starts analysis
+    val audioPickerLauncher = rememberLauncherForActivityResult(
+        contract = ActivityResultContracts.GetContent()
+    ) { uri ->
+        uri?.let {
+            val loaded = audioPlayer.load(it)
+            if (loaded) {
+                val durSec = audioPlayer.durationMs.toFloat() / 1000f
+                if (durSec > 0f) viewModel.setAudioDuration(durSec)
+            }
+            viewModel.loadAudio(context, it)
+        }
     }
 
     // Recipe file picker (import)
@@ -110,7 +200,7 @@ fun MainScreen(
 
     LaunchedEffect(state.activeTab) {
         if (pagerState.currentPage != state.activeTab) {
-            pagerState.animateScrollToPage(state.activeTab)
+            pagerState.scrollToPage(state.activeTab)
         }
     }
 
@@ -126,43 +216,100 @@ fun MainScreen(
             .fillMaxSize()
             .background(MaterialTheme.colorScheme.background)
     ) {
-        // ===== TOP SECTION: Canvas + Palette (45% of screen) =====
+        // Canvas gesture modifier
+        val canvasGestureModifier = Modifier.pointerInput(state.interactionEnabled) {
+            if (!state.interactionEnabled) return@pointerInput
+            val swipeThreshold = 50.dp.toPx()
+            awaitEachGesture {
+                val down = awaitFirstDown()
+                val startPos = down.position
+                var lastPos = startPos
+                do {
+                    val event = awaitPointerEvent()
+                    val change = event.changes.firstOrNull { it.id == down.id }
+                    if (change != null) lastPos = change.position
+                } while (change?.pressed == true)
+                val drag = lastPos - startPos
+                val distance = drag.getDistance()
+                if (distance < viewConfiguration.touchSlop * 2) {
+                    isCanvasExpanded = !isCanvasExpanded
+                } else if (distance > swipeThreshold) {
+                    if (abs(drag.x) > abs(drag.y)) {
+                        if (drag.x > 0) viewModel.randomize() else viewModel.undo()
+                    } else {
+                        if (drag.y < 0) viewModel.surpriseMe() else viewModel.undo()
+                    }
+                }
+            }
+        }
+
+        // ===== TOP SECTION: Canvas + Palette =====
         Row(
             modifier = Modifier
                 .fillMaxWidth()
-                .weight(0.9f)
+                .then(if (!isCanvasExpanded) Modifier.weight(0.9f) else Modifier)
         ) {
-            // Canvas (square, height-constrained) with info button overlay
+            // Canvas with info button overlay
             Box(
-                modifier = Modifier
-                    .fillMaxHeight()
+                modifier = (if (isCanvasExpanded) Modifier.fillMaxSize()
+                    else Modifier.fillMaxHeight())
+                    .then(canvasGestureModifier),
+                contentAlignment = Alignment.Center
             ) {
-                if (showOriginalImage && state.sourceImage != null) {
-                    Image(
-                        bitmap = state.sourceImage!!.asImageBitmap(),
-                        contentDescription = "Original source image",
-                        modifier = Modifier
-                            .fillMaxHeight()
-                            .aspectRatio(1f)
-                            .background(Color.Black),
-                        contentScale = ContentScale.Fit
-                    )
-                } else {
-                    AlgoCanvas(
-                        generator = state.generator,
-                        params = renderParams,
-                        seed = state.seed,
-                        palette = state.palette,
-                        quality = state.quality,
-                        postFX = state.postFX,
-                        isAnimating = state.isAnimating,
-                        animationFps = state.animationFps,
-                        showFps = state.showFps,
-                        renderTrigger = state.renderTrigger,
-                        modifier = Modifier
-                            .fillMaxHeight()
-                            .aspectRatio(1f)
-                    )
+                val ratio = state.aspectRatio.asFloat()
+                val canvasModifier = remember(ratio) {
+                    Modifier.layout { measurable, constraints ->
+                        val maxW = constraints.maxWidth
+                        val maxH = constraints.maxHeight
+                        val (w, h) = if (maxW.toFloat() / maxH > ratio) {
+                            val targetW = (maxH * ratio).roundToInt().coerceIn(0, maxW)
+                            targetW to maxH
+                        } else {
+                            val targetH = (maxW / ratio).roundToInt().coerceIn(0, maxH)
+                            maxW to targetH
+                        }
+                        val placeable = measurable.measure(Constraints.fixed(w, h))
+                        layout(w, h) { placeable.place(0, 0) }
+                    }
+                }
+
+                Column(horizontalAlignment = Alignment.CenterHorizontally) {
+                    if (showOriginalImage && state.sourceImage != null) {
+                        Image(
+                            bitmap = state.sourceImage!!.asImageBitmap(),
+                            contentDescription = "Original source image",
+                            modifier = canvasModifier.background(Color.Black),
+                            contentScale = ContentScale.Fit
+                        )
+                    } else {
+                        AlgoCanvas(
+                            generator = state.generator,
+                            params = renderParams,
+                            seed = state.seed,
+                            palette = state.palette,
+                            quality = state.quality,
+                            aspectRatio = state.aspectRatio,
+                            postFX = state.postFX,
+                            isAnimating = state.isAnimating,
+                            animationFps = state.animationFps,
+                            showFps = state.showFps,
+                            renderTrigger = state.renderTrigger,
+                            onPauseTimeCapture = { viewModel.setSnapshotTime(it) },
+                            modifier = canvasModifier
+                        )
+                    }
+
+                    // Horizontal palette below canvas in expanded mode
+                    if (isCanvasExpanded) {
+                        HorizontalPaletteStrip(
+                            selectedPalette = state.palette,
+                            onSelectPalette = { viewModel.setPalette(it) },
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .padding(top = 8.dp)
+                                .background(MaterialTheme.colorScheme.surface.copy(alpha = 0.5f))
+                        )
+                    }
                 }
 
                 // Info button — top-left on canvas
@@ -198,6 +345,11 @@ fun MainScreen(
                             onClick = { showInfoMenu = false; showAbout = true }
                         )
                         DropdownMenuItem(
+                            text = { Text("Use Cases") },
+                            leadingIcon = { Icon(Icons.Filled.Lightbulb, contentDescription = null, modifier = Modifier.size(18.dp)) },
+                            onClick = { showInfoMenu = false; showUseCases = true }
+                        )
+                        DropdownMenuItem(
                             text = { Text("Help") },
                             leadingIcon = { Icon(Icons.Filled.HelpOutline, contentDescription = null, modifier = Modifier.size(18.dp)) },
                             onClick = { showInfoMenu = false; showInstructions = true }
@@ -212,60 +364,166 @@ fun MainScreen(
                             leadingIcon = { Icon(Icons.Filled.PrivacyTip, contentDescription = null, modifier = Modifier.size(18.dp)) },
                             onClick = { showInfoMenu = false; showPrivacy = true }
                         )
+                        DropdownMenuItem(
+                            text = { Text("Report Bug") },
+                            leadingIcon = { Icon(Icons.Filled.BugReport, contentDescription = null, modifier = Modifier.size(18.dp)) },
+                            onClick = { showInfoMenu = false; showReportBug = true }
+                        )
+                    }
+                }
+
+                // Expanded: generator label + translucent button overlay on canvas
+                if (isCanvasExpanded) {
+                    val familyDisplayName = remember(state.generator?.family) {
+                        GeneratorRegistry.allFamilies()
+                            .find { it.id == state.generator?.family }?.displayName
+                            ?: state.generator?.family?.replaceFirstChar { it.uppercase() }
+                            ?: ""
+                    }
+                    Text(
+                        text = "$familyDisplayName  \u00BB  ${state.generator?.styleName ?: ""}",
+                        color = Color.White,
+                        fontSize = 13.sp,
+                        modifier = Modifier
+                            .align(Alignment.TopCenter)
+                            .padding(top = 6.dp)
+                            .background(Color(0x88000000), RoundedCornerShape(4.dp))
+                            .padding(horizontal = 10.dp, vertical = 4.dp)
+                    )
+                    ActionButtonsRow(
+                        state = state,
+                        canUndo = canUndo,
+                        canRedo = canRedo,
+                        viewModel = viewModel,
+                        exportViewModel = exportViewModel,
+                        context = context,
+                        renderParams = renderParams,
+                        audioPlayer = audioPlayer,
+                        isAudioPlaying = isAudioPlaying,
+                        onAudioPlayingChange = { isAudioPlaying = it },
+                        translucent = true,
+                        modifier = Modifier.align(Alignment.BottomCenter)
+                    )
+                }
+            }
+
+            // Vertical palette strip — visible when not expanded
+            if (!isCanvasExpanded) {
+                VerticalPaletteSelector(
+                    selectedPalette = state.palette,
+                    onSelectPalette = { viewModel.setPalette(it) },
+                    modifier = Modifier
+                        .fillMaxHeight()
+                        .weight(1f)
+                        .padding(start = 20.dp)
+                )
+            }
+        }
+
+        // ===== ACTION BUTTONS =====
+        if (!isCanvasExpanded) {
+            ActionButtonsRow(
+                state = state,
+                canUndo = canUndo,
+                canRedo = canRedo,
+                viewModel = viewModel,
+                exportViewModel = exportViewModel,
+                context = context,
+                renderParams = renderParams,
+                audioPlayer = audioPlayer,
+                isAudioPlaying = isAudioPlaying,
+                onAudioPlayingChange = { isAudioPlaying = it },
+                translucent = false
+            )
+        }
+
+        // ===== SEARCH + SEED ROW =====
+        Row(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(horizontal = 16.dp, vertical = 2.dp),
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.spacedBy(8.dp)
+        ) {
+            // Generator search
+            var searchQuery by remember { mutableStateOf("") }
+            var searchExpanded by remember { mutableStateOf(false) }
+            val allGenerators = remember { GeneratorRegistry.allGenerators() }
+            val filteredGenerators = remember(searchQuery) {
+                if (searchQuery.length < 1) emptyList()
+                else allGenerators.filter {
+                    it.styleName.contains(searchQuery, ignoreCase = true) ||
+                    it.family.contains(searchQuery, ignoreCase = true)
+                }.take(8)
+            }
+
+            Box(modifier = Modifier.weight(1f)) {
+                Box(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .height(32.dp)
+                        .border(1.dp, MaterialTheme.colorScheme.onSurfaceVariant, RoundedCornerShape(4.dp))
+                        .padding(horizontal = 6.dp),
+                    contentAlignment = Alignment.CenterStart
+                ) {
+                    if (searchQuery.isEmpty()) {
+                        Text(
+                            "Search generators...",
+                            fontSize = 11.sp,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.5f)
+                        )
+                    }
+                    BasicTextField(
+                        value = searchQuery,
+                        onValueChange = {
+                            searchQuery = it
+                            searchExpanded = it.isNotEmpty()
+                        },
+                        singleLine = true,
+                        textStyle = TextStyle(
+                            fontSize = 12.sp,
+                            color = MaterialTheme.colorScheme.onSurface
+                        ),
+                        cursorBrush = SolidColor(MaterialTheme.colorScheme.primary),
+                        modifier = Modifier.fillMaxWidth()
+                    )
+                }
+                DropdownMenu(
+                    expanded = searchExpanded && filteredGenerators.isNotEmpty(),
+                    onDismissRequest = { searchExpanded = false },
+                    modifier = Modifier.widthIn(max = 250.dp)
+                ) {
+                    filteredGenerators.forEach { generator ->
+                        DropdownMenuItem(
+                            text = {
+                                Column {
+                                    Text(generator.styleName, fontSize = 13.sp)
+                                    Text(
+                                        generator.family,
+                                        fontSize = 10.sp,
+                                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                                    )
+                                }
+                            },
+                            onClick = {
+                                viewModel.selectGenerator(generator)
+                                searchQuery = ""
+                                searchExpanded = false
+                            }
+                        )
                     }
                 }
             }
 
-            // Vertical palette strip — fills remaining width
-            VerticalPaletteSelector(
-                selectedPalette = state.palette,
-                onSelectPalette = { viewModel.setPalette(it) },
-                modifier = Modifier
-                    .fillMaxHeight()
-                    .weight(1f)
-                    .padding(start = 20.dp)
+            // Seed control
+            SeedControl(
+                seed = state.seed,
+                isLocked = state.seedLocked,
+                onSeedChange = { viewModel.setSeed(it) },
+                onToggleLock = { viewModel.setSeedLocked(it) },
+                modifier = Modifier.weight(1f)
             )
         }
-
-        // ===== ACTION BUTTONS =====
-        Row(
-            modifier = Modifier
-                .fillMaxWidth()
-                .background(MaterialTheme.colorScheme.surface)
-                .padding(horizontal = 4.dp, vertical = 2.dp),
-            horizontalArrangement = Arrangement.SpaceEvenly,
-            verticalAlignment = Alignment.CenterVertically
-        ) {
-            CanvasButton(Icons.Filled.Undo, "Undo", enabled = canUndo) { viewModel.undo() }
-            CanvasButton(
-                if (state.isAnimating) Icons.Filled.Pause else Icons.Filled.PlayArrow,
-                if (state.isAnimating) "Pause" else "Play",
-                enabled = state.generator?.supportsAnimation == true
-            ) { viewModel.toggleAnimation() }
-            CanvasButton(Icons.Filled.Casino, "Rand") { viewModel.randomize() }
-            CanvasButton(Icons.Filled.Redo, "Redo", enabled = canRedo) { viewModel.redo() }
-            CanvasButton(Icons.Filled.AutoAwesome, "Surprise") { viewModel.surpriseMe() }
-            CanvasButton(Icons.Filled.Refresh, "Reload") { viewModel.reload() }
-            CanvasButton(Icons.Filled.Save, "Save") {
-                state.generator?.let { gen ->
-                    exportViewModel.quickSave(
-                        context, gen, renderParams, state.seed, state.palette,
-                        state.quality, state.postFX, state.isAnimating
-                    )
-                }
-            }
-        }
-
-        // ===== SEED ROW =====
-        SeedControl(
-            seed = state.seed,
-            isLocked = state.seedLocked,
-            onSeedChange = { viewModel.setSeed(it) },
-            onToggleLock = { viewModel.setSeedLocked(it) },
-            modifier = Modifier
-                .fillMaxWidth()
-                .padding(horizontal = 16.dp, vertical = 2.dp)
-        )
 
         // Source image button (for image family)
         if (state.generator?.family == "image") {
@@ -304,16 +562,16 @@ fun MainScreen(
             selectedTabIndex = pagerState.currentPage,
             containerColor = MaterialTheme.colorScheme.surface
         ) {
-            Tab(selected = pagerState.currentPage == 0, onClick = { scope.launch { pagerState.animateScrollToPage(0) } }) {
+            Tab(selected = pagerState.currentPage == 0, onClick = { scope.launch { pagerState.scrollToPage(0) } }) {
                 Text("Generators", modifier = Modifier.padding(vertical = 10.dp), fontSize = 12.sp)
             }
-            Tab(selected = pagerState.currentPage == 1, onClick = { scope.launch { pagerState.animateScrollToPage(1) } }) {
+            Tab(selected = pagerState.currentPage == 1, onClick = { scope.launch { pagerState.scrollToPage(1) } }) {
                 Text("Params", modifier = Modifier.padding(vertical = 10.dp), fontSize = 12.sp)
             }
-            Tab(selected = pagerState.currentPage == 2, onClick = { scope.launch { pagerState.animateScrollToPage(2) } }) {
+            Tab(selected = pagerState.currentPage == 2, onClick = { scope.launch { pagerState.scrollToPage(2) } }) {
                 Text("Export", modifier = Modifier.padding(vertical = 10.dp), fontSize = 12.sp)
             }
-            Tab(selected = pagerState.currentPage == 3, onClick = { scope.launch { pagerState.animateScrollToPage(3) } }) {
+            Tab(selected = pagerState.currentPage == 3, onClick = { scope.launch { pagerState.scrollToPage(3) } }) {
                 Text("Settings", modifier = Modifier.padding(vertical = 10.dp), fontSize = 12.sp)
             }
         }
@@ -321,6 +579,8 @@ fun MainScreen(
         // Tab content (takes remaining space)
         HorizontalPager(
             state = pagerState,
+            beyondViewportPageCount = 0,
+            userScrollEnabled = false,
             modifier = Modifier
                 .fillMaxWidth()
                 .weight(1f)
@@ -361,25 +621,62 @@ fun MainScreen(
                         exportState = exportState,
                         isAnimating = state.isAnimating,
                         supportsVector = state.generator?.supportsVector == true,
+                        isAudioLoaded = state.isAudioLoaded,
+                        audioFileName = state.audioFileName,
+                        audioDurationSec = state.audioDurationSec,
+                        isAudioPlaying = isAudioPlaying,
+                        audioSliderPosition = audioSliderPosition,
+                        onLoadAudio = { audioPickerLauncher.launch("audio/*") },
+                        onClearAudio = {
+                            audioPlayer.release()
+                            isAudioPlaying = false
+                            audioSliderPosition = 0f
+                            viewModel.clearAudio()
+                        },
+                        onAudioPlayPause = {
+                            if (isAudioPlaying) {
+                                audioPlayer.pause()
+                                isAudioPlaying = false
+                                viewModel.setAnimating(false)
+                            } else {
+                                audioPlayer.play()
+                                isAudioPlaying = true
+                                viewModel.setAnimating(true)
+                            }
+                        },
+                        onAudioSeek = { pos ->
+                            audioSliderPosition = pos
+                        },
+                        onAudioSeekFinished = {
+                            val dur = audioPlayer.durationMs
+                            if (dur > 0) audioPlayer.seekTo((audioSliderPosition * dur).toInt())
+                            isAudioSeeking = false
+                        },
+                        onAudioSeekStarted = {
+                            isAudioSeeking = true
+                        },
                         onExportPng = {
                             val gen = state.generator ?: return@ExportPanel
-                            exportViewModel.exportPng(context, gen, renderParams, state.seed, state.palette, state.quality, state.postFX, 1080, 1080)
+                            val ar = state.aspectRatio
+                            exportViewModel.exportPng(context, gen, renderParams, state.seed, state.palette, state.quality, state.postFX, ar.exportWidth(), ar.exportHeight(), state.snapshotTime)
                         },
                         onExportJpg = {
                             val gen = state.generator ?: return@ExportPanel
-                            exportViewModel.exportJpg(context, gen, renderParams, state.seed, state.palette, state.quality, state.postFX, 1080, 1080)
+                            val ar = state.aspectRatio
+                            exportViewModel.exportJpg(context, gen, renderParams, state.seed, state.palette, state.quality, state.postFX, ar.exportWidth(), ar.exportHeight(), state.snapshotTime)
                         },
                         onExportSvg = {
                             val gen = state.generator ?: return@ExportPanel
-                            exportViewModel.exportSvg(context, gen, renderParams, state.seed, state.palette, 1080, 1080)
+                            val ar = state.aspectRatio
+                            exportViewModel.exportSvg(context, gen, renderParams, state.seed, state.palette, ar.exportWidth(), ar.exportHeight())
                         },
                         onExportGif = {
                             val gen = state.generator ?: return@ExportPanel
-                            exportViewModel.exportGif(context, gen, renderParams, state.seed, state.palette, state.quality, state.animationFps)
+                            exportViewModel.exportGif(context, gen, renderParams, state.seed, state.palette, state.quality, state.animationFps, state.aspectRatio)
                         },
                         onExportVideo = {
                             val gen = state.generator ?: return@ExportPanel
-                            exportViewModel.exportVideo(context, gen, renderParams, state.seed, state.palette, state.quality, state.animationFps)
+                            exportViewModel.exportVideo(context, gen, renderParams, state.seed, state.palette, state.quality, state.animationFps, aspectRatio = state.aspectRatio, audioUri = state.audioUri)
                         },
                         onExportRecipe = { fileName ->
                             val json = viewModel.exportRecipeJson()
@@ -400,6 +697,8 @@ fun MainScreen(
                         onGifResolutionChange = { exportViewModel.setGifResolution(it) },
                         onGifBoomerangChange = { exportViewModel.setGifBoomerang(it) },
                         onGifEndlessChange = { exportViewModel.setGifEndless(it) },
+                        onVideoStartChange = { exportViewModel.setVideoStartSec(it) },
+                        onVideoEndChange = { exportViewModel.setVideoEndSec(it) },
                         generatorStyleName = state.generator?.styleName ?: ""
                     )
                 }
@@ -411,6 +710,7 @@ fun MainScreen(
                     SettingsPanel(
                         theme = state.theme,
                         quality = state.quality,
+                        aspectRatio = state.aspectRatio,
                         performanceMode = state.performanceMode,
                         showFps = state.showFps,
                         interactionEnabled = state.interactionEnabled,
@@ -418,6 +718,7 @@ fun MainScreen(
                         postFX = state.postFX,
                         onThemeChange = { viewModel.setTheme(it) },
                         onQualityChange = { viewModel.setQuality(it) },
+                        onAspectRatioChange = { viewModel.setAspectRatio(it) },
                         onPerformanceModeChange = { viewModel.setPerformanceMode(it) },
                         onShowFpsChange = { viewModel.setShowFps(it) },
                         onInteractionChange = { viewModel.setInteractionEnabled(it) },
@@ -435,12 +736,157 @@ fun MainScreen(
     if (showChangelog) ChangelogDialog { showChangelog = false }
     if (showPrivacy) PrivacyDialog { showPrivacy = false }
     if (showDonation) DonationDialog { showDonation = false }
+    if (showUseCases) UseCasesDialog { showUseCases = false }
+    if (showReportBug) ReportBugDialog { showReportBug = false }
 
     // Show share sheet after export
     exportState.lastExportUri?.let { uri ->
         LaunchedEffect(uri) {
             shareFile(context, uri)
             exportViewModel.clearLastExport()
+        }
+    }
+}
+
+@Composable
+private fun ShinyCanvasButton(onClick: () -> Unit) {
+    val infiniteTransition = rememberInfiniteTransition(label = "shine")
+    val shimmerProgress by infiniteTransition.animateFloat(
+        initialValue = 0f,
+        targetValue = 1f,
+        animationSpec = infiniteRepeatable(
+            animation = tween(2400, easing = LinearEasing),
+            repeatMode = RepeatMode.Restart
+        ),
+        label = "shimmer"
+    )
+
+    // Sweep a highlight through the icon tint
+    val gold = Color(0xFFFFD700)
+    val white = Color(0xFFFFFFFF)
+    val base = MaterialTheme.colorScheme.primary
+    val tint = when {
+        shimmerProgress < 0.3f -> {
+            val t = shimmerProgress / 0.3f
+            lerp(base, gold, t)
+        }
+        shimmerProgress < 0.5f -> {
+            val t = (shimmerProgress - 0.3f) / 0.2f
+            lerp(gold, white, t)
+        }
+        shimmerProgress < 0.7f -> {
+            val t = (shimmerProgress - 0.5f) / 0.2f
+            lerp(white, gold, t)
+        }
+        else -> {
+            val t = (shimmerProgress - 0.7f) / 0.3f
+            lerp(gold, base, t)
+        }
+    }
+
+    // Glow alpha pulses with the shimmer
+    val glowAlpha = if (shimmerProgress in 0.25f..0.75f)
+        ((1f - abs(shimmerProgress - 0.5f) * 4f).coerceIn(0f, 0.4f))
+    else 0f
+
+    Column(horizontalAlignment = Alignment.CenterHorizontally) {
+        IconButton(onClick = onClick, modifier = Modifier.size(44.dp)) {
+            Box(contentAlignment = Alignment.Center) {
+                // Glow halo behind icon
+                if (glowAlpha > 0f) {
+                    Icon(
+                        Icons.Filled.AutoAwesome, contentDescription = null,
+                        modifier = Modifier.size(36.dp),
+                        tint = gold.copy(alpha = glowAlpha)
+                    )
+                }
+                Icon(
+                    Icons.Filled.AutoAwesome, contentDescription = "Surprise",
+                    modifier = Modifier.size(28.dp),
+                    tint = tint
+                )
+            }
+        }
+        Text("Surprise", fontSize = 8.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
+    }
+}
+
+@OptIn(ExperimentalMaterial3Api::class)
+@Composable
+private fun ActionButtonsRow(
+    state: com.artmondo.algomodo.viewmodel.MainUiState,
+    canUndo: Boolean,
+    canRedo: Boolean,
+    viewModel: MainViewModel,
+    exportViewModel: ExportViewModel,
+    context: Context,
+    renderParams: Map<String, Any>,
+    audioPlayer: AudioPlayer,
+    isAudioPlaying: Boolean,
+    onAudioPlayingChange: (Boolean) -> Unit,
+    translucent: Boolean,
+    modifier: Modifier = Modifier
+) {
+    Row(
+        modifier = modifier
+            .fillMaxWidth()
+            .background(
+                if (translucent) MaterialTheme.colorScheme.surface.copy(alpha = 0.6f)
+                else MaterialTheme.colorScheme.surface
+            )
+            .padding(horizontal = 4.dp, vertical = 2.dp),
+        horizontalArrangement = Arrangement.SpaceEvenly,
+        verticalAlignment = Alignment.CenterVertically
+    ) {
+        CanvasButton(Icons.Filled.Undo, "Undo", enabled = canUndo) { viewModel.undo() }
+
+        val playTooltipState = rememberTooltipState(isPersistent = true)
+        var playTooltipShown by remember { mutableStateOf(false) }
+        LaunchedEffect(Unit) {
+            if (!playTooltipShown) {
+                delay(800)
+                playTooltipShown = true
+                playTooltipState.show()
+                delay(8000)
+                playTooltipState.dismiss()
+            }
+        }
+        TooltipBox(
+            positionProvider = TooltipDefaults.rememberPlainTooltipPositionProvider(),
+            tooltip = { PlainTooltip { Text("Press play to animate") } },
+            state = playTooltipState
+        ) {
+            CanvasButton(
+                if (state.isAnimating) Icons.Filled.Pause else Icons.Filled.PlayArrow,
+                if (state.isAnimating) "Pause" else "Play",
+                enabled = state.generator?.supportsAnimation == true
+            ) {
+                viewModel.toggleAnimation()
+                if (state.isAudioLoaded) {
+                    if (!state.isAnimating) {
+                        audioPlayer.play()
+                        onAudioPlayingChange(true)
+                    } else {
+                        audioPlayer.pause()
+                        onAudioPlayingChange(false)
+                    }
+                }
+            }
+        }
+        CanvasButton(Icons.Filled.Casino, "Rand") { viewModel.randomize() }
+        CanvasButton(Icons.Filled.Redo, "Redo", enabled = canRedo) { viewModel.redo() }
+        ShinyCanvasButton { viewModel.surpriseMe() }
+        CanvasButton(Icons.Filled.Refresh, "Reload") { viewModel.reload() }
+        CanvasButton(Icons.Filled.Clear, "Clear") { viewModel.clearCanvas() }
+        CanvasButton(Icons.Filled.Save, "Save") {
+            state.generator?.let { gen ->
+                exportViewModel.quickSave(
+                    context, gen, renderParams, state.seed, state.palette,
+                    state.quality, state.postFX, state.isAnimating,
+                    aspectRatio = state.aspectRatio,
+                    snapshotTime = state.snapshotTime
+                )
+            }
         }
     }
 }

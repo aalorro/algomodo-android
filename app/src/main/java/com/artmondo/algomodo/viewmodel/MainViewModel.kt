@@ -1,9 +1,13 @@
 package com.artmondo.algomodo.viewmodel
 
+import android.content.Context
 import android.graphics.Bitmap
 import android.graphics.Canvas
+import android.net.Uri
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
+import com.artmondo.algomodo.audio.AudioAnalysis
+import com.artmondo.algomodo.audio.AudioAnalyzer
 import com.artmondo.algomodo.core.recipe.CanvasSettings
 import com.artmondo.algomodo.core.recipe.RecipeSerializer
 import com.artmondo.algomodo.core.registry.GeneratorRegistry
@@ -14,7 +18,9 @@ import com.artmondo.algomodo.data.palettes.CuratedPalettes
 import com.artmondo.algomodo.data.palettes.Palette
 import com.artmondo.algomodo.data.preferences.AppPreferences
 import com.artmondo.algomodo.generators.Generator
+import com.artmondo.algomodo.generators.ParamGroup
 import com.artmondo.algomodo.generators.Parameter
+import com.artmondo.algomodo.generators.AspectRatio
 import com.artmondo.algomodo.generators.Quality
 import com.artmondo.algomodo.rendering.PostFXSettings
 import dagger.hilt.android.lifecycle.HiltViewModel
@@ -22,6 +28,7 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.*
 import kotlinx.coroutines.launch
 import kotlinx.serialization.json.*
+import java.security.SecureRandom
 import java.util.UUID
 import javax.inject.Inject
 
@@ -42,15 +49,22 @@ data class MainUiState(
     val palette: Palette = CuratedPalettes.default,
     val postFX: PostFXSettings = PostFXSettings(),
     val quality: Quality = Quality.DRAFT,
+    val aspectRatio: AspectRatio = AspectRatio.SQUARE,
     val isAnimating: Boolean = false,
     val animationFps: Int = 24,
     val seedLocked: Boolean = false,
     val lockedParams: Set<String> = emptySet(),
     val sourceImage: Bitmap? = null,
+    val audioUri: Uri? = null,
+    val audioFileName: String? = null,
+    val audioAnalysis: AudioAnalysis? = null,
+    val isAudioLoaded: Boolean = false,
+    val audioDurationSec: Float = 0f,
     val theme: String = "dark",
     val performanceMode: Boolean = false,
     val showFps: Boolean = false,
-    val interactionEnabled: Boolean = false,
+    val interactionEnabled: Boolean = true,
+    val snapshotTime: Float = 2.0f, // animation time captured on pause
     val renderTrigger: Int = 0, // increment to force re-render
     val activeTab: Int = 0 // 0=generators, 1=params, 2=export, 3=settings
 )
@@ -76,6 +90,12 @@ class MainViewModel @Inject constructor(
     private val _canRedo = MutableStateFlow(false)
     val canRedo: StateFlow<Boolean> = _canRedo.asStateFlow()
 
+    // Cryptographic RNG for high-entropy randomization
+    private val secureRandom = SecureRandom()
+
+    // Track recent generators to avoid consecutive repeats in surpriseMe()
+    private val recentGeneratorIds = ArrayDeque<String>(8)
+
     init {
         viewModelScope.launch {
             // Load preferences
@@ -93,6 +113,16 @@ class MainViewModel @Inject constructor(
                         else -> Quality.BALANCED
                     }
                     _state.update { s -> s.copy(quality = quality) }
+                }
+            }
+            launch {
+                prefs.aspectRatio.collect { ar ->
+                    val aspectRatio = when (ar) {
+                        "portrait" -> AspectRatio.PORTRAIT
+                        "landscape" -> AspectRatio.LANDSCAPE
+                        else -> AspectRatio.SQUARE
+                    }
+                    _state.update { s -> s.copy(aspectRatio = aspectRatio) }
                 }
             }
         }
@@ -226,13 +256,33 @@ class MainViewModel @Inject constructor(
         _state.update { it.copy(isAnimating = animating) }
     }
 
+    /**
+     * Randomize a NumberParam to a safe range — avoids the bottom 15% of
+     * the param range to prevent degenerate/blank output (zero density,
+     * zero amplitude, zero count, etc.).
+     * For animation/speed params (FLOW_MOTION group or key containing "speed"),
+     * the result is guaranteed to be > 0.
+     */
+    private fun safeRandomStep(param: Parameter.NumberParam, rng: SeededRNG): Float {
+        val steps = ((param.max - param.min) / param.step).toInt()
+        val isAnimParam = param.group == ParamGroup.FLOW_MOTION ||
+                param.key.contains("speed", ignoreCase = true)
+        val floor = if (isAnimParam) (steps * 0.2f).toInt().coerceIn(1, steps)
+                    else (steps * 0.15f).toInt().coerceIn(1, steps)
+        val maxStep = (steps - 1).coerceAtLeast(floor) // avoid absolute max
+        val value = param.min + rng.integer(floor, maxStep) * param.step
+        // Extra guard: animation params must never be zero
+        return if (isAnimParam && value == 0f) (param.min + param.step).coerceAtMost(param.max)
+               else value
+    }
+
     fun randomize() {
         pushHistory()
         val s = _state.value
         val gen = s.generator ?: return
-        val rng = SeededRNG((Math.random() * 999999).toInt())
+        val rng = SeededRNG(secureRandom.nextInt())
 
-        val newSeed = if (s.seedLocked) s.seed else rng.integer(0, 999999)
+        val newSeed = if (s.seedLocked) s.seed else secureRandom.nextInt(1_000_000)
         val newPalette = if ("palette" in s.lockedParams) s.palette else CuratedPalettes.all[rng.integer(0, CuratedPalettes.all.size - 1)]
 
         val newParams = s.params.toMutableMap()
@@ -240,14 +290,14 @@ class MainViewModel @Inject constructor(
             if (param.key in s.lockedParams) continue
             when (param) {
                 is Parameter.NumberParam -> {
-                    val steps = ((param.max - param.min) / param.step).toInt()
-                    newParams[param.key] = param.min + rng.integer(0, steps) * param.step
+                    newParams[param.key] = safeRandomStep(param, rng)
                 }
                 is Parameter.BooleanParam -> {
                     newParams[param.key] = rng.boolean()
                 }
                 is Parameter.SelectParam -> {
-                    newParams[param.key] = rng.pick(param.options)
+                    val choices = param.options.filter { it != "none" }.ifEmpty { param.options }
+                    newParams[param.key] = rng.pick(choices)
                 }
                 is Parameter.TextParam, is Parameter.ColorParam -> {
                     // Never randomize text or color params
@@ -262,20 +312,34 @@ class MainViewModel @Inject constructor(
 
     fun surpriseMe() {
         pushHistory()
-        val rng = SeededRNG((Math.random() * 999999).toInt())
-        val gen = GeneratorRegistry.randomNonImageGenerator() ?: return
-        val newSeed = rng.integer(0, 999999)
+        val rng = SeededRNG(secureRandom.nextInt())
+
+        // Pick a generator that wasn't used recently
+        val candidates = GeneratorRegistry.nonImageGenerators()
+        if (candidates.isEmpty()) return
+        val filtered = candidates.filter { it.id !in recentGeneratorIds }
+        val pool = filtered.ifEmpty { candidates }
+        val gen = pool[secureRandom.nextInt(pool.size)]
+
+        // Track history (keep last 6 to avoid repeats across ~6 clicks)
+        recentGeneratorIds.addLast(gen.id)
+        while (recentGeneratorIds.size > 6) recentGeneratorIds.removeFirst()
+
+        val newSeed = secureRandom.nextInt(1_000_000)
         val newPalette = CuratedPalettes.all[rng.integer(0, CuratedPalettes.all.size - 1)]
 
         val newParams = mutableMapOf<String, Any>()
         for (param in gen.parameterSchema) {
             when (param) {
                 is Parameter.NumberParam -> {
-                    val steps = ((param.max - param.min) / param.step).toInt()
-                    newParams[param.key] = param.min + rng.integer(0, steps) * param.step
+                    newParams[param.key] = safeRandomStep(param, rng)
                 }
                 is Parameter.BooleanParam -> newParams[param.key] = rng.boolean()
-                is Parameter.SelectParam -> newParams[param.key] = rng.pick(param.options)
+                is Parameter.SelectParam -> {
+                    // Filter out "none" — surprise me should always pick an active option
+                    val choices = param.options.filter { it != "none" }.ifEmpty { param.options }
+                    newParams[param.key] = rng.pick(choices)
+                }
                 is Parameter.TextParam -> newParams[param.key] = param.default
                 is Parameter.ColorParam -> newParams[param.key] = param.default
             }
@@ -298,6 +362,16 @@ class MainViewModel @Inject constructor(
         _state.update { it.copy(renderTrigger = it.renderTrigger + 1) }
     }
 
+    fun clearCanvas() {
+        _state.update {
+            it.copy(
+                generator = null,
+                isAnimating = false,
+                renderTrigger = it.renderTrigger + 1
+            )
+        }
+    }
+
     fun toggleParamLock(key: String) {
         _state.update {
             val newLocked = if (key in it.lockedParams) it.lockedParams - key else it.lockedParams + key
@@ -307,6 +381,63 @@ class MainViewModel @Inject constructor(
 
     fun setSourceImage(bitmap: Bitmap?) {
         _state.update { it.copy(sourceImage = bitmap, renderTrigger = it.renderTrigger + 1) }
+    }
+
+    fun loadAudio(context: Context, uri: Uri) {
+        // Resolve filename from content URI
+        val fileName = try {
+            val cursor = context.contentResolver.query(uri, null, null, null, null)
+            cursor?.use {
+                if (it.moveToFirst()) {
+                    val idx = it.getColumnIndex(android.provider.OpenableColumns.DISPLAY_NAME)
+                    if (idx >= 0) it.getString(idx) else null
+                } else null
+            }
+        } catch (_: Exception) { null }
+
+        // Mark as loaded immediately — player can play regardless of analysis
+        _state.update { it.copy(audioUri = uri, audioFileName = fileName, isAudioLoaded = true) }
+        // Analysis runs in background; failure only means no reactivity, not no playback
+        viewModelScope.launch {
+            val analysis = try {
+                AudioAnalyzer.analyze(context, uri)
+            } catch (e: kotlinx.coroutines.CancellationException) {
+                throw e
+            } catch (_: Throwable) {
+                null
+            }
+            if (analysis != null) {
+                _state.update {
+                    it.copy(
+                        audioAnalysis = analysis,
+                        audioDurationSec = analysis.durationSec,
+                        renderTrigger = it.renderTrigger + 1
+                    )
+                }
+            }
+            // Analysis failure does NOT clear audioUri or isAudioLoaded
+        }
+    }
+
+    fun setAudioDuration(durationSec: Float) {
+        _state.update { it.copy(audioDurationSec = durationSec) }
+    }
+
+    fun clearAudio() {
+        _state.update {
+            it.copy(
+                audioUri = null,
+                audioFileName = null,
+                audioAnalysis = null,
+                isAudioLoaded = false,
+                audioDurationSec = 0f,
+                renderTrigger = it.renderTrigger + 1
+            )
+        }
+    }
+
+    fun setSnapshotTime(time: Float) {
+        _state.update { it.copy(snapshotTime = time) }
     }
 
     fun setActiveTab(tab: Int) {
@@ -327,6 +458,17 @@ class MainViewModel @Inject constructor(
             })
         }
         _state.update { it.copy(quality = quality, renderTrigger = it.renderTrigger + 1) }
+    }
+
+    fun setAspectRatio(aspectRatio: AspectRatio) {
+        viewModelScope.launch {
+            prefs.setAspectRatio(when (aspectRatio) {
+                AspectRatio.SQUARE -> "square"
+                AspectRatio.PORTRAIT -> "portrait"
+                AspectRatio.LANDSCAPE -> "landscape"
+            })
+        }
+        _state.update { it.copy(aspectRatio = aspectRatio, renderTrigger = it.renderTrigger + 1) }
     }
 
     fun setPerformanceMode(enabled: Boolean) {

@@ -17,20 +17,22 @@ object GeneratorRegistry {
         "noise" to "Noise",
         "plotter" to "Plotter",
         "text" to "Text",
-        "voronoi" to "Voronoi"
+        "voronoi" to "Voronoi",
+        "procedural" to "Procedural"
     )
 
     private val familyDescriptions = mapOf(
         "animation" to "Flow fields, particles, plasma, attractors",
         "cellular" to "Cellular automata (Game of Life, Reaction Diffusion, etc.)",
-        "fractals" to "Mandelbrot, Julia, Newton, IFS, Recursive Subdivision",
+        "fractals" to "Mandelbrot, Julia, Newton, IFS, Burning Ship, Multibrot, Orbit Traps, Fractal Flames, Strange Attractors",
         "geometry" to "Islamic patterns, Truchet, L-Systems, Spirograph, etc.",
-        "graphs" to "Tessellations, Low-Poly, Ecosystems, Steiner Networks",
+        "graphs" to "Geodesic, Constrained Delaunay, Anisotropic, Euler Trails, KNN, Gabriel, Planar, Tessellations, Low-Poly, Ecosystems, Steiner Networks",
         "image" to "Pixel Sort, Halftone, ASCII, Glitch, etc. (require source image)",
         "noise" to "Simplex, FBM, Domain Warp, Turbulence, etc.",
         "plotter" to "Pen-plotter styles: stippling, hatching, contours, etc.",
-        "text" to "Concrete poetry, typographic grid, digital rain, etc.",
-        "voronoi" to "Voronoi cells, Delaunay, ridges, fractured, etc."
+        "text" to "Concrete poetry, typographic grid, digital rain, glyphs, naive handwriting, procedural cursive, etc.",
+        "voronoi" to "Voronoi cells, Delaunay, ridges, fractured, etc.",
+        "procedural" to "Warp, SDF, displacement, edge glow, feedback, particles, instanced geometry, audio-reactive"
     )
 
     fun register(generator: Generator) {

@@ -28,7 +28,7 @@ class ForestFireGenerator : Generator {
 
     override val parameterSchema = listOf(
         Parameter.NumberParam("Grid Size", "gridSize", ParamGroup.COMPOSITION, null, 32f, 256f, 16f, 128f),
-        Parameter.NumberParam("Initial Tree Density", "initialDensity", ParamGroup.COMPOSITION, null, 0f, 1f, 0.05f, 0.7f),
+        Parameter.NumberParam("Initial Tree Density", "initialDensity", ParamGroup.COMPOSITION, null, 0.1f, 1f, 0.05f, 0.7f),
         Parameter.NumberParam("Growth Rate (p)", "growthProb", ParamGroup.TEXTURE, "Probability an empty cell grows a tree each step", 0.001f, 0.05f, 0.001f, 0.01f),
         Parameter.NumberParam("Lightning Rate (f)", "lightningProb", ParamGroup.TEXTURE, "Probability a tree spontaneously ignites each step", 0.0001f, 0.003f, 0.0001f, 0.0005f),
         Parameter.NumberParam("Steps / Frame", "stepsPerFrame", ParamGroup.FLOW_MOTION, null, 1f, 10f, 1f, 3f),
@@ -54,19 +54,23 @@ class ForestFireGenerator : Generator {
         time: Float
     ) {
         val gridSize = (params["gridSize"] as? Number)?.toInt() ?: 128
+        val initialDensity = (params["initialDensity"] as? Number)?.toFloat() ?: 0.7f
         val pGrow = (params["growthProb"] as? Number)?.toFloat() ?: 0.01f
         val pBurn = (params["lightningProb"] as? Number)?.toFloat() ?: 0.0005f
         val stepsPerFrame = (params["stepsPerFrame"] as? Number)?.toFloat() ?: 3f
+        val colorMode = (params["colorMode"] as? String) ?: "classic"
 
         val w = bitmap.width
         val h = bitmap.height
-        val steps = (time * stepsPerFrame).toInt()
+        // Ensure enough simulation steps for visible dynamics even in static mode (time≈0)
+        val warmup = (200f / stepsPerFrame).toInt().coerceAtLeast(80)
+        val steps = warmup + (time * stepsPerFrame).toInt()
         val totalCells = gridSize * gridSize
 
         // Initialize from seed: start with a partially forested grid
         val rng = SeededRNG(seed)
         var grid = IntArray(totalCells) {
-            if (rng.random() < 0.5f) TREE else EMPTY
+            if (rng.random() < initialDensity) TREE else EMPTY
         }
 
         // Evolve
@@ -109,10 +113,28 @@ class ForestFireGenerator : Generator {
         val pixels = IntArray(w * h)
         val paletteColors = palette.colorInts()
 
-        // Use palette colors for tree/fire
-        val treeColor = paletteColors[paletteColors.size - 1]  // last color for trees
-        val fireColor1 = paletteColors[0]                       // first color for fire
-        val fireColor2 = if (paletteColors.size > 1) paletteColors[1] else fireColor1
+        // Determine colors based on colorMode — always palette-derived
+        val treeColor: Int
+        val fireColor: Int
+        val emptyColor: Int
+        when (colorMode) {
+            "classic" -> {
+                // Derive classic-style tones from palette: tree=last, fire=mid, empty=darkened first
+                val base = paletteColors[0]
+                emptyColor = Color.rgb(
+                    (Color.red(base) * 0.15f).toInt(),
+                    (Color.green(base) * 0.15f).toInt(),
+                    (Color.blue(base) * 0.15f).toInt()
+                )
+                fireColor = paletteColors[paletteColors.size / 2]
+                treeColor = paletteColors[paletteColors.size - 1]
+            }
+            else /* palette */ -> {
+                emptyColor = paletteColors[0]
+                fireColor = paletteColors[paletteColors.size / 2]
+                treeColor = paletteColors[paletteColors.size - 1]
+            }
+        }
 
         for (py in 0 until h) {
             val gy = (py / cellH).toInt().coerceAtMost(gridSize - 1)
@@ -121,8 +143,8 @@ class ForestFireGenerator : Generator {
                 val idx = gy * gridSize + gx
                 pixels[py * w + px] = when (grid[idx]) {
                     TREE -> treeColor
-                    BURNING -> fireColor1
-                    else -> Color.BLACK
+                    BURNING -> fireColor
+                    else -> emptyColor
                 }
             }
         }

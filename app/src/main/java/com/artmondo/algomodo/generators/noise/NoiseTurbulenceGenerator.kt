@@ -126,7 +126,7 @@ class NoiseTurbulenceGenerator : Generator {
                         val band = (t * bandCount).toInt().coerceIn(0, bandCount - 1)
                         palette.lerpColor(band.toFloat() / (bandCount - 1).coerceAtLeast(1))
                     }
-                    "heat" -> heatColor(t)
+                    "heat" -> palette.lerpColor(t)
                     else -> palette.lerpColor(t)
                 }
 
@@ -143,19 +143,6 @@ class NoiseTurbulenceGenerator : Generator {
 
         bitmap.setPixels(pixels, 0, w, 0, 0, w, h)
         canvas.drawBitmap(bitmap, 0f, 0f, null)
-    }
-
-    private fun heatColor(t: Float): Int {
-        // Black → dark red → red → orange → yellow → white
-        val r: Int; val g: Int; val b: Int
-        when {
-            t < 0.2f -> { val s = t / 0.2f; r = (s * 128).toInt(); g = 0; b = 0 }
-            t < 0.4f -> { val s = (t - 0.2f) / 0.2f; r = 128 + (s * 127).toInt(); g = 0; b = 0 }
-            t < 0.6f -> { val s = (t - 0.4f) / 0.2f; r = 255; g = (s * 165).toInt(); b = 0 }
-            t < 0.8f -> { val s = (t - 0.6f) / 0.2f; r = 255; g = 165 + (s * 90).toInt(); b = 0 }
-            else -> { val s = (t - 0.8f) / 0.2f; r = 255; g = 255; b = (s * 255).toInt() }
-        }
-        return (0xFF shl 24) or (r.coerceIn(0, 255) shl 16) or (g.coerceIn(0, 255) shl 8) or b.coerceIn(0, 255)
     }
 
     override fun estimateCost(params: Map<String, Any>, quality: Quality): Float {

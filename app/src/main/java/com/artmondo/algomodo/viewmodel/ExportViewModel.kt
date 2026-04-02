@@ -8,6 +8,7 @@ import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import com.artmondo.algomodo.data.palettes.Palette
 import com.artmondo.algomodo.export.*
+import com.artmondo.algomodo.generators.AspectRatio
 import com.artmondo.algomodo.generators.Generator
 import com.artmondo.algomodo.generators.Quality
 import com.artmondo.algomodo.rendering.PostFXProcessor
@@ -30,7 +31,9 @@ data class ExportUiState(
     val gifDuration: Int = 5,
     val gifResolution: Int = 600,
     val gifBoomerang: Boolean = false,
-    val gifEndless: Boolean = false,
+    val gifEndless: Boolean = true,
+    val videoStartSec: Int = 0,
+    val videoEndSec: Int = 30,
     val lastExportUri: Uri? = null,
     val error: String? = null
 )
@@ -61,6 +64,14 @@ class ExportViewModel @Inject constructor() : ViewModel() {
         _state.update { it.copy(gifEndless = endless, gifBoomerang = if (endless) false else it.gifBoomerang) }
     }
 
+    fun setVideoStartSec(sec: Int) {
+        _state.update { it.copy(videoStartSec = sec.coerceAtLeast(0)) }
+    }
+
+    fun setVideoEndSec(sec: Int) {
+        _state.update { it.copy(videoEndSec = sec.coerceAtLeast(1)) }
+    }
+
     fun quickSave(
         context: Context,
         generator: Generator,
@@ -69,15 +80,18 @@ class ExportViewModel @Inject constructor() : ViewModel() {
         palette: Palette,
         quality: Quality,
         postFX: PostFXSettings,
-        isAnimating: Boolean
+        isAnimating: Boolean,
+        aspectRatio: AspectRatio = AspectRatio.SQUARE,
+        snapshotTime: Float = 0f
     ) {
         viewModelScope.launch(Dispatchers.IO) {
             _state.update { it.copy(isExporting = true, error = null) }
             try {
-                val size = 1080
-                val bitmap = Bitmap.createBitmap(size, size, Bitmap.Config.ARGB_8888)
+                val w = aspectRatio.exportWidth()
+                val h = aspectRatio.exportHeight()
+                val bitmap = Bitmap.createBitmap(w, h, Bitmap.Config.ARGB_8888)
                 val canvas = Canvas(bitmap)
-                generator.renderCanvas(canvas, bitmap, params, seed, palette, quality, 0f)
+                generator.renderCanvas(canvas, bitmap, params, seed, palette, quality, snapshotTime)
                 PostFXProcessor.apply(bitmap, postFX)
 
                 val uri = PngExporter.export(context, bitmap, "algomodo_${System.currentTimeMillis()}")
@@ -98,14 +112,15 @@ class ExportViewModel @Inject constructor() : ViewModel() {
         quality: Quality,
         postFX: PostFXSettings,
         width: Int,
-        height: Int
+        height: Int,
+        snapshotTime: Float = 0f
     ) {
         viewModelScope.launch(Dispatchers.IO) {
             _state.update { it.copy(isExporting = true, error = null) }
             try {
                 val bitmap = Bitmap.createBitmap(width, height, Bitmap.Config.ARGB_8888)
                 val canvas = Canvas(bitmap)
-                generator.renderCanvas(canvas, bitmap, params, seed, palette, quality, 0f)
+                generator.renderCanvas(canvas, bitmap, params, seed, palette, quality, snapshotTime)
                 PostFXProcessor.apply(bitmap, postFX)
 
                 val uri = PngExporter.export(context, bitmap, "algomodo_${System.currentTimeMillis()}")
@@ -126,7 +141,8 @@ class ExportViewModel @Inject constructor() : ViewModel() {
         quality: Quality,
         postFX: PostFXSettings,
         width: Int,
-        height: Int
+        height: Int,
+        snapshotTime: Float = 0f
     ) {
         viewModelScope.launch(Dispatchers.IO) {
             _state.update { it.copy(isExporting = true, error = null) }
@@ -135,7 +151,7 @@ class ExportViewModel @Inject constructor() : ViewModel() {
                 val canvas = Canvas(bitmap)
                 // Fill white background for JPG
                 canvas.drawColor(android.graphics.Color.WHITE)
-                generator.renderCanvas(canvas, bitmap, params, seed, palette, quality, 0f)
+                generator.renderCanvas(canvas, bitmap, params, seed, palette, quality, snapshotTime)
                 PostFXProcessor.apply(bitmap, postFX)
 
                 val uri = JpgExporter.export(context, bitmap, "algomodo_${System.currentTimeMillis()}")
@@ -180,7 +196,8 @@ class ExportViewModel @Inject constructor() : ViewModel() {
         seed: Int,
         palette: Palette,
         quality: Quality,
-        fps: Int
+        fps: Int,
+        aspectRatio: AspectRatio = AspectRatio.SQUARE
     ) {
         val s = _state.value
         viewModelScope.launch(Dispatchers.IO) {
@@ -194,6 +211,7 @@ class ExportViewModel @Inject constructor() : ViewModel() {
                     palette = palette,
                     quality = quality,
                     resolution = s.gifResolution,
+                    aspectRatio = aspectRatio,
                     durationSeconds = s.gifDuration,
                     fps = fps,
                     boomerang = s.gifBoomerang,
@@ -217,13 +235,16 @@ class ExportViewModel @Inject constructor() : ViewModel() {
         seed: Int,
         palette: Palette,
         quality: Quality,
-        fps: Int
+        fps: Int,
+        aspectRatio: AspectRatio = AspectRatio.SQUARE,
+        audioUri: Uri? = null
     ) {
         val s = _state.value
+        val durationSeconds = (s.videoEndSec - s.videoStartSec).coerceAtLeast(1)
         viewModelScope.launch(Dispatchers.IO) {
             _state.update { it.copy(isExporting = true, error = null) }
             try {
-                val resolution = s.gifResolution // use same resolution setting
+                val resolution = s.gifResolution
                 val uri = VideoExporter.export(
                     context = context,
                     generator = generator,
@@ -231,10 +252,13 @@ class ExportViewModel @Inject constructor() : ViewModel() {
                     seed = seed,
                     palette = palette,
                     quality = quality,
-                    width = resolution,
-                    height = resolution,
+                    width = aspectRatio.width(resolution),
+                    height = aspectRatio.height(resolution),
                     fps = fps,
-                    durationSeconds = s.gifDuration,
+                    durationSeconds = durationSeconds,
+                    timeOffsetSec = s.videoStartSec.toFloat(),
+                    audioUri = audioUri,
+                    audioStartSec = s.videoStartSec.toFloat(),
                     fileName = "algomodo_${System.currentTimeMillis()}",
                     onProgress = { p ->
                         _state.update { it.copy(exportProgress = p) }

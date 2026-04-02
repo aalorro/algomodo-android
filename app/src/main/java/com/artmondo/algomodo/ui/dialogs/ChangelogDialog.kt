@@ -18,6 +18,106 @@ fun ChangelogDialog(onDismiss: () -> Unit) {
         text = {
             Text(
                 text = """
+v1.5.2 (Android)
+New Generator:
+- Pythagoras Tree (fractals) — total: 117 generators
+
+Performance:
+- Optimized all 11 Voronoi generators (spatial grids, metric-split paths, sqrt elimination)
+
+Improvements:
+- Render debounce for smoother parameter changes
+- Export panel keyboard improvements
+- Smarter animation parameter randomization
+
+v1.5.1 (Android)
+Improvements:
+- Rewrote IFS/Barnsley (histogram rendering, lean/curl/spread, symmetry, tone mapping)
+- Optimized Kaleidoscope, Plasma Feedback, Wave Interference, Fractal Flames, L-System, DLA
+- Moved Recursive Subdivision to Geometry family
+
+v1.5.0 (Android)
+New Generators (9):
+- 9 new procedural generators (new family): Audio Reactive, Displacement, Edge Glow, Feedback Systems, Field Particle, Instanced Geometry, Particle Advection, SDF Raymarch, Warp
+- Total: 116 generators across 11 families
+
+New Features:
+- Audio reactivity for procedural generators
+- Video export with audio support and adjustable start/end times
+- Parameter buttons replace dropdowns for one-tap selection
+
+Improvements:
+- Rewrote DLA generator (circle-jump optimization, rotational symmetry, background glow)
+- Rewrote Ecosystems generator (multi-species food chain, 5 visual styles)
+- Enhanced Newton fractal, SDF Raymarch, and AttractorTrails generators
+- Fixed Anisotropic generator anisotropy parameter
+
+v1.4.0 (Android)
+New Features:
+- Progressive reveal animation for Maze/Meander generator
+- Random color palette generation
+- Animated "Surprise Me" button with gold shimmer
+
+Performance:
+- Optimized rendering across all 107 generators (cached palette colors, single-pass PostFX)
+- Pre-computed color lookup tables for pixel-loop generators
+- Bulk pixel reads replace per-pixel JNI calls
+
+Improvements:
+- Instant canvas transitions on Surprise Me
+- Milestone progress bar for long renders (25%, 60%, 90%)
+- Surprise Me always picks active options, avoids extreme values
+- Enhanced Voronoi and graph generators
+- Animation snapshot time for accurate exports
+
+v1.3.4 (Android)
+Improvements:
+- Rewrote 9 plotter generators to fully wire all declared parameters
+- Optimized Guilloche animation performance
+- Fixed Contour Lines rendering
+- Fixed Streamlines spiral effect
+- Improved Export tab layout for small phone screens
+- Touch interaction now enabled by default
+- GIF endless loop now enabled by default
+
+v1.3.3 (Android)
+Improvements:
+- Enhanced Lissajous generator with improved parameter handling
+- Enhanced Plotter Streamlines generator with improved streamline rendering logic
+- Added 4 new color palettes: Rainbow, Contrast, Earth, and Nature (total: 14)
+- Optimized GIF export memory usage by avoiding storage of all boomerang frames in RAM
+
+v1.3.1 (Android)
+New Generators (3):
+- 3 new text generators: Glyphs (procedural abstract symbols), Naive Handwriting (childlike hand-drawn letters), Procedural Cursive (connected flowing script)
+- Total: 107 generators across 10 families
+
+Improvements:
+- Parameter space expanded to over 9.5 million unique configurations
+
+v1.3.0 (Android)
+New Generators (12):
+- 5 new fractal generators: Burning Ship, Fractal Flames, Multibrot, Orbit Traps, Strange Attractor Density
+- 7 new graph generators: Geodesic, Constrained Delaunay, Anisotropic, Euler Trails, K-Nearest Neighbor, Gabriel Graph, Planar Graph
+- Total: 104 generators across 10 families
+
+New Features:
+- Canvas touch gestures (Settings > Touch Interaction): tap to expand, swipe right to randomize, swipe left to undo, swipe up for Surprise Me, swipe down to undo
+- Generator search bar for quick filtering
+- Clear canvas button
+
+Improvements:
+- Parameter space expanded to over 9.4 million unique configurations
+
+v1.2.0 (Android)
+New Features:
+- Added in-app Report Bug dialog (Info menu → Report Bug) with name, email, and description fields, submitted via Formspree
+
+Improvements:
+- Enhanced GIF export performance with optimized color quantization and LZW encoding
+- Smoother tab transitions using scrollToPage
+- Improved bitmap handling in StaticCanvas to avoid blank flashes and ensure proper recycling
+
 v1.1.0 (Android)
 Generator Improvements:
 - Rewrote 5 fractal generators: Mandelbrot (smooth coloring, interior detection), Julia (orbit traps, smooth iteration), Newton (multi-equation solver), IFS Barnsley (all 9 presets, flame/height/density coloring), Recursive Subdivision (true quad splits, noise coloring)

@@ -12,6 +12,7 @@ import com.artmondo.algomodo.generators.noise.*
 import com.artmondo.algomodo.generators.plotter.*
 import com.artmondo.algomodo.generators.text.*
 import com.artmondo.algomodo.generators.voronoi.*
+import com.artmondo.algomodo.generators.procedural.*
 import dagger.hilt.android.HiltAndroidApp
 
 @HiltAndroidApp
@@ -48,14 +49,20 @@ class AlgoApp : Application() {
         GeneratorRegistry.register(SandpileGenerator())
         GeneratorRegistry.register(TuringPatternsGenerator())
 
-        // Fractals (5)
+        // Fractals (10)
+        GeneratorRegistry.register(BurningShipGenerator())
+        GeneratorRegistry.register(FractalFlamesGenerator())
         GeneratorRegistry.register(IfsBarnsleyGenerator())
         GeneratorRegistry.register(JuliaGenerator())
         GeneratorRegistry.register(MandelbrotGenerator())
+        GeneratorRegistry.register(MultibrotGenerator())
         GeneratorRegistry.register(NewtonGenerator())
+        GeneratorRegistry.register(OrbitTrapsGenerator())
+        GeneratorRegistry.register(PythagorasTreeGenerator())
         GeneratorRegistry.register(RecursiveSubdivisionGenerator())
+        GeneratorRegistry.register(StrangeAttractorDensityGenerator())
 
-        // Geometry (10)
+        // Geometry (11)
         GeneratorRegistry.register(ChladniGenerator())
         GeneratorRegistry.register(IslamicPatternsGenerator())
         GeneratorRegistry.register(MoireGenerator())
@@ -67,9 +74,16 @@ class AlgoApp : Application() {
         GeneratorRegistry.register(MstWebGenerator())
         GeneratorRegistry.register(SpirographGenerator())
 
-        // Graphs (4)
+        // Graphs (11)
+        GeneratorRegistry.register(GraphAnisotropicGenerator())
+        GeneratorRegistry.register(GraphConstrainedDelaunayGenerator())
         GeneratorRegistry.register(GraphEcosystemsGenerator())
+        GeneratorRegistry.register(GraphEulerTrailsGenerator())
+        GeneratorRegistry.register(GraphGabrielGraphGenerator())
+        GeneratorRegistry.register(GraphGeodesicGenerator())
+        GeneratorRegistry.register(GraphKNearestNeighborGenerator())
         GeneratorRegistry.register(GraphLowPolyGenerator())
+        GeneratorRegistry.register(GraphPlanarGenerator())
         GeneratorRegistry.register(GraphSteinerNetworksGenerator())
         GeneratorRegistry.register(GraphTessellationsGenerator())
 
@@ -114,11 +128,14 @@ class AlgoApp : Application() {
         GeneratorRegistry.register(PlotterStreamlinesGenerator())
         GeneratorRegistry.register(PlotterTspGenerator())
 
-        // Text (5)
+        // Text (8)
         GeneratorRegistry.register(TextConcreteGenerator())
+        GeneratorRegistry.register(TextGlyphsGenerator())
         GeneratorRegistry.register(TextGridGenerator())
         GeneratorRegistry.register(TextMatrixGenerator())
+        GeneratorRegistry.register(TextNaiveHandwritingGenerator())
         GeneratorRegistry.register(TextPoemGenerator())
+        GeneratorRegistry.register(TextProceduralCursiveGenerator())
         GeneratorRegistry.register(TextRewriteGenerator())
 
         // Voronoi (11)
@@ -133,5 +150,16 @@ class AlgoApp : Application() {
         GeneratorRegistry.register(VoronoiCellsGenerator())
         GeneratorRegistry.register(VoronoiMosaicGenerator())
         GeneratorRegistry.register(VoronoiWeightedGenerator())
+
+        // Procedural (9)
+        GeneratorRegistry.register(AudioReactiveGenerator())
+        GeneratorRegistry.register(DisplacementGenerator())
+        GeneratorRegistry.register(EdgeGlowGenerator())
+        GeneratorRegistry.register(FeedbackSystemsGenerator())
+        GeneratorRegistry.register(FieldParticleGenerator())
+        GeneratorRegistry.register(InstancedGeometryGenerator())
+        GeneratorRegistry.register(ParticleAdvectionGenerator())
+        GeneratorRegistry.register(SdfRaymarchGenerator())
+        GeneratorRegistry.register(WarpGenerator())
     }
 }

@@ -143,10 +143,16 @@ class FlowFieldInkGenerator : Generator {
                 Quality.ULTRA -> (it * 1.5f).toInt()
             }
         }
-        val maxLength = 80 // hardcoded default (not in schema)
+        val maxLength = 80
         val noiseScale = (params["fieldScale"] as? Number)?.toFloat() ?: 1.8f
-        val strokeWidth = (params["lineWidth"] as? Number)?.toFloat() ?: 1.0f
+        val baseStrokeWidth = (params["lineWidth"] as? Number)?.toFloat() ?: 1.0f
         val curl = (params["warpStrength"] as? Number)?.toFloat() ?: 0.5f
+        val inkStyle = (params["inkStyle"] as? String) ?: "mixed"
+        val speed = (params["speed"] as? Number)?.toFloat() ?: 2.5f
+        val timeScale = (params["timeScale"] as? Number)?.toFloat() ?: 0.08f
+        val trailDecay = (params["trailDecay"] as? Number)?.toFloat() ?: 0.04f
+        val opacity = (params["opacity"] as? Number)?.toFloat() ?: 0.55f
+        val colorMode = (params["colorMode"] as? String) ?: "angle"
 
         val rng = SeededRNG(seed)
         val noise = SimplexNoise(seed)
@@ -162,24 +168,32 @@ class FlowFieldInkGenerator : Generator {
             )
         )
 
-        val stepSize = dim * 0.003f // pixel step per iteration
-        // Lines grow with time — at time 0 nothing visible, at time ~5 fully grown
-        val growFraction = (time * 0.5f).coerceIn(0f, 1f)
+        val stepSize = dim * 0.003f
+        // Lines grow with time, speed controls growth rate
+        val growFraction = (time * speed * 0.2f).coerceIn(0f, 1f)
         val stepsThisFrame = (maxLength * growFraction).toInt().coerceAtLeast(2)
 
         val paint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
             style = Paint.Style.STROKE
-            this.strokeWidth = strokeWidth
             strokeCap = Paint.Cap.ROUND
             strokeJoin = Paint.Join.ROUND
         }
 
+        val baseAlpha = (opacity * 255).toInt().coerceIn(20, 255)
+
         for (i in 0 until lineCount) {
             val startX = rng.random() * w
             val startY = rng.random() * h
-            val colorBase = colors[(i * 7 + seed) % colors.size]
-            // Per-line phase offset for noise animation
             val phase = rng.random() * 100f
+
+            // Ink style controls per-line stroke width
+            val lineStroke = when (inkStyle) {
+                "fine" -> baseStrokeWidth * 0.5f
+                "bold" -> baseStrokeWidth * 2.5f
+                "splatter" -> baseStrokeWidth * (0.8f + rng.random() * 1.5f)
+                else -> baseStrokeWidth * (0.4f + rng.random() * 1.8f) // "mixed"
+            }
+            paint.strokeWidth = lineStroke
 
             val path = Path()
             var px = startX
@@ -187,35 +201,45 @@ class FlowFieldInkGenerator : Generator {
             path.moveTo(px, py)
 
             var prevAngle = 0f
+            var firstAngle = 0f
 
             for (step in 0 until stepsThisFrame) {
                 val nx = px / dim * noiseScale
                 val ny = py / dim * noiseScale
-                // Base angle from noise
-                var angle = noise.noise2D(nx + phase, ny + time * 0.05f) * PI.toFloat() * 2f
-                // Apply curl: add a constant rotational bias
+                // Base angle from noise, timeScale controls field evolution speed
+                var angle = noise.noise2D(nx + phase, ny + time * timeScale) * PI.toFloat() * 2f
                 angle += curl * 0.5f
 
-                // Smooth with previous angle to reduce jitter
                 if (step > 0) {
                     var diff = angle - prevAngle
                     while (diff > PI) diff -= 2f * PI.toFloat()
                     while (diff < -PI) diff += 2f * PI.toFloat()
                     angle = prevAngle + diff * 0.7f
                 }
+                if (step == 0) firstAngle = angle
                 prevAngle = angle
 
                 px += cos(angle) * stepSize
                 py += sin(angle) * stepSize
 
-                // Boundary check — stop line if it leaves canvas
                 if (px < 0 || px >= w || py < 0 || py >= h) break
 
                 path.lineTo(px, py)
             }
 
-            // Alpha fades toward the end of the growth
-            val alpha = (220 - (i % 80)).coerceIn(80, 220)
+            // Color mode
+            val colorBase = when (colorMode) {
+                "angle" -> {
+                    val t = ((firstAngle / (2f * PI.toFloat())) + 0.5f) % 1f
+                    palette.lerpColor(t)
+                }
+                "mono" -> colors[0]
+                else -> colors[(i * 7 + seed) % colors.size] // "palette"
+            }
+
+            // Trail decay affects alpha fade across particles
+            val decayFade = 1f - trailDecay * 10f * (i.toFloat() / lineCount)
+            val alpha = (baseAlpha * decayFade).toInt().coerceIn(20, baseAlpha)
             paint.color = Color.argb(
                 alpha,
                 Color.red(colorBase),
@@ -223,6 +247,15 @@ class FlowFieldInkGenerator : Generator {
                 Color.blue(colorBase)
             )
             canvas.drawPath(path, paint)
+
+            // Splatter: add ink blobs at line endpoints
+            if (inkStyle == "splatter" && rng.random() < 0.3f) {
+                val blobPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+                    style = Paint.Style.FILL
+                    color = paint.color
+                }
+                canvas.drawCircle(px, py, lineStroke * (1f + rng.random() * 3f), blobPaint)
+            }
         }
     }
 

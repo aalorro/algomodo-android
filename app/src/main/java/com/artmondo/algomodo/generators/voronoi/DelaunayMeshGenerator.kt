@@ -73,9 +73,14 @@ class DelaunayMeshGenerator : Generator {
         val w = bitmap.width.toFloat()
         val h = bitmap.height.toFloat()
         val numPoints = (params["pointCount"] as? Number)?.toInt() ?: 80
+        val colorMode = (params["colorMode"] as? String) ?: "by-position"
         val showTriangles = params["showEdges"] as? Boolean ?: true
         val fillTriangles = true
         val lineWidth = (params["edgeWidth"] as? Number)?.toFloat() ?: 1f
+        val edgeOpacity = (params["edgeOpacity"] as? Number)?.toFloat() ?: 0.5f
+        val jitter = (params["jitter"] as? Number)?.toFloat() ?: 0.1f
+        val animSpeed = (params["animSpeed"] as? Number)?.toFloat() ?: 0.4f
+        val animAmp = (params["animAmp"] as? Number)?.toFloat() ?: 0.2f
 
         val rng = SeededRNG(seed)
         val noise = SimplexNoise(seed)
@@ -90,9 +95,11 @@ class DelaunayMeshGenerator : Generator {
 
         // Animate points
         if (time > 0f) {
+            val speed = animSpeed / 0.4f  // normalize around default
+            val amp = animAmp / 0.2f      // normalize around default
             for (i in 0 until numPoints) {
-                pointsX[i] += noise.noise2D(i * 0.4f + 50f, time * 0.15f) * w * 0.04f
-                pointsY[i] += noise.noise2D(i * 0.4f + 150f, time * 0.15f) * h * 0.04f
+                pointsX[i] += noise.noise2D(i * 0.4f + 50f, time * 0.15f * speed) * w * 0.04f * amp
+                pointsY[i] += noise.noise2D(i * 0.4f + 150f, time * 0.15f * speed) * h * 0.04f * amp
                 pointsX[i] = pointsX[i].coerceIn(0f, w)
                 pointsY[i] = pointsY[i].coerceIn(0f, h)
             }
@@ -149,16 +156,18 @@ class DelaunayMeshGenerator : Generator {
         val fillPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
             style = Paint.Style.FILL
         }
+        val edgeAlpha = (edgeOpacity * 255f).toInt().coerceIn(0, 255)
         val strokePaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
             style = Paint.Style.STROKE
             strokeWidth = lineWidth
-            color = Color.BLACK
+            color = Color.argb(edgeAlpha, 0, 0, 0)
         }
 
         val colors = palette.colorInts()
         val diagonal = sqrt(w * w + h * h)
 
-        for (tri in triangles) {
+        val jitterRng = SeededRNG(seed + 999)
+        for ((triIdx, tri) in triangles.withIndex()) {
             val cx = (pointsX[tri.a] + pointsX[tri.b] + pointsX[tri.c]) / 3f
             val cy = (pointsY[tri.a] + pointsY[tri.b] + pointsY[tri.c]) / 3f
 
@@ -170,8 +179,30 @@ class DelaunayMeshGenerator : Generator {
             }
 
             if (fillTriangles) {
-                val t = (sqrt(cx * cx + cy * cy) / diagonal).coerceIn(0f, 1f)
-                fillPaint.color = palette.lerpColor(t)
+                // Compute area for by-area mode
+                val area = abs(
+                    (pointsX[tri.b] - pointsX[tri.a]) * (pointsY[tri.c] - pointsY[tri.a]) -
+                    (pointsX[tri.c] - pointsX[tri.a]) * (pointsY[tri.b] - pointsY[tri.a])
+                ) / 2f
+                val maxArea = w * h / numPoints.coerceAtLeast(1).toFloat()
+
+                val t = when (colorMode) {
+                    "by-area" -> (area / maxArea).coerceIn(0f, 1f)
+                    "palette-cycle" -> (triIdx.toFloat() / triangles.size.coerceAtLeast(1)).coerceIn(0f, 1f)
+                    "gradient-y" -> (cy / h).coerceIn(0f, 1f)
+                    else -> (sqrt(cx * cx + cy * cy) / diagonal).coerceIn(0f, 1f) // "by-position"
+                }
+
+                var baseColor = palette.lerpColor(t)
+                // Apply jitter: random brightness variation per triangle
+                if (jitter > 0f) {
+                    val jitterVal = 1f + (jitterRng.random() - 0.5f) * 2f * jitter
+                    val r = (Color.red(baseColor) * jitterVal).toInt().coerceIn(0, 255)
+                    val g = (Color.green(baseColor) * jitterVal).toInt().coerceIn(0, 255)
+                    val b = (Color.blue(baseColor) * jitterVal).toInt().coerceIn(0, 255)
+                    baseColor = Color.rgb(r, g, b)
+                }
+                fillPaint.color = baseColor
                 canvas.drawPath(path, fillPaint)
             }
 

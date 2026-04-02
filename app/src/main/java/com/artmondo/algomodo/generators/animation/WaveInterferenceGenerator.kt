@@ -191,11 +191,55 @@ class WaveInterferenceGenerator : Generator {
         // Pre-compute constants
         val twoPiOverLambda = 2f * PI.toFloat() / wavelength
         val timePhase = speed * time * 4f
-        // Decay normalized by canvas dimension so waves propagate across the full canvas
         val normalizedDecay = decay * 3f / dim
 
+        val paletteLut = palette.buildLut(256)
+        val bichromeHi = paletteLut[(0.85f * 255f).toInt()]
+        val bichromeLo = paletteLut[(0.15f * 255f).toInt()]
+
+        // --- Per-source wave LUTs indexed by integer distance ---
+        val maxDist = sqrt((w * w + h * h).toFloat()).toInt() + 2
+        val circularLuts = arrayOfNulls<FloatArray>(sourceCount)
+        val planeCosDir = FloatArray(sourceCount)
+        val planeSinDir = FloatArray(sourceCount)
+
+        for (s in 0 until sourceCount) {
+            when (srcWaveType[s]) {
+                0 -> {
+                    // Circular wave LUT: sin(k*r - phase) * amp * exp(-decay*r)
+                    circularLuts[s] = FloatArray(maxDist) { d ->
+                        val r = d.toFloat()
+                        sin(twoPiOverLambda * r - timePhase + srcPhase[s]) * amplitude * exp(-normalizedDecay * r)
+                    }
+                }
+                2 -> {
+                    // Plane wave: pre-compute direction cos/sin
+                    planeCosDir[s] = cos(planeAngle[s])
+                    planeSinDir[s] = sin(planeAngle[s])
+                }
+            }
+        }
+
+        // Plane wave LUT: indexed by integer projection value (shifted by maxDist to handle negatives)
+        val planeLutSize = maxDist * 2 + 1
+        val planeLuts = arrayOfNulls<FloatArray>(sourceCount)
+        for (s in 0 until sourceCount) {
+            if (srcWaveType[s] == 2) {
+                planeLuts[s] = FloatArray(planeLutSize) { i ->
+                    val proj = (i - maxDist).toFloat()
+                    val r = abs(proj)
+                    sin(twoPiOverLambda * proj - timePhase + srcPhase[s]) * amplitude * exp(-normalizedDecay * r)
+                }
+            }
+        }
+
+        // Pre-compute dy² per source per row
+        val dySq = Array(sourceCount) { s -> FloatArray(h) { py -> val d = py.toFloat() - srcY[s]; d * d } }
+        val dyRaw = Array(sourceCount) { s -> FloatArray(h) { py -> py.toFloat() - srcY[s] } }
+
         val pixels = IntArray(w * h)
-        bitmap.getPixels(pixels, 0, w, 0, 0, w, h)
+        val maxExpected = sourceCount * amplitude * 0.5f
+        val invMaxExpected = 1f / maxExpected
 
         for (py in 0 until h step step) {
             for (px in 0 until w step step) {
@@ -203,57 +247,48 @@ class WaveInterferenceGenerator : Generator {
 
                 for (s in 0 until sourceCount) {
                     val dx = px.toFloat() - srcX[s]
-                    val dy = py.toFloat() - srcY[s]
-                    val r = sqrt(dx * dx + dy * dy)
+                    val dy2 = dySq[s][py]
 
-                    val waveVal: Float = when (srcWaveType[s]) {
+                    when (srcWaveType[s]) {
+                        0 -> {
+                            // Circular: LUT lookup by integer distance
+                            val ri = sqrt(dx * dx + dy2).toInt().coerceAtMost(maxDist - 1)
+                            totalDisplacement += circularLuts[s]!![ri]
+                        }
                         1 -> {
-                            // Spiral wave: add angle-dependent phase
+                            // Spiral: LUT for radial part, still need atan2 for angle
+                            val dy = dyRaw[s][py]
+                            val r = sqrt(dx * dx + dy2)
                             val angle = atan2(dy, dx)
-                            sin(twoPiOverLambda * r - timePhase + srcPhase[s] + angle * spiralArms)
+                            val waveVal = sin(twoPiOverLambda * r - timePhase + srcPhase[s] + angle * spiralArms)
+                            totalDisplacement += waveVal * amplitude * exp(-normalizedDecay * r)
                         }
                         2 -> {
-                            // Plane wave: displacement depends on projection along direction
-                            val proj = dx * cos(planeAngle[s]) + dy * sin(planeAngle[s])
-                            sin(twoPiOverLambda * proj - timePhase + srcPhase[s])
-                        }
-                        else -> {
-                            // Circular wave
-                            sin(twoPiOverLambda * r - timePhase + srcPhase[s])
+                            // Plane: LUT lookup by integer projection
+                            val dy = dyRaw[s][py]
+                            val projI = (dx * planeCosDir[s] + dy * planeSinDir[s]).toInt() + maxDist
+                            val clamped = projI.coerceIn(0, planeLutSize - 1)
+                            totalDisplacement += planeLuts[s]!![clamped]
                         }
                     }
-
-                    val damped = waveVal * amplitude * exp(-normalizedDecay * r)
-                    totalDisplacement += damped
                 }
 
-                // Normalize
-                val maxExpected = sourceCount * amplitude * 0.5f
-                var norm = totalDisplacement / maxExpected
-
-                // Apply contrast
+                var norm = totalDisplacement * invMaxExpected
                 norm = (norm * contrast).coerceIn(-1f, 1f)
-
-                // Map to [0, 1]
                 val mapped = norm * 0.5f + 0.5f
 
                 val color = when (colorMode) {
-                    "bichrome" -> {
-                        // Two-tone: snap to 0 or 1
-                        if (mapped > 0.5f) palette.lerpColor(0.85f) else palette.lerpColor(0.15f)
-                    }
+                    "bichrome" -> if (mapped > 0.5f) bichromeHi else bichromeLo
                     "phase" -> {
-                        // Highlight wavefront edges using derivative
                         val edginess = abs(norm)
-                        val palVal = mapped
-                        val baseColor = palette.lerpColor(palVal)
-                        val bright = (edginess * 0.6f + 0.4f)
+                        val baseColor = paletteLut[(mapped * 255f).toInt().coerceIn(0, 255)]
+                        val bright = edginess * 0.6f + 0.4f
                         val r2 = (Color.red(baseColor) * bright).toInt().coerceIn(0, 255)
                         val g2 = (Color.green(baseColor) * bright).toInt().coerceIn(0, 255)
                         val b2 = (Color.blue(baseColor) * bright).toInt().coerceIn(0, 255)
                         Color.rgb(r2, g2, b2)
                     }
-                    else -> palette.lerpColor(mapped.coerceIn(0f, 1f))
+                    else -> paletteLut[(mapped.coerceIn(0f, 1f) * 255f).toInt()]
                 }
 
                 // Fill block

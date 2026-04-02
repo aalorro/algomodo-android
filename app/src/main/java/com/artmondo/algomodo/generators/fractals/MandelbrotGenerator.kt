@@ -10,7 +10,6 @@ import com.artmondo.algomodo.generators.ParamGroup
 import com.artmondo.algomodo.generators.Parameter
 import com.artmondo.algomodo.generators.Quality
 import kotlin.math.ln
-import kotlin.math.min
 import kotlin.math.sin
 
 class MandelbrotGenerator : Generator {
@@ -76,6 +75,12 @@ class MandelbrotGenerator : Generator {
         val colorCycles = (params["colorCycles"] as? Number)?.toFloat() ?: 3f
         val speed = (params["speed"] as? Number)?.toFloat() ?: 0.5f
 
+        val scaledMaxIter = when (quality) {
+            Quality.DRAFT -> (maxIter / 2).coerceAtLeast(16)
+            Quality.BALANCED -> maxIter
+            Quality.ULTRA -> (maxIter * 1.5f).toInt()
+        }
+
         // Pick a zoom target from seed
         val rng = SeededRNG(seed)
         val target = zoomTargets[rng.integer(0, zoomTargets.size - 1)]
@@ -93,45 +98,61 @@ class MandelbrotGenerator : Generator {
         val pixels = IntArray(w * h)
         val ln2 = ln(2.0)
 
-        for (py in 0 until h) {
-            for (px in 0 until w) {
-                val cr = centerX + (px.toDouble() / w - 0.5) * rangeX
-                val ci = centerY + (py.toDouble() / h - 0.5) * rangeY
+        // Precompute palette LUT to avoid per-pixel string parsing
+        val lutSize = 256
+        val paletteLut = IntArray(lutSize) { palette.lerpColor(it.toFloat() / (lutSize - 1)) }
+        val darkBase = palette.lerpColor(0.0f)
+        val insideColor = Color.rgb(
+            (Color.red(darkBase) * 0.1f).toInt(),
+            (Color.green(darkBase) * 0.1f).toInt(),
+            (Color.blue(darkBase) * 0.1f).toInt()
+        )
 
-                var zr = 0.0
-                var zi = 0.0
-                var iter = 0
+        val timeShift = time * speed * 0.02f
+        val invW = 1.0 / w
+        val invH = 1.0 / h
 
-                while (iter < maxIter && zr * zr + zi * zi <= 4.0) {
-                    val tmp = zr * zr - zi * zi + cr
-                    zi = 2.0 * zr * zi + ci
-                    zr = tmp
-                    iter++
+        // Parallel row processing
+        val cores = Runtime.getRuntime().availableProcessors().coerceIn(2, 8)
+        val threads = Array(cores) { t ->
+            Thread {
+                val y0 = t * h / cores
+                val y1 = (t + 1) * h / cores
+                for (py in y0 until y1) {
+                    val ciBase = centerY + (py * invH - 0.5) * rangeY
+                    for (px in 0 until w) {
+                        val cr = centerX + (px * invW - 0.5) * rangeX
+                        val ci = ciBase
+
+                        var zr = 0.0
+                        var zi = 0.0
+                        var iter = 0
+
+                        while (iter < scaledMaxIter && zr * zr + zi * zi <= 4.0) {
+                            val tmp = zr * zr - zi * zi + cr
+                            zi = 2.0 * zr * zi + ci
+                            zr = tmp
+                            iter++
+                        }
+
+                        val color = if (iter >= scaledMaxIter) {
+                            insideColor
+                        } else {
+                            val mag2 = zr * zr + zi * zi
+                            val logZn = ln(mag2) / 2.0
+                            val nu = ln(logZn / ln2) / ln2
+                            val smoothIter = iter + 1 - nu
+                            val rawT = ((smoothIter / scaledMaxIter * colorCycles) % 1.0).toFloat()
+                            val shifted = ((rawT + timeShift) % 1f + 1f) % 1f
+                            paletteLut[(shifted * (lutSize - 1)).toInt().coerceIn(0, lutSize - 1)]
+                        }
+
+                        pixels[py * w + px] = color
+                    }
                 }
-
-                val color = if (iter >= maxIter) {
-                    // Inside the set — use darkened palette center instead of pure black
-                    val dark = palette.lerpColor(0.0f)
-                    Color.rgb(
-                        (Color.red(dark) * 0.1f).toInt(),
-                        (Color.green(dark) * 0.1f).toInt(),
-                        (Color.blue(dark) * 0.1f).toInt()
-                    )
-                } else {
-                    // Smooth coloring
-                    val mag2 = zr * zr + zi * zi
-                    val logZn = ln(mag2) / 2.0
-                    val nu = ln(logZn / ln2) / ln2
-                    val smoothIter = iter + 1 - nu
-                    val t = ((smoothIter / maxIter * colorCycles) % 1.0).toFloat()
-                    // Add a time-based palette shift for animation color cycling
-                    val shifted = ((t + time * speed * 0.02f) % 1f + 1f) % 1f
-                    palette.lerpColor(shifted)
-                }
-
-                pixels[py * w + px] = color
-            }
+            }.also { it.start() }
         }
+        threads.forEach { it.join() }
 
         bitmap.setPixels(pixels, 0, w, 0, 0, w, h)
         canvas.drawBitmap(bitmap, 0f, 0f, null)

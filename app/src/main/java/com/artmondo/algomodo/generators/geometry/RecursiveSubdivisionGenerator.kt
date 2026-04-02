@@ -1,4 +1,4 @@
-package com.artmondo.algomodo.generators.fractals
+package com.artmondo.algomodo.generators.geometry
 
 import android.graphics.Bitmap
 import android.graphics.Canvas
@@ -19,7 +19,7 @@ import kotlin.math.sin
 class RecursiveSubdivisionGenerator : Generator {
 
     override val id = "fractal-recursive-subdivision"
-    override val family = "fractals"
+    override val family = "geometry"
     override val styleName = "Recursive Subdivision"
     override val definition =
         "Recursively subdivides the canvas into nested regions, coloring each by recursion depth for a Mondrian-like fractal composition."
@@ -37,7 +37,7 @@ class RecursiveSubdivisionGenerator : Generator {
             key = "depth",
             group = ParamGroup.COMPOSITION,
             help = "Recursion depth \u2014 higher = more cells",
-            min = 1f, max = 10f, step = 1f, default = 5f
+            min = 3f, max = 10f, step = 1f, default = 5f
         ),
         Parameter.SelectParam(
             name = "Split Mode",

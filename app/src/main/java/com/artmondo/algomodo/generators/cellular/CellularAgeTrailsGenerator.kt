@@ -5,6 +5,7 @@ import android.graphics.Canvas
 import android.graphics.Color
 import com.artmondo.algomodo.core.rng.SeededRNG
 import com.artmondo.algomodo.data.palettes.Palette
+import kotlin.math.pow
 import com.artmondo.algomodo.generators.Generator
 import com.artmondo.algomodo.generators.ParamGroup
 import com.artmondo.algomodo.generators.Parameter
@@ -44,6 +45,15 @@ class CellularAgeTrailsGenerator : Generator {
         "colorMode" to "palette"
     )
 
+    // Persistent CA state for incremental animation — avoids replaying from step 0 each frame
+    private var stateKey = 0L
+    private var stateStep = -1
+    private var stateAlive: BooleanArray? = null
+    private var stateAge: IntArray? = null
+    // Reusable double-buffer for CA step (avoids allocation per step)
+    private var tmpAlive: BooleanArray? = null
+    private var tmpAge: IntArray? = null
+
     override fun renderCanvas(
         canvas: Canvas,
         bitmap: Bitmap,
@@ -55,81 +65,137 @@ class CellularAgeTrailsGenerator : Generator {
     ) {
         val gridSize = (params["gridSize"] as? Number)?.toInt() ?: 128
         val density = (params["density"] as? Number)?.toFloat() ?: 0.35f
+        val rule = (params["rule"] as? String) ?: "life"
+        val warmupSteps = (params["warmupSteps"] as? Number)?.toInt() ?: 400
         val stepsPerFrame = (params["stepsPerFrame"] as? Number)?.toFloat() ?: 1f
         val decay = (params["decay"] as? Number)?.toFloat() ?: 0.95f
+        val exposure = (params["exposure"] as? Number)?.toFloat() ?: 0.5f
+        val gamma = (params["gamma"] as? Number)?.toFloat() ?: 0.7f
+        val colorMode = (params["colorMode"] as? String) ?: "palette"
 
         val w = bitmap.width
         val h = bitmap.height
-        val steps = (time * stepsPerFrame).toInt()
-
-        // Initialize grid from seed
-        val rng = SeededRNG(seed)
         val totalCells = gridSize * gridSize
-        var alive = BooleanArray(totalCells)
-        // Age tracks how many steps since a cell was last alive
-        // Derive effective trail length from decay: at decay^trailLen < 0.01, trailLen = log(0.01)/log(decay)
-        val effectiveTrailLength = if (decay < 1f) (kotlin.math.ln(0.01f) / kotlin.math.ln(decay)).toInt().coerceIn(1, 200) else 200
-        var age = IntArray(totalCells) { effectiveTrailLength + 1 }
+        val targetSteps = warmupSteps + (time * stepsPerFrame).toInt()
+        val effectiveTrailLength = if (decay < 1f)
+            (kotlin.math.ln(0.01f) / kotlin.math.ln(decay)).toInt().coerceIn(1, 200) else 200
 
-        for (i in 0 until totalCells) {
-            if (rng.random() < density) {
-                alive[i] = true
-                age[i] = 0
-            }
-        }
+        // Cache key from CA-affecting parameters only (rendering params don't affect simulation)
+        val key = seed.toLong() * 1_000_003 + gridSize.toLong() * 31 +
+                density.toBits().toLong() * 17 + rule.hashCode().toLong()
 
-        // Evolve
-        for (s in 0 until steps) {
-            val nextAlive = BooleanArray(totalCells)
-            val nextAge = IntArray(totalCells)
-
-            for (y in 0 until gridSize) {
-                for (x in 0 until gridSize) {
-                    val idx = y * gridSize + x
-                    var neighbors = 0
-                    for (dy in -1..1) {
-                        for (dx in -1..1) {
-                            if (dx == 0 && dy == 0) continue
-                            val nx = (x + dx + gridSize) % gridSize
-                            val ny = (y + dy + gridSize) % gridSize
-                            if (alive[ny * gridSize + nx]) neighbors++
-                        }
-                    }
-                    val isAlive = alive[idx]
-                    val willLive = if (isAlive) neighbors == 2 || neighbors == 3 else neighbors == 3
-                    nextAlive[idx] = willLive
-                    nextAge[idx] = if (willLive) 0 else age[idx] + 1
+        // Reset state if params changed or time went backwards (animation restart)
+        if (key != stateKey || stateAlive?.size != totalCells || targetSteps < stateStep) {
+            val rng = SeededRNG(seed)
+            stateAlive = BooleanArray(totalCells)
+            stateAge = IntArray(totalCells) { NEVER_ALIVE }
+            val alive = stateAlive!!
+            val age = stateAge!!
+            for (i in 0 until totalCells) {
+                if (rng.random() < density) {
+                    alive[i] = true
+                    age[i] = 0
                 }
             }
-            alive = nextAlive
-            age = nextAge
+            stateStep = 0
+            stateKey = key
         }
 
-        // Render
+        val alive = stateAlive!!
+        val age = stateAge!!
+
+        // Ensure temp buffers are correctly sized
+        if (tmpAlive?.size != totalCells) {
+            tmpAlive = BooleanArray(totalCells)
+            tmpAge = IntArray(totalCells)
+        }
+        val na = tmpAlive!!
+        val nAge = tmpAge!!
+
+        // Pre-compute wrapped row offsets and column indices
+        val rowOff = IntArray(gridSize) { it * gridSize }
+        val yUp = IntArray(gridSize) { ((it - 1 + gridSize) % gridSize) * gridSize }
+        val yDown = IntArray(gridSize) { ((it + 1) % gridSize) * gridSize }
+        val xLeft = IntArray(gridSize) { (it - 1 + gridSize) % gridSize }
+        val xRight = IntArray(gridSize) { (it + 1) % gridSize }
+
+        // Pre-compute birth/survive as boolean lookup tables (avoids when/setOf in hot loop)
+        val birth = BooleanArray(9)
+        val survive = BooleanArray(9)
+        when (rule) {
+            "highlife" -> { birth[3] = true; birth[6] = true; survive[2] = true; survive[3] = true }
+            "maze" -> { birth[3] = true; for (n in 1..5) survive[n] = true }
+            "daynight" -> { for (n in intArrayOf(3, 6, 7, 8)) birth[n] = true; for (n in intArrayOf(3, 4, 6, 7, 8)) survive[n] = true }
+            "seeds" -> { birth[2] = true }
+            else -> { birth[3] = true; survive[2] = true; survive[3] = true }
+        }
+
+        // Advance CA incrementally — only the steps we haven't computed yet
+        while (stateStep < targetSteps) {
+            for (y in 0 until gridSize) {
+                val ru = yUp[y]; val rs = rowOff[y]; val rd = yDown[y]
+                for (x in 0 until gridSize) {
+                    val xl = xLeft[x]; val xr = xRight[x]
+                    val neighbors =
+                        (if (alive[ru + xl]) 1 else 0) +
+                        (if (alive[ru + x]) 1 else 0) +
+                        (if (alive[ru + xr]) 1 else 0) +
+                        (if (alive[rs + xl]) 1 else 0) +
+                        (if (alive[rs + xr]) 1 else 0) +
+                        (if (alive[rd + xl]) 1 else 0) +
+                        (if (alive[rd + x]) 1 else 0) +
+                        (if (alive[rd + xr]) 1 else 0)
+                    val idx = rs + x
+                    val willLive = if (alive[idx]) survive[neighbors] else birth[neighbors]
+                    na[idx] = willLive
+                    nAge[idx] = if (willLive) 0 else age[idx] + 1
+                }
+            }
+            System.arraycopy(na, 0, alive, 0, totalCells)
+            System.arraycopy(nAge, 0, age, 0, totalCells)
+            stateStep++
+        }
+
+        // Build color look-up table (avoids per-pixel pow / palette.lerpColor)
+        val lutSize = effectiveTrailLength + 1
+        val colorLut = IntArray(lutSize)
+        for (a in 0 until lutSize) {
+            val t = a.toFloat() / effectiveTrailLength
+            val brightness = ((1f - t) * exposure).coerceIn(0f, 1f)
+            val mapped = brightness.toDouble().pow(gamma.toDouble()).toFloat()
+            val color = when (colorMode) {
+                "heat" -> palette.lerpColor(mapped)
+                else -> palette.lerpColor(t)
+            }
+            val alpha = (mapped * 255).toInt().coerceIn(0, 255)
+            colorLut[a] = Color.argb(alpha, Color.red(color), Color.green(color), Color.blue(color))
+        }
+
+        // Render grid cells to pixels using LUT
         val cellW = w.toFloat() / gridSize
         val cellH = h.toFloat() / gridSize
         val pixels = IntArray(w * h)
 
-        for (py in 0 until h) {
-            val gy = (py / cellH).toInt().coerceAtMost(gridSize - 1)
-            for (px in 0 until w) {
-                val gx = (px / cellW).toInt().coerceAtMost(gridSize - 1)
-                val idx = gy * gridSize + gx
-                val cellAge = age[idx]
-
-                pixels[py * w + px] = if (cellAge <= effectiveTrailLength) {
-                    val t = cellAge.toFloat() / effectiveTrailLength
-                    val color = palette.lerpColor(t)
-                    // Fade alpha as age increases
-                    val alpha = ((1f - t) * 255).toInt().coerceIn(0, 255)
-                    Color.argb(alpha, Color.red(color), Color.green(color), Color.blue(color))
-                } else {
-                    Color.BLACK
+        for (gy in 0 until gridSize) {
+            val pyStart = (gy * cellH).toInt()
+            val pyEnd = ((gy + 1) * cellH).toInt().coerceAtMost(h)
+            val gridRow = gy * gridSize
+            for (gx in 0 until gridSize) {
+                val pxStart = (gx * cellW).toInt()
+                val pxEnd = ((gx + 1) * cellW).toInt().coerceAtMost(w)
+                val cellAge = age[gridRow + gx]
+                val color = if (cellAge < lutSize) colorLut[cellAge] else Color.BLACK
+                for (py in pyStart until pyEnd) {
+                    java.util.Arrays.fill(pixels, py * w + pxStart, py * w + pxEnd, color)
                 }
             }
         }
 
         bitmap.setPixels(pixels, 0, w, 0, 0, w, h)
         canvas.drawBitmap(bitmap, 0f, 0f, null)
+    }
+
+    companion object {
+        private const val NEVER_ALIVE = 10000
     }
 }

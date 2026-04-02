@@ -22,7 +22,7 @@ class GameOfLifeGenerator : Generator {
 
     override val parameterSchema = listOf(
         Parameter.NumberParam("Grid Size", "gridSize", ParamGroup.COMPOSITION, "Width/height of cell grid", 16f, 512f, 16f, 128f),
-        Parameter.NumberParam("Initial Density", "density", ParamGroup.COMPOSITION, "Proportion of cells alive at start", 0f, 1f, 0.05f, 0.3f),
+        Parameter.NumberParam("Initial Density", "density", ParamGroup.COMPOSITION, "Proportion of cells alive at start", 0.05f, 1f, 0.05f, 0.3f),
         Parameter.NumberParam("Iterations (static)", "iterations", ParamGroup.COMPOSITION, "Simulation steps for the static (non-animated) render", 1f, 500f, 1f, 100f),
         Parameter.SelectParam("Rule Set", "ruleSet", ParamGroup.COMPOSITION, "conway: B3/S23 (classic) | highlife: B36/S23 (replicators) | day-night: B3678/S34678 (day/night symmetry) | seeds: B2/S (explosive) | maze: B3/S12345 (grows mazes) | morley: B368/S245 (complex gliders)", listOf("conway", "highlife", "day-night", "seeds", "maze", "morley"), "conway"),
         Parameter.BooleanParam("Wrap Edges", "wrapEdges", ParamGroup.GEOMETRY, "Torus topology — edges wrap around", true),

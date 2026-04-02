@@ -129,142 +129,144 @@ class KaleidoscopeGenerator : Generator {
         val halfSeg = segAngle / 2f
         val rotation = time * rotationSpeed * 0.5f
 
-        // Seeded offsets for variety
         val offsetX = rng.random() * 100f
         val offsetY = rng.random() * 100f
 
-        val pixels = IntArray(w * h)
-
         val twoPi = 2f * PI.toFloat()
 
-        for (py in 0 until h) {
-            val rawDy = (py - cy) / dim * 2f
-            for (px in 0 until w) {
-                val rawDx = (px - cx) / dim * 2f
+        // --- Pre-compute LUTs ---
+        val paletteLut = palette.buildLut(256)
 
-                // Polar coordinates
-                val r = sqrt(rawDx * rawDx + rawDy * rawDy)
-                var theta = atan2(rawDy, rawDx) + rotation
+        // Sharpen LUT: maps [0..255] input to sharpened [0..1] output
+        val invContrast = 1f / contrast
+        val sharpenLut = FloatArray(256) { i ->
+            val v = i / 255f * 2f - 1f          // remap to [-1, 1]
+            val sign = if (v >= 0f) 1f else -1f
+            val sharpened = if (contrast > 1f) sign * abs(v).pow(invContrast)
+            else v * contrast
+            (sharpened * 0.5f + 0.5f).coerceIn(0f, 1f)
+        }
+
+        // Iridescent time shift (constant for this frame)
+        val iriTimeShift = sin(time * rotationSpeed * 0.5f) * 0.1f
+
+        // --- Polar buffer: compute pattern + color in polar space ---
+        // Reduces expensive noise/trig evaluations from w*h (~1M) to radSteps*angSteps (~72K)
+        val radSteps = when (quality) {
+            Quality.DRAFT -> 150
+            Quality.BALANCED -> 200
+            Quality.ULTRA -> 300
+        }
+        val angSteps = when (quality) {
+            Quality.DRAFT -> 270
+            Quality.BALANCED -> 360
+            Quality.ULTRA -> 540
+        }
+        val maxR = sqrt(2f)  // max possible radius in normalized coords
+
+        val polarBuffer = IntArray(radSteps * angSteps)
+
+        for (ri in 0 until radSteps) {
+            val r = ri.toFloat() / (radSteps - 1) * maxR
+
+            // Vignette for this radius
+            val vignette = (1f - (r * 0.4f).coerceAtMost(0.7f)).coerceAtLeast(0.3f)
+
+            for (ai in 0 until angSteps) {
+                val theta = ai.toFloat() / angSteps * twoPi
 
                 // Fold into one segment with mirror symmetry
-                theta = ((theta % twoPi) + twoPi) % twoPi
-                var segTheta = theta % segAngle
-                if (segTheta > halfSeg) {
-                    segTheta = segAngle - segTheta
-                }
+                val thetaFolded = ((theta + rotation) % twoPi + twoPi) % twoPi
+                var segTheta = thetaFolded % segAngle
+                if (segTheta > halfSeg) segTheta = segAngle - segTheta
 
-                // Folded Cartesian coordinates for sampling
                 val sx = r * cos(segTheta) * zoom
                 val sy = r * sin(segTheta) * zoom
 
                 val value: Float = when (pattern) {
                     "geometric" -> {
-                        // Sharp concentric rings modulated by spoke lines
                         val ringFreq = complexity * 3f
                         val spokeFreq = complexity * 2f
-
-                        // Rings: sin waves based on radius
                         val rings = sin(r * ringFreq * PI.toFloat() + time * rotationSpeed * 2f)
-                        // Spokes: sin waves based on folded angle
                         val spokes = sin(segTheta * spokeFreq * segments.toFloat() + time * 0.5f)
-                        // Noise modulation for organic feel
                         val nMod = noise.noise2D(sx * 2f + offsetX + time * 0.15f, sy * 2f + offsetY)
-                        // Radial wave
                         val radialWave = sin(r * zoom * 8f - time * rotationSpeed * 3f)
-
-                        // Combine: rings × spokes, modulated by noise
-                        val combined = rings * 0.4f + spokes * 0.25f + radialWave * 0.2f + nMod * 0.15f
-                        combined
+                        rings * 0.4f + spokes * 0.25f + radialWave * 0.2f + nMod * 0.15f
                     }
                     "organic" -> {
-                        // Flowing noise bands with domain warping
-                        val warpX = noise.noise2D(
-                            sx * 1.5f + offsetX + time * 0.12f,
-                            sy * 1.5f + offsetY
-                        ) * 0.5f
-                        val warpY = noise.noise2D(
-                            sx * 1.5f + offsetX + 50f,
-                            sy * 1.5f + offsetY + time * 0.1f
-                        ) * 0.5f
-
+                        val warpX = noise.noise2D(sx * 1.5f + offsetX + time * 0.12f, sy * 1.5f + offsetY) * 0.5f
+                        val warpY = noise.noise2D(sx * 1.5f + offsetX + 50f, sy * 1.5f + offsetY + time * 0.1f) * 0.5f
                         val wsx = sx + warpX
                         val wsy = sy + warpY
-
-                        // Layered noise at warped coordinates
-                        var v = 0f
-                        var amp = 1f
-                        var freq = 1f
+                        var v = 0f; var amp = 1f; var freq = 1f
                         for (oct in 0 until complexity) {
                             v += noise.noise2D(
                                 wsx * freq * 2f + offsetX + time * 0.08f * (oct + 1),
                                 wsy * freq * 2f + offsetY + time * 0.06f * (oct + 1)
                             ) * amp
-                            amp *= 0.5f
-                            freq *= 2.1f
+                            amp *= 0.5f; freq *= 2.1f
                         }
-                        // Add radial variation
-                        v += sin(r * zoom * 4f + time * 0.8f) * 0.3f
-                        v
+                        v + sin(r * zoom * 4f + time * 0.8f) * 0.3f
                     }
                     "crystalline" -> {
-                        // Hard-edged faceted cells using quantised noise
                         val cellScale = zoom * 3f
                         val nsx = sx * cellScale + offsetX + time * 0.1f
                         val nsy = sy * cellScale + offsetY + time * 0.08f
-
-                        // Base noise value
                         val n1 = noise.noise2D(nsx, nsy)
-                        // Secondary at different scale
                         val n2 = noise.noise2D(nsx * 2.3f + 30f, nsy * 2.3f + time * 0.12f)
-                        // Tertiary for radial structure
                         val n3 = sin(r * complexity * 5f + n1 * 3f + time * rotationSpeed)
-
-                        // Quantise to create hard edges
                         val raw = n1 * 0.5f + n2 * 0.3f + n3 * 0.2f
                         val levels = (complexity * 2f + 2f)
-                        val quantised = (raw * levels).toInt().toFloat() / levels
-                        quantised
+                        (raw * levels).toInt().toFloat() / levels
                     }
                     else -> noise.noise2D(sx + time * 0.1f, sy + time * 0.08f)
                 }
 
-                // Apply contrast sharpening
-                val sharpened = if (contrast > 1f) {
-                    val centered = value  // already in roughly [-1, 1]
-                    // Power curve for contrast
-                    val sign = if (centered >= 0f) 1f else -1f
-                    sign * abs(centered).pow(1f / contrast)
-                } else {
-                    value * contrast
-                }
-
-                // Map to [0, 1]
-                val norm = (sharpened * 0.5f + 0.5f).coerceIn(0f, 1f)
+                // Sharpen via LUT: map value from [-1,1] to LUT index [0,255]
+                val lutIdx = ((value * 0.5f + 0.5f).coerceIn(0f, 1f) * 255f).toInt()
+                val norm = sharpenLut[lutIdx]
 
                 // Color mode
                 val palVal = when (colorMode) {
-                    "depth" -> {
-                        // Radius shifts the palette lookup
-                        ((norm + r * 0.4f) % 1f + 1f) % 1f
-                    }
+                    "depth" -> ((norm + r * 0.4f) % 1f + 1f) % 1f
                     "iridescent" -> {
-                        // Angle + time creates chromatic shimmer
-                        val angleShift = (theta / twoPi) * 0.3f
-                        val timeShift = sin(time * rotationSpeed * 0.5f) * 0.1f
-                        ((norm + angleShift + timeShift) % 1f + 1f) % 1f
+                        val angleShift = (thetaFolded / twoPi) * 0.3f
+                        ((norm + angleShift + iriTimeShift) % 1f + 1f) % 1f
                     }
                     else -> norm
                 }
 
-                val baseColor = palette.lerpColor(palVal)
-
-                // Subtle radial vignette — don't dim too aggressively
-                val vignette = (1f - (r * 0.4f).coerceAtMost(0.7f)).coerceAtLeast(0.3f)
+                // Palette LUT + vignette
+                val baseColor = paletteLut[(palVal * 255f).toInt().coerceIn(0, 255)]
                 val red = (Color.red(baseColor) * vignette).toInt().coerceIn(0, 255)
                 val green = (Color.green(baseColor) * vignette).toInt().coerceIn(0, 255)
                 val blue = (Color.blue(baseColor) * vignette).toInt().coerceIn(0, 255)
 
-                pixels[py * w + px] = Color.rgb(red, green, blue)
+                polarBuffer[ri * angSteps + ai] = Color.rgb(red, green, blue)
+            }
+        }
+
+        // --- Screen fill: lookup from polar buffer ---
+        val pixels = IntArray(w * h)
+        val invDim2 = 2f / dim
+        val rScale = (radSteps - 1) / maxR
+        val invTwoPi = angSteps / twoPi
+
+        for (py in 0 until h) {
+            val rawDy = (py - cy) * invDim2
+            val rawDy2 = rawDy * rawDy
+            val rowOff = py * w
+            for (px in 0 until w) {
+                val rawDx = (px - cx) * invDim2
+                val r = sqrt(rawDx * rawDx + rawDy2)
+                val ri = (r * rScale).toInt()
+                if (ri >= radSteps) {
+                    pixels[rowOff + px] = Color.BLACK
+                    continue
+                }
+                val theta = atan2(rawDy, rawDx)
+                val ai = (((theta + PI.toFloat()) * invTwoPi).toInt()) % angSteps
+                pixels[rowOff + px] = polarBuffer[ri * angSteps + ai]
             }
         }
 

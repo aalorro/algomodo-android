@@ -24,7 +24,7 @@ fun InstructionsDialog(onDismiss: () -> Unit) {
                 verticalArrangement = Arrangement.spacedBy(12.dp)
             ) {
                 HelpSection("What is Algomodo?") {
-                    "Algomodo generates art using pure mathematics. It has 93 generators across 10 families: noise, fractals, cellular automata, geometry, Voronoi, graphs, plotter, text, image processing, and animation. All processing runs 100% locally on your device."
+                    "Algomodo generates art using pure mathematics. It has 117 generators across 11 families: noise, fractals, cellular automata, geometry, Voronoi, graphs, plotter, text, image processing, animation, and procedural. All processing runs 100% locally on your device."
                 }
                 HelpSection("What is a Seed?") {
                     "A seed is a number that determines the randomness of your art. The same seed + same parameters = exact same output every time. Tap the lock icon to preserve your seed across random operations."
@@ -35,7 +35,7 @@ fun InstructionsDialog(onDismiss: () -> Unit) {
                     "RELOAD: Re-renders with the exact same settings. Useful after PostFX changes."
                 }
                 HelpSection("The Four Tabs") {
-                    "Generators: Browse 10 families, select from 93 generators.\n\n" +
+                    "Generators: Browse 11 families, select from 117 generators.\n\n" +
                     "Params: Adjust parameters for the current generator. Lock any parameter to preserve it during randomization.\n\n" +
                     "Export: Save as PNG, JPG, SVG, GIF, or MP4. Export/import recipes.\n\n" +
                     "Settings: Theme, quality, FPS, Post-processing effects."
@@ -44,19 +44,21 @@ fun InstructionsDialog(onDismiss: () -> Unit) {
                     "Image generators (14 total) require a source image. Tap 'Load Image' to pick from your gallery. Use 'Show Original' to toggle between the source image and processed output. Tap 'Clear Image' to remove it. The image is held in memory only — never saved or uploaded."
                 }
                 HelpSection("Text Generators") {
-                    "Text generators accept custom text input. Use the pipe character | to create line breaks in Poem Layout."
+                    "Text generators accept custom text input. Use the pipe character | to create line breaks in Poem Layout. Glyphs creates procedural abstract symbols, Naive Handwriting renders childlike hand-drawn letters, and Procedural Cursive generates connected flowing script."
                 }
                 HelpSection("Animation") {
                     "Tap the play button to animate. Most generators support animation — fractals morph smoothly, geometry generators spin/bloom/morph, and cellular automata evolve their state over time. L-System animation shows progressive growth. Adjust FPS in Settings."
                 }
                 HelpSection("GIF & Video Export") {
-                    "While animating, export as GIF (3s/5s/8s, 600/800/1000px) or MP4. GIF supports boomerang (ping-pong) and endless loop modes."
+                    "While animating, the Export tab shows animation options. Resolution (600/800/1000px) is shared between GIF and MP4.\n\n" +
+                    "GIF: Duration up to 8 seconds (3s/5s/8s). Supports boomerang (ping-pong) and endless loop modes.\n\n" +
+                    "MP4: Duration up to 60 seconds (5s/15s/30s or custom). Great for longer animations and social media sharing."
                 }
                 HelpSection("Undo & Redo") {
                     "Up to 50 steps. Undo/redo buttons on the canvas bar. Each parameter change, seed change, generator change, and randomization creates a history entry."
                 }
                 HelpSection("Color Palettes") {
-                    "10 curated palettes with 5 colors each. Lock the palette to preserve it during SURPRISE ME operations."
+                    "14 curated palettes with 5 colors each, plus a Random palette that generates 5 new random colors each time you tap it. Random colors use golden-angle hue spacing for visually diverse combinations. Lock the palette to preserve it during SURPRISE ME operations."
                 }
                 HelpSection("Presets") {
                     "Save your favorite generator + parameter + palette combos as presets. Each preset captures a circular thumbnail snapshot.\n\n" +
@@ -66,6 +68,14 @@ fun InstructionsDialog(onDismiss: () -> Unit) {
                 }
                 HelpSection("Generator Parameters") {
                     "Every parameter in the Params tab actively controls the output. Lock any parameter to preserve it during randomization. Parameters are grouped by category: Geometry, Composition, Color, Texture, and Flow/Motion."
+                }
+                HelpSection("Touch Gestures") {
+                    "Enable in Settings > Touch Interaction.\n\n" +
+                    "Tap: Expand canvas to full screen width. Tap again to restore.\n\n" +
+                    "Swipe Right: Randomize parameters and seed.\n\n" +
+                    "Swipe Left: Undo / return to previous render.\n\n" +
+                    "Swipe Up: Trigger Surprise Me (new generator + params).\n\n" +
+                    "Swipe Down: Undo / return to previous render."
                 }
                 HelpSection("Tips") {
                     "- Quick-save renders at 1080x1080\n" +
