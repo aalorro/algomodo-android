@@ -242,18 +242,34 @@ class GraphSteinerNetworksGenerator : Generator {
 
         // Precompute normalization ranges for color modes
         var maxEdgeLen = 1f
-        var maxRadialDist = 1f
         for (edge in result.edges) {
             val dx = result.px[edge.first] - result.px[edge.second]
             val dy = result.py[edge.first] - result.py[edge.second]
             val len = sqrt(dx * dx + dy * dy)
             if (len > maxEdgeLen) maxEdgeLen = len
-            val mx = (result.px[edge.first] + result.px[edge.second]) / 2f
-            val my = (result.py[edge.first] + result.py[edge.second]) / 2f
-            val rdx = mx - w / 2f
-            val rdy = my - h / 2f
+        }
+        var maxRadialDist = 1f
+        for (i in result.px.indices) {
+            val rdx = result.px[i] - w / 2f
+            val rdy = result.py[i] - h / 2f
             val dist = sqrt(rdx * rdx + rdy * rdy)
             if (dist > maxRadialDist) maxRadialDist = dist
+        }
+
+        // Precompute average connected edge length per node (for edge-length mode)
+        val avgEdgeLenPerNode = FloatArray(result.px.size)
+        val edgeDegree = IntArray(result.px.size)
+        for (edge in result.edges) {
+            val dx = result.px[edge.first] - result.px[edge.second]
+            val dy = result.py[edge.first] - result.py[edge.second]
+            val len = sqrt(dx * dx + dy * dy)
+            avgEdgeLenPerNode[edge.first] += len
+            avgEdgeLenPerNode[edge.second] += len
+            edgeDegree[edge.first]++
+            edgeDegree[edge.second]++
+        }
+        for (i in avgEdgeLenPerNode.indices) {
+            if (edgeDegree[i] > 0) avgEdgeLenPerNode[i] /= edgeDegree[i]
         }
 
         // Grow animation: reveal edges progressively
@@ -344,16 +360,27 @@ class GraphSteinerNetworksGenerator : Generator {
             style = Paint.Style.FILL
         }
 
+        // Helper to get node color based on color mode
+        fun nodeColor(i: Int): Int = when (colorMode) {
+            "by-depth" -> colors[depths[i].coerceAtLeast(0) % colors.size]
+            "edge-length" -> palette.lerpColor((avgEdgeLenPerNode[i] / maxEdgeLen).coerceIn(0f, 1f))
+            "radial" -> {
+                val dx = result.px[i] - w / 2f
+                val dy = result.py[i] - h / 2f
+                palette.lerpColor((sqrt(dx * dx + dy * dy) / maxRadialDist).coerceIn(0f, 1f))
+            }
+            else -> colors[subtreeOf[i].coerceAtLeast(0) % colors.size] // by-subtree
+        }
+
         // Draw terminal points
         for (i in 0 until numTerminals) {
-            dotPaint.color = colors[i % colors.size]
+            dotPaint.color = nodeColor(i)
             canvas.drawCircle(result.px[i], result.py[i], terminalSize, dotPaint)
         }
 
-        // Draw Steiner points smaller and white
-        val steinerColor = when (background) { "light" -> Color.DKGRAY; else -> Color.WHITE }
-        dotPaint.color = steinerColor
+        // Draw Steiner points
         for (i in numTerminals until result.px.size) {
+            dotPaint.color = nodeColor(i)
             canvas.drawCircle(result.px[i], result.py[i], terminalSize * 0.5f, dotPaint)
         }
     }
