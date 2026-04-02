@@ -17,6 +17,8 @@ import androidx.compose.foundation.pager.rememberPagerState
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.BasicTextField
+import androidx.compose.foundation.text.KeyboardActions
+import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.material.icons.Icons
@@ -30,7 +32,10 @@ import androidx.compose.ui.graphics.SolidColor
 import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.platform.LocalSoftwareKeyboardController
 import androidx.compose.ui.text.TextStyle
+import androidx.compose.ui.text.input.ImeAction
+import androidx.compose.ui.window.PopupProperties
 import androidx.compose.ui.unit.DpOffset
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
@@ -457,6 +462,7 @@ fun MainScreen(
                 }.take(8)
             }
 
+            val keyboardController = LocalSoftwareKeyboardController.current
             Box(modifier = Modifier.weight(1f)) {
                 Box(
                     modifier = Modifier
@@ -484,13 +490,22 @@ fun MainScreen(
                             fontSize = 12.sp,
                             color = MaterialTheme.colorScheme.onSurface
                         ),
+                        keyboardOptions = KeyboardOptions(imeAction = ImeAction.Done),
+                        keyboardActions = KeyboardActions(onDone = {
+                            keyboardController?.hide()
+                            searchExpanded = false
+                        }),
                         cursorBrush = SolidColor(MaterialTheme.colorScheme.primary),
                         modifier = Modifier.fillMaxWidth()
                     )
                 }
                 DropdownMenu(
                     expanded = searchExpanded && filteredGenerators.isNotEmpty(),
-                    onDismissRequest = { searchExpanded = false },
+                    onDismissRequest = {
+                        searchExpanded = false
+                        keyboardController?.hide()
+                    },
+                    properties = PopupProperties(focusable = false),
                     modifier = Modifier.widthIn(max = 250.dp)
                 ) {
                     filteredGenerators.forEach { generator ->
@@ -509,6 +524,7 @@ fun MainScreen(
                                 viewModel.selectGenerator(generator)
                                 searchQuery = ""
                                 searchExpanded = false
+                                keyboardController?.hide()
                             }
                         )
                     }
