@@ -8,6 +8,7 @@ import com.artmondo.algomodo.generators.Generator
 import com.artmondo.algomodo.generators.ParamGroup
 import com.artmondo.algomodo.generators.Parameter
 import com.artmondo.algomodo.generators.Quality
+import kotlin.math.ln
 
 class SandpileGenerator : Generator {
 
@@ -56,135 +57,168 @@ class SandpileGenerator : Generator {
 
         val w = bitmap.width
         val h = bitmap.height
-        // Use totalGrains to scale the simulation; each step drops dropRate grains
         val steps = ((totalGrains.toFloat() / dropRate.coerceAtLeast(1)) * (time * 0.1f + 1f)).toInt()
         val totalCells = gridSize * gridSize
         val cx = gridSize / 2
         val cy = gridSize / 2
 
-        // Initialize empty grid
         val grid = IntArray(totalCells)
-        // Track topple counts for topple-count / avalanche color modes
-        val toppleCount = IntArray(totalCells)
-        val recentlyToppled = BooleanArray(totalCells)
+        val needToppleHistory = colorMode == "topple-count"
+        val needAvalanche = colorMode == "avalanche"
+        val toppleCount = if (needToppleHistory) IntArray(totalCells) else null
+        val recentlyToppled = if (needAvalanche) BooleanArray(totalCells) else null
 
-        // Compute drop positions based on dropSite mode
-        val dropPositions: List<Pair<Int, Int>> = when (dropSite) {
+        // Pre-compute flat-index drop positions for non-drift modes
+        val dropIndices: IntArray = when (dropSite) {
             "multi" -> {
                 val q = gridSize / 4
-                listOf(Pair(q, q), Pair(3 * q, q), Pair(q, 3 * q), Pair(3 * q, 3 * q))
+                intArrayOf(
+                    q * gridSize + q,
+                    q * gridSize + 3 * q,
+                    3 * q * gridSize + q,
+                    3 * q * gridSize + 3 * q
+                )
             }
-            "drift" -> {
-                // Single drop site that orbits around center
-                listOf(Pair(cx, cy)) // will be overridden per-step below
-            }
-            else /* center */ -> {
-                listOf(Pair(cx + (seed % 3) - 1, cy + ((seed / 3) % 3) - 1))
+            "drift" -> intArrayOf() // computed per-step
+            else -> {
+                val dx = (cx + (seed % 3) - 1).coerceIn(0, gridSize - 1)
+                val dy = (cy + ((seed / 3) % 3) - 1).coerceIn(0, gridSize - 1)
+                intArrayOf(dy * gridSize + dx)
             }
         }
 
-        val dx4 = intArrayOf(0, 1, 0, -1)
-        val dy4 = intArrayOf(-1, 0, 1, 0)
+        // Stack-based toppling: only process cells that actually need it
+        // Max stack growth: dropRate + 3 * maxTopples (each topple pushes <=4, pops 1)
+        val stack = IntArray(3 * maxTopples + dropRate + 16)
+        var stackTop: Int
+        val lastIdx = gridSize - 1
 
-        // Simulate: each step, drop grains then topple until stable
         for (step in 0 until steps) {
-            // Reset recently-toppled tracker each step
-            for (i in recentlyToppled.indices) recentlyToppled[i] = false
+            stackTop = 0
+            val isLastStep = step == steps - 1
 
-            // Drop grains at the appropriate site(s)
+            // Compute drop index for drift mode (once per step, not per grain)
+            val driftIdx = if (dropSite == "drift") {
+                val angle = step * 0.05f
+                val r = gridSize / 6f
+                val dx = (cx + r * kotlin.math.cos(angle.toDouble())).toInt().coerceIn(0, lastIdx)
+                val dy = (cy + r * kotlin.math.sin(angle.toDouble())).toInt().coerceIn(0, lastIdx)
+                dy * gridSize + dx
+            } else -1
+
+            // Drop grains and seed the stack with any cells that reach threshold
             for (d in 0 until dropRate) {
-                val (dropX, dropY) = if (dropSite == "drift") {
-                    // Orbiting drop site
-                    val angle = step.toFloat() * 0.05f
-                    val r = gridSize / 6f
-                    val dx = (cx + r * kotlin.math.cos(angle)).toInt().coerceIn(0, gridSize - 1)
-                    val dy = (cy + r * kotlin.math.sin(angle)).toInt().coerceIn(0, gridSize - 1)
-                    Pair(dx, dy)
-                } else {
-                    dropPositions[d % dropPositions.size]
+                val dIdx = if (driftIdx >= 0) driftIdx else dropIndices[d % dropIndices.size]
+                grid[dIdx]++
+                if (grid[dIdx] >= threshold) {
+                    stack[stackTop++] = dIdx
                 }
-                val dIdx = dropY.coerceIn(0, gridSize - 1) * gridSize + dropX.coerceIn(0, gridSize - 1)
-                grid[dIdx] += 1
             }
 
-            // Topple until stable, capped by maxTopples
-            var unstable = true
-            var topplesBudget = maxTopples
-            while (unstable && topplesBudget > 0) {
-                unstable = false
-                for (y in 0 until gridSize) {
-                    for (x in 0 until gridSize) {
-                        val idx = y * gridSize + x
-                        if (grid[idx] >= threshold) {
-                            grid[idx] -= threshold
-                            toppleCount[idx]++
-                            recentlyToppled[idx] = true
-                            unstable = true
-                            topplesBudget--
-                            if (topplesBudget <= 0) break
-                            for (dir in 0..3) {
-                                val nx = x + dx4[dir]
-                                val ny = y + dy4[dir]
-                                if (nx in 0 until gridSize && ny in 0 until gridSize) {
-                                    grid[ny * gridSize + nx] += 1
-                                }
-                            }
-                        }
-                    }
-                    if (topplesBudget <= 0) break
-                }
+            // Topple using stack — O(topples) instead of O(gridSize²) per pass
+            var budget = maxTopples
+            while (stackTop > 0 && budget > 0) {
+                val idx = stack[--stackTop]
+                if (grid[idx] < threshold) continue
+                grid[idx] -= threshold
+                toppleCount?.let { it[idx]++ }
+                if (isLastStep) recentlyToppled?.let { it[idx] = true }
+                budget--
+
+                val x = idx % gridSize
+                val y = idx / gridSize
+                if (x > 0) { val n = idx - 1; grid[n]++; if (grid[n] >= threshold) stack[stackTop++] = n }
+                if (x < lastIdx) { val n = idx + 1; grid[n]++; if (grid[n] >= threshold) stack[stackTop++] = n }
+                if (y > 0) { val n = idx - gridSize; grid[n]++; if (grid[n] >= threshold) stack[stackTop++] = n }
+                if (y < lastIdx) { val n = idx + gridSize; grid[n]++; if (grid[n] >= threshold) stack[stackTop++] = n }
             }
         }
 
-        // Render: map cells to colors based on colorMode
-        val cellW = w.toFloat() / gridSize
-        val cellH = h.toFloat() / gridSize
+        // Render: block-fill pixels per grid cell with pre-computed color LUTs
         val pixels = IntArray(w * h)
-        // Find max topple count for normalization
-        val maxTopple = toppleCount.maxOrNull()?.coerceAtLeast(1) ?: 1
 
-        for (py in 0 until h) {
-            val gy = (py / cellH).toInt().coerceAtMost(gridSize - 1)
-            for (px in 0 until w) {
-                val gx = (px / cellW).toInt().coerceAtMost(gridSize - 1)
-                val idx = gy * gridSize + gx
-                val grains = grid[idx]
-
-                pixels[py * w + px] = when (colorMode) {
-                    "fractal" -> {
-                        // Full palette gradient across grain levels
-                        val t = (grains.toFloat() / (threshold - 1).coerceAtLeast(1)).coerceIn(0f, 1f)
-                        palette.lerpColor(t)
-                    }
-                    "topple-count" -> {
-                        // Log-scale color by cumulative topple history
-                        if (toppleCount[idx] == 0) Color.BLACK
-                        else {
-                            val t = (kotlin.math.ln(toppleCount[idx].toFloat() + 1f) / kotlin.math.ln(maxTopple.toFloat() + 1f)).coerceIn(0f, 1f)
-                            palette.lerpColor(t)
-                        }
-                    }
-                    "avalanche" -> {
-                        // Recently toppled cells glow, others show grain count
-                        if (recentlyToppled[idx]) {
-                            palette.lerpColor(1f) // brightest palette color
-                        } else if (grains == 0) {
-                            Color.BLACK
-                        } else {
-                            val t = (grains.toFloat() / (threshold - 1).coerceAtLeast(1)).coerceIn(0f, 1f)
-                            palette.lerpColor(t * 0.5f) // dimmer for non-active cells
-                        }
-                    }
-                    else /* grain-count */ -> {
-                        // 4-level by grain count (original behavior)
-                        val t = (grains.toFloat() / (threshold - 1).coerceAtLeast(1)).coerceIn(0f, 1f)
-                        if (grains == 0) Color.BLACK else palette.lerpColor(t)
-                    }
+        when (colorMode) {
+            "fractal" -> {
+                val lut = IntArray(threshold) { i ->
+                    palette.lerpColor(i.toFloat() / (threshold - 1).coerceAtLeast(1))
                 }
+                blockFill(pixels, grid, gridSize, w, h, threshold) { lut[it] }
+            }
+            "topple-count" -> {
+                val tc = toppleCount!!
+                val maxTc = tc.max().coerceAtLeast(1)
+                val logMax = ln(maxTc.toFloat() + 1f)
+                // 256-entry palette LUT to avoid per-cell lerpColor
+                val palLut = IntArray(256) { i -> palette.lerpColor(i / 255f) }
+                blockFillIndexed(pixels, gridSize, w, h) { idx ->
+                    val v = tc[idx]
+                    if (v == 0) Color.BLACK
+                    else palLut[(ln(v.toFloat() + 1f) / logMax * 255f).toInt().coerceIn(0, 255)]
+                }
+            }
+            "avalanche" -> {
+                val rt = recentlyToppled!!
+                val brightColor = palette.lerpColor(1f)
+                val grainLut = IntArray(threshold) { i ->
+                    if (i == 0) Color.BLACK
+                    else palette.lerpColor(i.toFloat() / (threshold - 1) * 0.5f)
+                }
+                blockFillIndexed(pixels, gridSize, w, h) { idx ->
+                    if (rt[idx]) brightColor
+                    else grainLut[grid[idx].coerceIn(0, threshold - 1)]
+                }
+            }
+            else /* grain-count */ -> {
+                val lut = IntArray(threshold) { i ->
+                    if (i == 0) Color.BLACK else palette.lerpColor(i.toFloat() / (threshold - 1))
+                }
+                blockFill(pixels, grid, gridSize, w, h, threshold) { lut[it] }
             }
         }
 
         bitmap.setPixels(pixels, 0, w, 0, 0, w, h)
         canvas.drawBitmap(bitmap, 0f, 0f, null)
+    }
+
+    /** Fill pixel blocks using only the grain value (0..threshold-1). */
+    private inline fun blockFill(
+        pixels: IntArray, grid: IntArray, gridSize: Int,
+        w: Int, h: Int, threshold: Int,
+        colorOf: (Int) -> Int
+    ) {
+        for (gy in 0 until gridSize) {
+            val pyStart = gy * h / gridSize
+            val pyEnd = (gy + 1) * h / gridSize
+            val rowBase = gy * gridSize
+            for (gx in 0 until gridSize) {
+                val color = colorOf(grid[rowBase + gx].coerceIn(0, threshold - 1))
+                val pxStart = gx * w / gridSize
+                val pxEnd = (gx + 1) * w / gridSize
+                for (py in pyStart until pyEnd) {
+                    java.util.Arrays.fill(pixels, py * w + pxStart, py * w + pxEnd, color)
+                }
+            }
+        }
+    }
+
+    /** Fill pixel blocks using the flat grid index for full flexibility. */
+    private inline fun blockFillIndexed(
+        pixels: IntArray, gridSize: Int,
+        w: Int, h: Int,
+        colorOf: (Int) -> Int
+    ) {
+        for (gy in 0 until gridSize) {
+            val pyStart = gy * h / gridSize
+            val pyEnd = (gy + 1) * h / gridSize
+            val rowBase = gy * gridSize
+            for (gx in 0 until gridSize) {
+                val color = colorOf(rowBase + gx)
+                val pxStart = gx * w / gridSize
+                val pxEnd = (gx + 1) * w / gridSize
+                for (py in pyStart until pyEnd) {
+                    java.util.Arrays.fill(pixels, py * w + pxStart, py * w + pxEnd, color)
+                }
+            }
+        }
     }
 }
