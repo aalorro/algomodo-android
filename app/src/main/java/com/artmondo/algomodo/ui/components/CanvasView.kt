@@ -346,7 +346,7 @@ private fun AnimationCanvas(
                         var bitmapCanvas = Canvas(bitmap)
                         val fpsPaint = android.graphics.Paint().apply {
                             color = android.graphics.Color.GREEN
-                            textSize = 28f
+                            textSize = 49f
                             isAntiAlias = true
                             typeface = android.graphics.Typeface.MONOSPACE
                         }

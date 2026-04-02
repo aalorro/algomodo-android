@@ -190,13 +190,18 @@ class GraphGabrielGraphGenerator : Generator {
             ((time * speed * 3f).toInt() % sortedGabriel.size.coerceAtLeast(1))
         } else -1
 
+        val fillPaint = if (animMode == "highlight-circles") Paint(Paint.ANTI_ALIAS_FLAG).apply {
+            style = Paint.Style.FILL
+        } else null
+
         for ((idx, edge) in sortedGabriel.withIndex()) {
             if (idx >= visibleCount) break
             val (i, j) = edge
             val dx = px[i] - px[j]; val dy = py[i] - py[j]
             val dist = sqrt(dx * dx + dy * dy)
+            val isHighlighted = idx == highlightIdx
 
-            linePaint.color = when (colorMode) {
+            val edgeColor = when (colorMode) {
                 "edge-length" -> palette.lerpColor((dist / maxLen).coerceIn(0f, 1f))
                 "region" -> {
                     val mx = (px[i] + px[j]) / 2f; val my = (py[i] + py[j]) / 2f
@@ -207,18 +212,36 @@ class GraphGabrielGraphGenerator : Generator {
                 "random" -> colors[(i * 7 + j * 13) % colors.size]
                 else -> palette.lerpColor(idx.toFloat() / sortedGabriel.size.coerceAtLeast(1))
             }
+
+            // Dim non-highlighted edges during highlight-circles animation
+            if (animMode == "highlight-circles" && !isHighlighted) {
+                linePaint.color = Color.argb(60, Color.red(edgeColor), Color.green(edgeColor), Color.blue(edgeColor))
+            } else {
+                linePaint.color = edgeColor
+            }
+            linePaint.strokeWidth = if (isHighlighted) edgeWidth * 3f else edgeWidth
             canvas.drawLine(px[i], py[i], px[j], py[j], linePaint)
 
-            if (showCircles || idx == highlightIdx) {
+            if (showCircles || isHighlighted) {
                 val mx = (px[i] + px[j]) / 2f
                 val my = (py[i] + py[j]) / 2f
                 val r = dist / 2f
-                val alpha = if (idx == highlightIdx) 180 else (circleOpacity * 255).toInt().coerceIn(5, 128)
-                val c = linePaint.color
-                circlePaint.color = Color.argb(alpha, Color.red(c), Color.green(c), Color.blue(c))
+                val c = edgeColor
+                if (isHighlighted) {
+                    // Filled glow circle
+                    fillPaint!!.color = Color.argb(40, Color.red(c), Color.green(c), Color.blue(c))
+                    canvas.drawCircle(mx, my, r, fillPaint)
+                    // Thick circle stroke
+                    circlePaint.strokeWidth = 2.5f
+                    circlePaint.color = Color.argb(220, Color.red(c), Color.green(c), Color.blue(c))
+                } else {
+                    circlePaint.strokeWidth = 0.5f
+                    circlePaint.color = Color.argb((circleOpacity * 255).toInt().coerceIn(5, 128), Color.red(c), Color.green(c), Color.blue(c))
+                }
                 canvas.drawCircle(mx, my, r, circlePaint)
             }
         }
+        linePaint.strokeWidth = edgeWidth
 
         // Draw MST overlay
         if (showMST) {
