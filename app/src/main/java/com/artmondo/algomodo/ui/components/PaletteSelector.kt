@@ -61,6 +61,36 @@ fun PaletteSelector(
 }
 
 @Composable
+fun HorizontalPaletteStrip(
+    selectedPalette: Palette,
+    onSelectPalette: (Palette) -> Unit,
+    modifier: Modifier = Modifier
+) {
+    LazyRow(
+        modifier = modifier,
+        horizontalArrangement = Arrangement.spacedBy(6.dp),
+        contentPadding = PaddingValues(horizontal = 8.dp, vertical = 4.dp),
+        verticalAlignment = Alignment.CenterVertically
+    ) {
+        items(CuratedPalettes.all) { palette ->
+            PaletteChip(
+                palette = palette,
+                isSelected = palette.name == selectedPalette.name,
+                onClick = { onSelectPalette(palette) }
+            )
+        }
+        item {
+            val displayPalette = if (selectedPalette.name == "Random") selectedPalette else CuratedPalettes.randomPlaceholder
+            PaletteChip(
+                palette = displayPalette,
+                isSelected = selectedPalette.name == "Random",
+                onClick = { onSelectPalette(CuratedPalettes.random()) }
+            )
+        }
+    }
+}
+
+@Composable
 fun VerticalPaletteSelector(
     selectedPalette: Palette,
     onSelectPalette: (Palette) -> Unit,

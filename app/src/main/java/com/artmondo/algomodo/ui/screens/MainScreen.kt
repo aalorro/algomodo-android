@@ -3,6 +3,7 @@ package com.artmondo.algomodo.ui.screens
 import android.content.Context
 import android.content.Intent
 import android.net.Uri
+import androidx.activity.compose.BackHandler
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.PickVisualMediaRequest
 import androidx.activity.result.contract.ActivityResultContracts
@@ -77,6 +78,28 @@ fun MainScreen(
 
     val context = LocalContext.current
     val scope = rememberCoroutineScope()
+
+    // Back button exit confirmation
+    var showExitDialog by remember { mutableStateOf(false) }
+    val activity = context as? android.app.Activity
+    BackHandler { showExitDialog = true }
+
+    if (showExitDialog) {
+        AlertDialog(
+            onDismissRequest = { showExitDialog = false },
+            title = { Text("Exit Algomodo?") },
+            confirmButton = {
+                TextButton(onClick = { activity?.finish() }) {
+                    Text("Exit")
+                }
+            },
+            dismissButton = {
+                TextButton(onClick = { showExitDialog = false }) {
+                    Text("Cancel")
+                }
+            }
+        )
+    }
 
     // Dialogs
     var showAbout by remember { mutableStateOf(false) }
@@ -217,6 +240,7 @@ fun MainScreen(
         }
 
         val isPortraitExpanded = isCanvasExpanded && state.aspectRatio == AspectRatio.PORTRAIT
+        val isLandscapeExpanded = isCanvasExpanded && state.aspectRatio == AspectRatio.LANDSCAPE
 
         // ===== TOP SECTION: Canvas + Palette =====
         Row(
@@ -226,9 +250,12 @@ fun MainScreen(
         ) {
             // Canvas with info button overlay
             Box(
-                modifier = (if (isCanvasExpanded && !isPortraitExpanded) Modifier.fillMaxWidth()
-                    else Modifier.fillMaxHeight())
-                    .then(canvasGestureModifier)
+                modifier = (if (isCanvasExpanded) {
+                    if (isPortraitExpanded) Modifier.fillMaxHeight()
+                    else Modifier.fillMaxSize()
+                } else Modifier.fillMaxHeight())
+                    .then(canvasGestureModifier),
+                contentAlignment = Alignment.Center
             ) {
                 val canvasModifier = if (isCanvasExpanded) {
                     if (isPortraitExpanded)
@@ -236,32 +263,46 @@ fun MainScreen(
                     else
                         Modifier.fillMaxWidth().aspectRatio(state.aspectRatio.asFloat())
                 } else {
-                    Modifier.fillMaxHeight().aspectRatio(1f)
+                    Modifier.fillMaxHeight().aspectRatio(state.aspectRatio.asFloat())
                 }
 
-                if (showOriginalImage && state.sourceImage != null) {
-                    Image(
-                        bitmap = state.sourceImage!!.asImageBitmap(),
-                        contentDescription = "Original source image",
-                        modifier = canvasModifier.background(Color.Black),
-                        contentScale = ContentScale.Fit
-                    )
-                } else {
-                    AlgoCanvas(
-                        generator = state.generator,
-                        params = renderParams,
-                        seed = state.seed,
-                        palette = state.palette,
-                        quality = state.quality,
-                        aspectRatio = state.aspectRatio,
-                        postFX = state.postFX,
-                        isAnimating = state.isAnimating,
-                        animationFps = state.animationFps,
-                        showFps = state.showFps,
-                        renderTrigger = state.renderTrigger,
-                        onPauseTimeCapture = { viewModel.setSnapshotTime(it) },
-                        modifier = canvasModifier
-                    )
+                Column(horizontalAlignment = Alignment.CenterHorizontally) {
+                    if (showOriginalImage && state.sourceImage != null) {
+                        Image(
+                            bitmap = state.sourceImage!!.asImageBitmap(),
+                            contentDescription = "Original source image",
+                            modifier = canvasModifier.background(Color.Black),
+                            contentScale = ContentScale.Fit
+                        )
+                    } else {
+                        AlgoCanvas(
+                            generator = state.generator,
+                            params = renderParams,
+                            seed = state.seed,
+                            palette = state.palette,
+                            quality = state.quality,
+                            aspectRatio = state.aspectRatio,
+                            postFX = state.postFX,
+                            isAnimating = state.isAnimating,
+                            animationFps = state.animationFps,
+                            showFps = state.showFps,
+                            renderTrigger = state.renderTrigger,
+                            onPauseTimeCapture = { viewModel.setSnapshotTime(it) },
+                            modifier = canvasModifier
+                        )
+                    }
+
+                    // Horizontal palette below canvas in landscape expanded mode
+                    if (isLandscapeExpanded) {
+                        HorizontalPaletteStrip(
+                            selectedPalette = state.palette,
+                            onSelectPalette = { viewModel.setPalette(it) },
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .padding(top = 8.dp)
+                                .background(MaterialTheme.colorScheme.surface.copy(alpha = 0.5f))
+                        )
+                    }
                 }
 
                 // Info button — top-left on canvas
@@ -324,8 +365,8 @@ fun MainScreen(
                     }
                 }
 
-                // Portrait expanded: translucent button overlay on canvas
-                if (isPortraitExpanded) {
+                // Expanded: translucent button overlay on canvas
+                if (isCanvasExpanded) {
                     ActionButtonsRow(
                         state = state,
                         canUndo = canUndo,
@@ -357,7 +398,7 @@ fun MainScreen(
         }
 
         // ===== ACTION BUTTONS =====
-        if (!isPortraitExpanded) {
+        if (!isCanvasExpanded) {
             ActionButtonsRow(
                 state = state,
                 canUndo = canUndo,
