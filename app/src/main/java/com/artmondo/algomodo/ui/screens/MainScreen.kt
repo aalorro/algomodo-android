@@ -8,7 +8,6 @@ import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.PickVisualMediaRequest
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.Image
-import androidx.compose.foundation.layout.BoxWithConstraints
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
@@ -50,6 +49,10 @@ import androidx.compose.foundation.gestures.awaitEachGesture
 import androidx.compose.foundation.gestures.awaitFirstDown
 import androidx.compose.ui.input.pointer.pointerInput
 import kotlin.math.abs
+import kotlin.math.roundToInt
+import androidx.compose.ui.layout.Measurable
+import androidx.compose.ui.layout.layout
+import androidx.compose.ui.unit.Constraints
 import androidx.compose.animation.core.LinearEasing
 import androidx.compose.animation.core.RepeatMode
 import androidx.compose.animation.core.animateFloat
@@ -247,19 +250,27 @@ fun MainScreen(
                 .then(if (!isCanvasExpanded) Modifier.weight(0.9f) else Modifier)
         ) {
             // Canvas with info button overlay
-            BoxWithConstraints(
+            Box(
                 modifier = (if (isCanvasExpanded) Modifier.fillMaxSize()
                     else Modifier.fillMaxHeight())
                     .then(canvasGestureModifier),
                 contentAlignment = Alignment.Center
             ) {
                 val ratio = state.aspectRatio.asFloat()
-                val canvasModifier = if (maxWidth / maxHeight > ratio) {
-                    // Height-constrained: fill height, compute width
-                    Modifier.height(maxHeight).width(maxHeight * ratio)
-                } else {
-                    // Width-constrained: fill width, compute height
-                    Modifier.width(maxWidth).height(maxWidth / ratio)
+                val canvasModifier = remember(ratio) {
+                    Modifier.layout { measurable, constraints ->
+                        val maxW = constraints.maxWidth
+                        val maxH = constraints.maxHeight
+                        val (w, h) = if (maxW.toFloat() / maxH > ratio) {
+                            val targetW = (maxH * ratio).roundToInt().coerceIn(0, maxW)
+                            targetW to maxH
+                        } else {
+                            val targetH = (maxW / ratio).roundToInt().coerceIn(0, maxH)
+                            maxW to targetH
+                        }
+                        val placeable = measurable.measure(Constraints.fixed(w, h))
+                        layout(w, h) { placeable.place(0, 0) }
+                    }
                 }
 
                 Column(horizontalAlignment = Alignment.CenterHorizontally) {
