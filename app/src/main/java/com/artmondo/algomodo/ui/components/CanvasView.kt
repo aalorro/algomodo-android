@@ -57,9 +57,7 @@ fun AlgoCanvas(
 ) {
     if (generator == null) {
         Box(
-            modifier = modifier
-                .aspectRatio(aspectRatio.asFloat())
-                .background(Color.Black),
+            modifier = modifier.background(Color.Black),
             contentAlignment = Alignment.Center
         ) {}
         return
@@ -206,7 +204,6 @@ private fun StaticCanvas(
 
     Box(
         modifier = modifier
-            .aspectRatio(aspectRatio.asFloat())
             .background(Color.Black)
     ) {
         renderedBitmap?.let { bmp ->
@@ -429,7 +426,6 @@ private fun AnimationCanvas(
             }
         },
         modifier = modifier
-            .aspectRatio(aspectRatio.asFloat())
     )
 }
 

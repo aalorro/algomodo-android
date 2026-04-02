@@ -226,13 +226,18 @@ fun MainScreen(
         ) {
             // Canvas with info button overlay
             Box(
-                modifier = (if (isCanvasExpanded) Modifier.fillMaxWidth() else Modifier.fillMaxHeight())
+                modifier = (if (isCanvasExpanded && !isPortraitExpanded) Modifier.fillMaxWidth()
+                    else Modifier.fillMaxHeight())
                     .then(canvasGestureModifier)
             ) {
-                val canvasModifier = if (isCanvasExpanded)
-                    Modifier.fillMaxWidth().aspectRatio(state.aspectRatio.asFloat())
-                else
+                val canvasModifier = if (isCanvasExpanded) {
+                    if (isPortraitExpanded)
+                        Modifier.fillMaxHeight().aspectRatio(state.aspectRatio.asFloat())
+                    else
+                        Modifier.fillMaxWidth().aspectRatio(state.aspectRatio.asFloat())
+                } else {
                     Modifier.fillMaxHeight().aspectRatio(1f)
+                }
 
                 if (showOriginalImage && state.sourceImage != null) {
                     Image(
@@ -338,8 +343,8 @@ fun MainScreen(
                 }
             }
 
-            // Vertical palette strip — hidden when canvas is expanded
-            if (!isCanvasExpanded) {
+            // Vertical palette strip — visible when not expanded or portrait expanded
+            if (!isCanvasExpanded || isPortraitExpanded) {
                 VerticalPaletteSelector(
                     selectedPalette = state.palette,
                     onSelectPalette = { viewModel.setPalette(it) },
