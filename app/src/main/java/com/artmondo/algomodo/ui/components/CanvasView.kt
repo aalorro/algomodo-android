@@ -67,19 +67,23 @@ fun AlgoCanvas(
     val animTimeBits = remember { AtomicLong(java.lang.Float.floatToIntBits(2.0f).toLong()) }
 
     if (isAnimating && generator.supportsAnimation) {
-        AnimationCanvas(
-            generator = generator,
-            params = params,
-            seed = seed,
-            palette = palette,
-            quality = quality,
-            aspectRatio = aspectRatio,
-            fps = animationFps,
-            showFps = showFps,
-            renderTrigger = renderTrigger,
-            animTimeBits = animTimeBits,
-            modifier = modifier
-        )
+        // key on aspectRatio forces SurfaceView recreation when ratio changes,
+        // so the render thread picks up new bitmap dimensions
+        key(aspectRatio) {
+            AnimationCanvas(
+                generator = generator,
+                params = params,
+                seed = seed,
+                palette = palette,
+                quality = quality,
+                aspectRatio = aspectRatio,
+                fps = animationFps,
+                showFps = showFps,
+                renderTrigger = renderTrigger,
+                animTimeBits = animTimeBits,
+                modifier = modifier
+            )
+        }
     } else {
         val capturedTime = java.lang.Float.intBitsToFloat(animTimeBits.get().toInt())
         val staticTime = if (generator.supportsAnimation) capturedTime else 0f
