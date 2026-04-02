@@ -372,8 +372,24 @@ fun MainScreen(
                     }
                 }
 
-                // Expanded: translucent button overlay on canvas
+                // Expanded: generator label + translucent button overlay on canvas
                 if (isCanvasExpanded) {
+                    val familyDisplayName = remember(state.generator?.family) {
+                        GeneratorRegistry.allFamilies()
+                            .find { it.id == state.generator?.family }?.displayName
+                            ?: state.generator?.family?.replaceFirstChar { it.uppercase() }
+                            ?: ""
+                    }
+                    Text(
+                        text = "$familyDisplayName  \u00BB  ${state.generator?.styleName ?: ""}",
+                        color = Color.White,
+                        fontSize = 13.sp,
+                        modifier = Modifier
+                            .align(Alignment.BottomCenter)
+                            .padding(bottom = 56.dp)
+                            .background(Color(0x88000000), RoundedCornerShape(4.dp))
+                            .padding(horizontal = 10.dp, vertical = 4.dp)
+                    )
                     ActionButtonsRow(
                         state = state,
                         canUndo = canUndo,
