@@ -219,6 +219,43 @@ class GraphSteinerNetworksGenerator : Generator {
         }
         val maxDepth = depths.max().coerceAtLeast(1)
 
+        // Compute subtree IDs for by-subtree coloring
+        val subtreeOf = IntArray(result.px.size) { -1 }
+        if (result.px.isNotEmpty()) {
+            subtreeOf[0] = 0
+            val rootNeighbors = adjacency[0] ?: emptyList()
+            for ((subtreeIdx, child) in rootNeighbors.withIndex()) {
+                subtreeOf[child] = subtreeIdx
+                val stQueue = ArrayDeque<Int>()
+                stQueue.add(child)
+                while (stQueue.isNotEmpty()) {
+                    val node = stQueue.removeFirst()
+                    for (nb in adjacency[node] ?: emptyList()) {
+                        if (subtreeOf[nb] < 0) {
+                            subtreeOf[nb] = subtreeIdx
+                            stQueue.add(nb)
+                        }
+                    }
+                }
+            }
+        }
+
+        // Precompute normalization ranges for color modes
+        var maxEdgeLen = 1f
+        var maxRadialDist = 1f
+        for (edge in result.edges) {
+            val dx = result.px[edge.first] - result.px[edge.second]
+            val dy = result.py[edge.first] - result.py[edge.second]
+            val len = sqrt(dx * dx + dy * dy)
+            if (len > maxEdgeLen) maxEdgeLen = len
+            val mx = (result.px[edge.first] + result.px[edge.second]) / 2f
+            val my = (result.py[edge.first] + result.py[edge.second]) / 2f
+            val rdx = mx - w / 2f
+            val rdy = my - h / 2f
+            val dist = sqrt(rdx * rdx + rdy * rdy)
+            if (dist > maxRadialDist) maxRadialDist = dist
+        }
+
         // Grow animation: reveal edges progressively
         val growFraction = if (animMode == "grow") (animTime * 0.5f).coerceIn(0f, 1f) else 1f
         val visibleEdgeCount = (result.edges.size * growFraction).toInt()
@@ -258,26 +295,26 @@ class GraphSteinerNetworksGenerator : Generator {
 
             val edgeColor = when (colorMode) {
                 "by-depth" -> {
-                    val d = (depths[edge.first].coerceAtLeast(0) + depths[edge.second].coerceAtLeast(0)) / 2f
-                    palette.lerpColor((d / maxDepth).coerceIn(0f, 1f))
+                    val d = maxOf(depths[edge.first].coerceAtLeast(0), depths[edge.second].coerceAtLeast(0))
+                    colors[d % colors.size]
                 }
                 "edge-length" -> {
                     val dx = result.px[edge.first] - result.px[edge.second]
                     val dy = result.py[edge.first] - result.py[edge.second]
                     val len = sqrt(dx * dx + dy * dy)
-                    palette.lerpColor((len / (w * 0.5f)).coerceIn(0f, 1f))
+                    palette.lerpColor((len / maxEdgeLen).coerceIn(0f, 1f))
                 }
                 "radial" -> {
                     val mx = (result.px[edge.first] + result.px[edge.second]) / 2f
                     val my = (result.py[edge.first] + result.py[edge.second]) / 2f
                     val dx = mx - w / 2f
                     val dy = my - h / 2f
-                    val t = sqrt(dx * dx + dy * dy) / (w * 0.6f)
+                    val t = sqrt(dx * dx + dy * dy) / maxRadialDist
                     palette.lerpColor(t.coerceIn(0f, 1f))
                 }
                 else -> { // "by-subtree"
-                    val t = idx.toFloat() / edgeCount.coerceAtLeast(1)
-                    palette.lerpColor(t)
+                    val sid = maxOf(subtreeOf[edge.first], subtreeOf[edge.second]).coerceAtLeast(0)
+                    colors[sid % colors.size]
                 }
             }
 
