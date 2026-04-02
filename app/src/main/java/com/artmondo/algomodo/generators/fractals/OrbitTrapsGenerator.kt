@@ -60,9 +60,9 @@ class OrbitTrapsGenerator : Generator {
         val h = bitmap.height
         val mode = (params["mode"] as? String) ?: "mandelbrot"
         val trapShape = (params["trapShape"] as? String) ?: "circle"
-        val trapSize = (params["trapSize"] as? Number)?.toDouble() ?: 0.5
-        val baseCr = (params["cReal"] as? Number)?.toDouble() ?: -0.7
-        val baseCi = (params["cImag"] as? Number)?.toDouble() ?: 0.27
+        val trapSize = (params["trapSize"] as? Number)?.toFloat() ?: 0.5f
+        val baseCr = (params["cReal"] as? Number)?.toFloat() ?: -0.7f
+        val baseCi = (params["cImag"] as? Number)?.toFloat() ?: 0.27f
         val zoom = (params["zoom"] as? Number)?.toFloat() ?: 1f
         val maxIter = (params["maxIterations"] as? Number)?.toInt() ?: 80
         val speed = (params["speed"] as? Number)?.toFloat() ?: 0.5f
@@ -73,29 +73,40 @@ class OrbitTrapsGenerator : Generator {
             Quality.ULTRA -> (maxIter * 1.5f).toInt()
         }
 
-        val trapAngle = time.toDouble() * speed * 0.2
+        val trapAngle = time * speed * 0.2f
         val cosT = cos(trapAngle)
         val sinT = sin(trapAngle)
 
-        val cr = baseCr + sin(time.toDouble() * speed * 0.15) * 0.08
-        val ci = baseCi + cos(time.toDouble() * speed * 0.2) * 0.08
+        val cr = baseCr + sin(time * speed * 0.15f) * 0.08f
+        val ci = baseCi + cos(time * speed * 0.2f) * 0.08f
 
-        val aspect = w.toDouble() / h.toDouble()
-        val rangeY = 3.0 / zoom
+        val aspect = w.toFloat() / h
+        val rangeY = 3f / zoom
         val rangeX = rangeY * aspect
 
         val pixels = IntArray(w * h)
         val isJulia = mode == "julia"
-        val invTrapSize = 1.0 / trapSize
+        val invTrapSize = 1f / trapSize
 
-        // Precompute palette LUT
         val lutSize = 256
-        val paletteLut = IntArray(lutSize) { palette.lerpColor(it.toFloat() / (lutSize - 1)) }
+        val lutMax = lutSize - 1
+        val paletteLut = IntArray(lutSize) { palette.lerpColor(it.toFloat() / lutMax) }
+        // Pre-computed darkened LUT for interior pixels (~15% brightness)
+        val darkLut = IntArray(lutSize) { i ->
+            val c = paletteLut[i]
+            (0xFF shl 24) or
+                (((c shr 16 and 0xFF) * 38 shr 8) shl 16) or
+                (((c shr 8 and 0xFF) * 38 shr 8) shl 8) or
+                ((c and 0xFF) * 38 shr 8)
+        }
         val timeShift = time * speed * 0.01f
-        val invW = 1.0 / w
-        val invH = 1.0 / h
 
-        // Precompute trap shape index to avoid string comparison in inner loop
+        // Pre-compute pixel-to-complex mapping constants
+        val scaleX = rangeX / w
+        val scaleY = rangeY / h
+        val halfRX = rangeX * 0.5f
+        val halfRY = rangeY * 0.5f
+
         val trapIdx = when (trapShape) {
             "point" -> 0; "circle" -> 1; "cross" -> 2; "square" -> 3; else -> 0
         }
@@ -105,60 +116,105 @@ class OrbitTrapsGenerator : Generator {
             Thread {
                 val y0 = t * h / cores
                 val y1 = (t + 1) * h / cores
-                for (py in y0 until y1) {
-                    val y0v = (py * invH - 0.5) * rangeY
-                    for (px in 0 until w) {
-                        val x0 = (px * invW - 0.5) * rangeX
 
-                        var zr: Double
-                        var zi: Double
-                        var cReal: Double
-                        var cImag: Double
+                for (py in y0 until y1) {
+                    val y0v = py * scaleY - halfRY
+                    val rowOff = py * w
+
+                    for (px in 0 until w) {
+                        val x0 = px * scaleX - halfRX
+
+                        var zr: Float
+                        var zi: Float
+                        val cReal: Float
+                        val cImag: Float
 
                         if (isJulia) {
                             zr = x0; zi = y0v; cReal = cr; cImag = ci
                         } else {
-                            zr = 0.0; zi = 0.0; cReal = x0; cImag = y0v
+                            zr = 0f; zi = 0f; cReal = x0; cImag = y0v
                         }
 
-                        var minDist = Double.MAX_VALUE
+                        var minDist = Float.MAX_VALUE
                         var iter = 0
+                        // Cache squares — reused for escape check and Mandelbrot step
+                        var zrSq = zr * zr
+                        var ziSq = zi * zi
 
-                        while (iter < scaledMaxIter && zr * zr + zi * zi <= 64.0) {
-                            val rz = zr * cosT - zi * sinT
-                            val iz = zr * sinT + zi * cosT
-
-                            val dist = when (trapIdx) {
-                                0 -> sqrt(rz * rz + iz * iz)
-                                1 -> abs(sqrt(rz * rz + iz * iz) - trapSize)
-                                2 -> min(abs(rz), abs(iz))
-                                3 -> min(abs(abs(rz) - trapSize), abs(abs(iz) - trapSize))
-                                else -> sqrt(rz * rz + iz * iz)
+                        // Specialized inner loops per trap shape to eliminate
+                        // branching and unnecessary rotation/sqrt from the hot path
+                        when (trapIdx) {
+                            0 -> {
+                                // Point trap: rotation preserves magnitude, so
+                                // dist = |z| = sqrt(zr²+zi²). Track squared min
+                                // distance to eliminate sqrt from the inner loop.
+                                var minDistSq = Float.MAX_VALUE
+                                while (iter < scaledMaxIter) {
+                                    val magSq = zrSq + ziSq
+                                    if (magSq > 64f) break
+                                    if (magSq < minDistSq) minDistSq = magSq
+                                    zi = 2f * zr * zi + cImag
+                                    zr = zrSq - ziSq + cReal
+                                    zrSq = zr * zr
+                                    ziSq = zi * zi
+                                    iter++
+                                }
+                                minDist = sqrt(minDistSq)
                             }
-
-                            if (dist < minDist) minDist = dist
-
-                            val tmp = zr * zr - zi * zi + cReal
-                            zi = 2.0 * zr * zi + cImag
-                            zr = tmp
-                            iter++
+                            1 -> {
+                                // Circle trap: rotation preserves magnitude, so
+                                // dist = ||z| - trapSize|. No rotation needed.
+                                while (iter < scaledMaxIter) {
+                                    val magSq = zrSq + ziSq
+                                    if (magSq > 64f) break
+                                    val dist = abs(sqrt(magSq) - trapSize)
+                                    if (dist < minDist) minDist = dist
+                                    zi = 2f * zr * zi + cImag
+                                    zr = zrSq - ziSq + cReal
+                                    zrSq = zr * zr
+                                    ziSq = zi * zi
+                                    iter++
+                                }
+                            }
+                            2 -> {
+                                // Cross trap: needs rotated coordinates
+                                while (iter < scaledMaxIter) {
+                                    if (zrSq + ziSq > 64f) break
+                                    val rz = zr * cosT - zi * sinT
+                                    val iz = zr * sinT + zi * cosT
+                                    val dist = min(abs(rz), abs(iz))
+                                    if (dist < minDist) minDist = dist
+                                    zi = 2f * zr * zi + cImag
+                                    zr = zrSq - ziSq + cReal
+                                    zrSq = zr * zr
+                                    ziSq = zi * zi
+                                    iter++
+                                }
+                            }
+                            else -> {
+                                // Square trap: needs rotated coordinates
+                                while (iter < scaledMaxIter) {
+                                    if (zrSq + ziSq > 64f) break
+                                    val rz = zr * cosT - zi * sinT
+                                    val iz = zr * sinT + zi * cosT
+                                    val dist = min(
+                                        abs(abs(rz) - trapSize),
+                                        abs(abs(iz) - trapSize)
+                                    )
+                                    if (dist < minDist) minDist = dist
+                                    zi = 2f * zr * zi + cImag
+                                    zr = zrSq - ziSq + cReal
+                                    zrSq = zr * zr
+                                    ziSq = zi * zi
+                                    iter++
+                                }
+                            }
                         }
 
-                        val rawT = (minDist * invTrapSize).coerceIn(0.0, 1.0).toFloat()
+                        val rawT = (minDist * invTrapSize).coerceIn(0f, 1f)
                         val shifted = ((rawT + timeShift) % 1f + 1f) % 1f
-                        val lutIdx = (shifted * (lutSize - 1)).toInt().coerceIn(0, lutSize - 1)
-                        val color = if (iter >= scaledMaxIter) {
-                            val dark = paletteLut[lutIdx]
-                            Color.rgb(
-                                (Color.red(dark) * 0.15f).toInt(),
-                                (Color.green(dark) * 0.15f).toInt(),
-                                (Color.blue(dark) * 0.15f).toInt()
-                            )
-                        } else {
-                            paletteLut[lutIdx]
-                        }
-
-                        pixels[py * w + px] = color
+                        val lutIdx = (shifted * lutMax).toInt().coerceIn(0, lutMax)
+                        pixels[rowOff + px] = if (iter >= scaledMaxIter) darkLut[lutIdx] else paletteLut[lutIdx]
                     }
                 }
             }.also { it.start() }
