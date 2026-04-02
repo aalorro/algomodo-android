@@ -385,8 +385,8 @@ fun MainScreen(
                         color = Color.White,
                         fontSize = 13.sp,
                         modifier = Modifier
-                            .align(Alignment.BottomCenter)
-                            .padding(bottom = 56.dp)
+                            .align(Alignment.TopCenter)
+                            .padding(top = 6.dp)
                             .background(Color(0x88000000), RoundedCornerShape(4.dp))
                             .padding(horizontal = 10.dp, vertical = 4.dp)
                     )
