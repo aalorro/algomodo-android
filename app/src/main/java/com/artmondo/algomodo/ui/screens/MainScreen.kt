@@ -35,7 +35,6 @@ import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalSoftwareKeyboardController
 import androidx.compose.ui.text.TextStyle
 import androidx.compose.ui.text.input.ImeAction
-import androidx.compose.ui.window.PopupProperties
 import androidx.compose.ui.unit.DpOffset
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
@@ -494,39 +493,46 @@ fun MainScreen(
                         keyboardActions = KeyboardActions(onDone = {
                             keyboardController?.hide()
                             searchExpanded = false
+                            searchQuery = ""
                         }),
                         cursorBrush = SolidColor(MaterialTheme.colorScheme.primary),
                         modifier = Modifier.fillMaxWidth()
                     )
                 }
-                DropdownMenu(
-                    expanded = searchExpanded && filteredGenerators.isNotEmpty(),
-                    onDismissRequest = {
-                        searchExpanded = false
-                        keyboardController?.hide()
-                    },
-                    properties = PopupProperties(focusable = false),
-                    modifier = Modifier.widthIn(max = 250.dp)
-                ) {
-                    filteredGenerators.forEach { generator ->
-                        DropdownMenuItem(
-                            text = {
-                                Column {
-                                    Text(generator.styleName, fontSize = 13.sp)
-                                    Text(
-                                        generator.family,
-                                        fontSize = 10.sp,
-                                        color = MaterialTheme.colorScheme.onSurfaceVariant
-                                    )
+                if (searchExpanded && filteredGenerators.isNotEmpty()) {
+                    Surface(
+                        modifier = Modifier
+                            .padding(top = 34.dp)
+                            .widthIn(max = 250.dp),
+                        shape = RoundedCornerShape(4.dp),
+                        shadowElevation = 4.dp,
+                        color = MaterialTheme.colorScheme.surface,
+                        tonalElevation = 3.dp
+                    ) {
+                        Column {
+                            filteredGenerators.forEach { generator ->
+                                Box(
+                                    modifier = Modifier
+                                        .fillMaxWidth()
+                                        .clickable {
+                                            viewModel.selectGenerator(generator)
+                                            searchQuery = ""
+                                            searchExpanded = false
+                                            keyboardController?.hide()
+                                        }
+                                        .padding(horizontal = 12.dp, vertical = 8.dp)
+                                ) {
+                                    Column {
+                                        Text(generator.styleName, fontSize = 13.sp)
+                                        Text(
+                                            generator.family,
+                                            fontSize = 10.sp,
+                                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                                        )
+                                    }
                                 }
-                            },
-                            onClick = {
-                                viewModel.selectGenerator(generator)
-                                searchQuery = ""
-                                searchExpanded = false
-                                keyboardController?.hide()
                             }
-                        )
+                        }
                     }
                 }
             }
