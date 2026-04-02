@@ -239,9 +239,6 @@ fun MainScreen(
             }
         }
 
-        val isPortraitExpanded = isCanvasExpanded && state.aspectRatio == AspectRatio.PORTRAIT
-        val isLandscapeExpanded = isCanvasExpanded && state.aspectRatio == AspectRatio.LANDSCAPE
-
         // ===== TOP SECTION: Canvas + Palette =====
         Row(
             modifier = Modifier
@@ -250,20 +247,19 @@ fun MainScreen(
         ) {
             // Canvas with info button overlay
             Box(
-                modifier = (if (isCanvasExpanded) {
-                    if (isPortraitExpanded) Modifier.fillMaxHeight()
-                    else Modifier.fillMaxSize()
-                } else Modifier.fillMaxHeight())
+                modifier = (if (isCanvasExpanded) Modifier.fillMaxSize()
+                    else Modifier.fillMaxHeight())
                     .then(canvasGestureModifier),
                 contentAlignment = Alignment.Center
             ) {
                 val canvasModifier = if (isCanvasExpanded) {
-                    if (isPortraitExpanded)
-                        Modifier.fillMaxHeight().aspectRatio(state.aspectRatio.asFloat())
-                    else
-                        Modifier.fillMaxWidth().aspectRatio(state.aspectRatio.asFloat())
+                    Modifier.fillMaxWidth().aspectRatio(state.aspectRatio.asFloat())
                 } else {
-                    Modifier.fillMaxHeight().aspectRatio(state.aspectRatio.asFloat())
+                    if (state.aspectRatio == AspectRatio.LANDSCAPE)
+                        Modifier.fillMaxWidth().aspectRatio(state.aspectRatio.asFloat())
+                    else
+                        Modifier.fillMaxHeight()
+                            .aspectRatio(state.aspectRatio.asFloat(), matchHeightConstraintsFirst = true)
                 }
 
                 Column(horizontalAlignment = Alignment.CenterHorizontally) {
@@ -292,8 +288,8 @@ fun MainScreen(
                         )
                     }
 
-                    // Horizontal palette below canvas in landscape expanded mode
-                    if (isLandscapeExpanded) {
+                    // Horizontal palette below canvas in expanded mode
+                    if (isCanvasExpanded) {
                         HorizontalPaletteStrip(
                             selectedPalette = state.palette,
                             onSelectPalette = { viewModel.setPalette(it) },
@@ -384,8 +380,8 @@ fun MainScreen(
                 }
             }
 
-            // Vertical palette strip — visible when not expanded or portrait expanded
-            if (!isCanvasExpanded || isPortraitExpanded) {
+            // Vertical palette strip — visible when not expanded
+            if (!isCanvasExpanded) {
                 VerticalPaletteSelector(
                     selectedPalette = state.palette,
                     onSelectPalette = { viewModel.setPalette(it) },
