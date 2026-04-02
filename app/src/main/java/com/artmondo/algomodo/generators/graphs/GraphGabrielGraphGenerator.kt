@@ -14,6 +14,8 @@ import com.artmondo.algomodo.generators.Parameter
 import com.artmondo.algomodo.generators.Quality
 import com.artmondo.algomodo.rendering.SvgBuilder
 import com.artmondo.algomodo.rendering.SvgPath
+import kotlin.math.abs
+import kotlin.math.sin
 import kotlin.math.sqrt
 
 /**
@@ -186,9 +188,16 @@ class GraphGabrielGraphGenerator : Generator {
             strokeWidth = 0.5f
         }
 
-        val highlightIdx = if (animMode == "highlight-circles") {
-            ((time * speed * 3f).toInt() % sortedGabriel.size.coerceAtLeast(1))
-        } else -1
+        // Smooth fractional highlight position for highlight-circles mode
+        val edgeCount = sortedGabriel.size.coerceAtLeast(1)
+        val highlightPos = if (animMode == "highlight-circles") {
+            (time * speed * edgeCount * 0.15f) % edgeCount.toFloat()
+        } else -1f
+        // Window radius: highlight ~8% of edges around the sweep position
+        val windowRadius = edgeCount * 0.08f + 1f
+        val pulse = if (animMode == "highlight-circles") {
+            0.7f + 0.3f * sin(time * speed * 8f)
+        } else 1f
 
         val fillPaint = if (animMode == "highlight-circles") Paint(Paint.ANTI_ALIAS_FLAG).apply {
             style = Paint.Style.FILL
@@ -199,7 +208,13 @@ class GraphGabrielGraphGenerator : Generator {
             val (i, j) = edge
             val dx = px[i] - px[j]; val dy = py[i] - py[j]
             val dist = sqrt(dx * dx + dy * dy)
-            val isHighlighted = idx == highlightIdx
+
+            // Compute highlight intensity: 1.0 at center, fading to 0 at window edge
+            val highlightIntensity = if (animMode == "highlight-circles") {
+                val rawDist = abs(idx - highlightPos)
+                val wrappedDist = minOf(rawDist, edgeCount - rawDist)
+                (1f - wrappedDist / windowRadius).coerceIn(0f, 1f)
+            } else 0f
 
             val edgeColor = when (colorMode) {
                 "edge-length" -> palette.lerpColor((dist / maxLen).coerceIn(0f, 1f))
@@ -210,30 +225,31 @@ class GraphGabrielGraphGenerator : Generator {
                 }
                 "degree" -> palette.lerpColor(degree[i].toFloat() / maxDegree)
                 "random" -> colors[(i * 7 + j * 13) % colors.size]
-                else -> palette.lerpColor(idx.toFloat() / sortedGabriel.size.coerceAtLeast(1))
+                else -> palette.lerpColor(idx.toFloat() / edgeCount)
             }
 
-            // Dim non-highlighted edges during highlight-circles animation
-            if (animMode == "highlight-circles" && !isHighlighted) {
-                linePaint.color = Color.argb(60, Color.red(edgeColor), Color.green(edgeColor), Color.blue(edgeColor))
+            if (animMode == "highlight-circles") {
+                // Blend alpha from dim (40) to full (255) based on intensity
+                val alpha = (40 + (215 * highlightIntensity)).toInt().coerceIn(40, 255)
+                linePaint.color = Color.argb(alpha, Color.red(edgeColor), Color.green(edgeColor), Color.blue(edgeColor))
+                linePaint.strokeWidth = edgeWidth + edgeWidth * 2f * highlightIntensity
             } else {
                 linePaint.color = edgeColor
+                linePaint.strokeWidth = edgeWidth
             }
-            linePaint.strokeWidth = if (isHighlighted) edgeWidth * 3f else edgeWidth
             canvas.drawLine(px[i], py[i], px[j], py[j], linePaint)
 
-            if (showCircles || isHighlighted) {
+            if (showCircles || (animMode == "highlight-circles" && highlightIntensity > 0.3f)) {
                 val mx = (px[i] + px[j]) / 2f
                 val my = (py[i] + py[j]) / 2f
                 val r = dist / 2f
                 val c = edgeColor
-                if (isHighlighted) {
-                    // Filled glow circle
-                    fillPaint!!.color = Color.argb(40, Color.red(c), Color.green(c), Color.blue(c))
+                if (highlightIntensity > 0.3f) {
+                    val circleAlpha = (highlightIntensity * pulse * 200).toInt().coerceIn(0, 220)
+                    fillPaint!!.color = Color.argb((circleAlpha * 0.25f).toInt(), Color.red(c), Color.green(c), Color.blue(c))
                     canvas.drawCircle(mx, my, r, fillPaint)
-                    // Thick circle stroke
-                    circlePaint.strokeWidth = 2.5f
-                    circlePaint.color = Color.argb(220, Color.red(c), Color.green(c), Color.blue(c))
+                    circlePaint.strokeWidth = 1f + 2f * highlightIntensity
+                    circlePaint.color = Color.argb(circleAlpha, Color.red(c), Color.green(c), Color.blue(c))
                 } else {
                     circlePaint.strokeWidth = 0.5f
                     circlePaint.color = Color.argb((circleOpacity * 255).toInt().coerceIn(5, 128), Color.red(c), Color.green(c), Color.blue(c))
