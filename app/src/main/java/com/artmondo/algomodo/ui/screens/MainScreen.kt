@@ -8,6 +8,7 @@ import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.PickVisualMediaRequest
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.Image
+import androidx.compose.foundation.layout.BoxWithConstraints
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
@@ -246,20 +247,19 @@ fun MainScreen(
                 .then(if (!isCanvasExpanded) Modifier.weight(0.9f) else Modifier)
         ) {
             // Canvas with info button overlay
-            Box(
+            BoxWithConstraints(
                 modifier = (if (isCanvasExpanded) Modifier.fillMaxSize()
                     else Modifier.fillMaxHeight())
                     .then(canvasGestureModifier),
                 contentAlignment = Alignment.Center
             ) {
-                val canvasModifier = if (isCanvasExpanded) {
-                    Modifier.fillMaxWidth().aspectRatio(state.aspectRatio.asFloat())
+                val ratio = state.aspectRatio.asFloat()
+                val canvasModifier = if (maxWidth / maxHeight > ratio) {
+                    // Height-constrained: fill height, compute width
+                    Modifier.height(maxHeight).width(maxHeight * ratio)
                 } else {
-                    if (state.aspectRatio == AspectRatio.LANDSCAPE)
-                        Modifier.fillMaxWidth().aspectRatio(state.aspectRatio.asFloat())
-                    else
-                        Modifier.fillMaxHeight()
-                            .aspectRatio(state.aspectRatio.asFloat(), matchHeightConstraintsFirst = true)
+                    // Width-constrained: fill width, compute height
+                    Modifier.width(maxWidth).height(maxWidth / ratio)
                 }
 
                 Column(horizontalAlignment = Alignment.CenterHorizontally) {
