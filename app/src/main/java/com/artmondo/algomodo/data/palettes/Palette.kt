@@ -58,6 +58,17 @@ object CuratedPalettes {
     // Display-only placeholder for "Random" in the palette list
     val randomPlaceholder = Palette("Random", listOf("#FF0000", "#00FF00", "#0000FF", "#FFFF00", "#FF00FF"))
 
+    /** Palettes with enough average brightness to work on dark backgrounds. */
+    val bright: List<Palette> by lazy {
+        all.filter { palette ->
+            val colors = palette.colors.map { Color.parseColor(it) }
+            val avgLum = colors.sumOf { c ->
+                Color.red(c) * 299 + Color.green(c) * 587 + Color.blue(c) * 114
+            } / (colors.size * 1000)
+            avgLum >= 80
+        }.ifEmpty { all }
+    }
+
     val default = all[0] // Vibrant
 
     fun byName(name: String): Palette? = all.find { it.name == name }
@@ -67,8 +78,8 @@ object CuratedPalettes {
         val baseHue = (Math.random() * 360).toFloat()
         val colors = (0 until 5).map { i ->
             val hue = (baseHue + i * 137.508f) % 360f // golden angle
-            val sat = 0.55f + (Math.random() * 0.35f).toFloat()
-            val lit = 0.42f + (Math.random() * 0.28f).toFloat()
+            val sat = 0.60f + (Math.random() * 0.30f).toFloat()
+            val lit = 0.50f + (Math.random() * 0.25f).toFloat()
             hslToHex(hue, sat, lit)
         }
         return Palette("Random", colors)

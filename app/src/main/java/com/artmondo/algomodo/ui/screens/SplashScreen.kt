@@ -49,7 +49,7 @@ fun SplashScreen(onSplashFinished: () -> Unit) {
         Image(
             painter = painterResource(id = R.drawable.algomodo_logo),
             contentDescription = "Algomodo Logo",
-            modifier = Modifier.width(200.dp)
+            modifier = Modifier.width(300.dp)
         )
     }
 }

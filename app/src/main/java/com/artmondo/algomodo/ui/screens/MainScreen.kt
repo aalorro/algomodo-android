@@ -17,6 +17,8 @@ import androidx.compose.foundation.pager.rememberPagerState
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.BasicTextField
+import androidx.compose.foundation.text.KeyboardActions
+import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.material.icons.Icons
@@ -30,7 +32,9 @@ import androidx.compose.ui.graphics.SolidColor
 import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.platform.LocalSoftwareKeyboardController
 import androidx.compose.ui.text.TextStyle
+import androidx.compose.ui.text.input.ImeAction
 import androidx.compose.ui.unit.DpOffset
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
@@ -304,6 +308,8 @@ fun MainScreen(
                         HorizontalPaletteStrip(
                             selectedPalette = state.palette,
                             onSelectPalette = { viewModel.setPalette(it) },
+                            isLocked = "palette" in state.lockedParams,
+                            onToggleLock = { viewModel.toggleParamLock("palette") },
                             modifier = Modifier
                                 .fillMaxWidth()
                                 .padding(top = 8.dp)
@@ -412,6 +418,8 @@ fun MainScreen(
                 VerticalPaletteSelector(
                     selectedPalette = state.palette,
                     onSelectPalette = { viewModel.setPalette(it) },
+                    isLocked = "palette" in state.lockedParams,
+                    onToggleLock = { viewModel.toggleParamLock("palette") },
                     modifier = Modifier
                         .fillMaxHeight()
                         .weight(1f)
@@ -457,6 +465,7 @@ fun MainScreen(
                 }.take(8)
             }
 
+            val keyboardController = LocalSoftwareKeyboardController.current
             Box(modifier = Modifier.weight(1f)) {
                 Box(
                     modifier = Modifier
@@ -484,33 +493,50 @@ fun MainScreen(
                             fontSize = 12.sp,
                             color = MaterialTheme.colorScheme.onSurface
                         ),
+                        keyboardOptions = KeyboardOptions(imeAction = ImeAction.Done),
+                        keyboardActions = KeyboardActions(onDone = {
+                            keyboardController?.hide()
+                            searchExpanded = false
+                            searchQuery = ""
+                        }),
                         cursorBrush = SolidColor(MaterialTheme.colorScheme.primary),
                         modifier = Modifier.fillMaxWidth()
                     )
                 }
-                DropdownMenu(
-                    expanded = searchExpanded && filteredGenerators.isNotEmpty(),
-                    onDismissRequest = { searchExpanded = false },
-                    modifier = Modifier.widthIn(max = 250.dp)
-                ) {
-                    filteredGenerators.forEach { generator ->
-                        DropdownMenuItem(
-                            text = {
-                                Column {
-                                    Text(generator.styleName, fontSize = 13.sp)
-                                    Text(
-                                        generator.family,
-                                        fontSize = 10.sp,
-                                        color = MaterialTheme.colorScheme.onSurfaceVariant
-                                    )
+                if (searchExpanded && filteredGenerators.isNotEmpty()) {
+                    Surface(
+                        modifier = Modifier
+                            .padding(top = 34.dp)
+                            .widthIn(max = 250.dp),
+                        shape = RoundedCornerShape(4.dp),
+                        shadowElevation = 4.dp,
+                        color = MaterialTheme.colorScheme.surface,
+                        tonalElevation = 3.dp
+                    ) {
+                        Column {
+                            filteredGenerators.forEach { generator ->
+                                Box(
+                                    modifier = Modifier
+                                        .fillMaxWidth()
+                                        .clickable {
+                                            viewModel.selectGenerator(generator)
+                                            searchQuery = ""
+                                            searchExpanded = false
+                                            keyboardController?.hide()
+                                        }
+                                        .padding(horizontal = 12.dp, vertical = 8.dp)
+                                ) {
+                                    Column {
+                                        Text(generator.styleName, fontSize = 13.sp)
+                                        Text(
+                                            generator.family,
+                                            fontSize = 10.sp,
+                                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                                        )
+                                    }
                                 }
-                            },
-                            onClick = {
-                                viewModel.selectGenerator(generator)
-                                searchQuery = ""
-                                searchExpanded = false
                             }
-                        )
+                        }
                     }
                 }
             }
