@@ -308,6 +308,8 @@ fun MainScreen(
                         HorizontalPaletteStrip(
                             selectedPalette = state.palette,
                             onSelectPalette = { viewModel.setPalette(it) },
+                            isLocked = "palette" in state.lockedParams,
+                            onToggleLock = { viewModel.toggleParamLock("palette") },
                             modifier = Modifier
                                 .fillMaxWidth()
                                 .padding(top = 8.dp)
@@ -416,6 +418,8 @@ fun MainScreen(
                 VerticalPaletteSelector(
                     selectedPalette = state.palette,
                     onSelectPalette = { viewModel.setPalette(it) },
+                    isLocked = "palette" in state.lockedParams,
+                    onToggleLock = { viewModel.toggleParamLock("palette") },
                     modifier = Modifier
                         .fillMaxHeight()
                         .weight(1f)

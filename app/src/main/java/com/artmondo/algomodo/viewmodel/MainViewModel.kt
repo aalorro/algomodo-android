@@ -327,8 +327,10 @@ class MainViewModel @Inject constructor(
         recentGeneratorIds.addLast(gen.id)
         while (recentGeneratorIds.size > 6) recentGeneratorIds.removeFirst()
 
+        val s = _state.value
         val newSeed = secureRandom.nextInt(1_000_000)
-        val newPalette = if (rng.random() < 0.3f) CuratedPalettes.random()
+        val newPalette = if ("palette" in s.lockedParams) s.palette
+            else if (rng.random() < 0.3f) CuratedPalettes.random()
             else CuratedPalettes.bright[rng.integer(0, CuratedPalettes.bright.size - 1)]
 
         val newParams = mutableMapOf<String, Any>()

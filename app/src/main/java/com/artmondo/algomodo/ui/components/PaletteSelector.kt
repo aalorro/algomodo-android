@@ -9,6 +9,11 @@ import androidx.compose.foundation.lazy.LazyRow
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.Lock
+import androidx.compose.material.icons.filled.LockOpen
+import androidx.compose.material3.Icon
+import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
@@ -21,20 +26,40 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.artmondo.algomodo.data.palettes.CuratedPalettes
 import com.artmondo.algomodo.data.palettes.Palette
+import com.artmondo.algomodo.ui.theme.AccentAmber
 
 @Composable
 fun PaletteSelector(
     selectedPalette: Palette,
     onSelectPalette: (Palette) -> Unit,
-    modifier: Modifier = Modifier
+    modifier: Modifier = Modifier,
+    isLocked: Boolean = false,
+    onToggleLock: (() -> Unit)? = null
 ) {
     Column(modifier = modifier.fillMaxWidth()) {
-        Text(
-            text = "Color Palette",
-            style = MaterialTheme.typography.labelMedium,
-            color = MaterialTheme.colorScheme.onSurfaceVariant,
+        Row(
+            verticalAlignment = Alignment.CenterVertically,
             modifier = Modifier.padding(start = 16.dp, bottom = 4.dp)
-        )
+        ) {
+            Text(
+                text = "Color Palette",
+                style = MaterialTheme.typography.labelMedium,
+                color = MaterialTheme.colorScheme.onSurfaceVariant
+            )
+            if (onToggleLock != null) {
+                IconButton(
+                    onClick = onToggleLock,
+                    modifier = Modifier.size(32.dp)
+                ) {
+                    Icon(
+                        imageVector = if (isLocked) Icons.Filled.Lock else Icons.Filled.LockOpen,
+                        contentDescription = if (isLocked) "Palette locked" else "Palette unlocked",
+                        tint = if (isLocked) AccentAmber else MaterialTheme.colorScheme.onSurfaceVariant,
+                        modifier = Modifier.size(16.dp)
+                    )
+                }
+            }
+        }
 
         LazyRow(
             horizontalArrangement = Arrangement.spacedBy(8.dp),
@@ -64,28 +89,48 @@ fun PaletteSelector(
 fun HorizontalPaletteStrip(
     selectedPalette: Palette,
     onSelectPalette: (Palette) -> Unit,
-    modifier: Modifier = Modifier
+    modifier: Modifier = Modifier,
+    isLocked: Boolean = false,
+    onToggleLock: (() -> Unit)? = null
 ) {
-    LazyRow(
+    Row(
         modifier = modifier,
-        horizontalArrangement = Arrangement.spacedBy(6.dp),
-        contentPadding = PaddingValues(horizontal = 8.dp, vertical = 4.dp),
         verticalAlignment = Alignment.CenterVertically
     ) {
-        items(CuratedPalettes.all) { palette ->
-            PaletteChip(
-                palette = palette,
-                isSelected = palette.name == selectedPalette.name,
-                onClick = { onSelectPalette(palette) }
-            )
+        if (onToggleLock != null) {
+            IconButton(
+                onClick = onToggleLock,
+                modifier = Modifier.size(32.dp).padding(start = 4.dp)
+            ) {
+                Icon(
+                    imageVector = if (isLocked) Icons.Filled.Lock else Icons.Filled.LockOpen,
+                    contentDescription = if (isLocked) "Palette locked" else "Palette unlocked",
+                    tint = if (isLocked) AccentAmber else MaterialTheme.colorScheme.onSurfaceVariant,
+                    modifier = Modifier.size(16.dp)
+                )
+            }
         }
-        item {
-            val displayPalette = if (selectedPalette.name == "Random") selectedPalette else CuratedPalettes.randomPlaceholder
-            PaletteChip(
-                palette = displayPalette,
-                isSelected = selectedPalette.name == "Random",
-                onClick = { onSelectPalette(CuratedPalettes.random()) }
-            )
+        LazyRow(
+            modifier = Modifier.weight(1f),
+            horizontalArrangement = Arrangement.spacedBy(6.dp),
+            contentPadding = PaddingValues(horizontal = 8.dp, vertical = 4.dp),
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            items(CuratedPalettes.all) { palette ->
+                PaletteChip(
+                    palette = palette,
+                    isSelected = palette.name == selectedPalette.name,
+                    onClick = { onSelectPalette(palette) }
+                )
+            }
+            item {
+                val displayPalette = if (selectedPalette.name == "Random") selectedPalette else CuratedPalettes.randomPlaceholder
+                PaletteChip(
+                    palette = displayPalette,
+                    isSelected = selectedPalette.name == "Random",
+                    onClick = { onSelectPalette(CuratedPalettes.random()) }
+                )
+            }
         }
     }
 }
@@ -94,28 +139,47 @@ fun HorizontalPaletteStrip(
 fun VerticalPaletteSelector(
     selectedPalette: Palette,
     onSelectPalette: (Palette) -> Unit,
-    modifier: Modifier = Modifier
+    modifier: Modifier = Modifier,
+    isLocked: Boolean = false,
+    onToggleLock: (() -> Unit)? = null
 ) {
-    LazyColumn(
+    Column(
         modifier = modifier.background(MaterialTheme.colorScheme.surface.copy(alpha = 0.5f)),
-        verticalArrangement = Arrangement.spacedBy(4.dp),
-        contentPadding = PaddingValues(vertical = 4.dp, horizontal = 4.dp),
         horizontalAlignment = Alignment.CenterHorizontally
     ) {
-        items(CuratedPalettes.all) { palette ->
-            VerticalPaletteChip(
-                palette = palette,
-                isSelected = palette.name == selectedPalette.name,
-                onClick = { onSelectPalette(palette) }
-            )
+        if (onToggleLock != null) {
+            IconButton(
+                onClick = onToggleLock,
+                modifier = Modifier.size(28.dp).padding(top = 4.dp)
+            ) {
+                Icon(
+                    imageVector = if (isLocked) Icons.Filled.Lock else Icons.Filled.LockOpen,
+                    contentDescription = if (isLocked) "Palette locked" else "Palette unlocked",
+                    tint = if (isLocked) AccentAmber else MaterialTheme.colorScheme.onSurfaceVariant,
+                    modifier = Modifier.size(16.dp)
+                )
+            }
         }
-        item {
-            val displayPalette = if (selectedPalette.name == "Random") selectedPalette else CuratedPalettes.randomPlaceholder
-            VerticalPaletteChip(
-                palette = displayPalette,
-                isSelected = selectedPalette.name == "Random",
-                onClick = { onSelectPalette(CuratedPalettes.random()) }
-            )
+        LazyColumn(
+            verticalArrangement = Arrangement.spacedBy(4.dp),
+            contentPadding = PaddingValues(vertical = 4.dp, horizontal = 4.dp),
+            horizontalAlignment = Alignment.CenterHorizontally
+        ) {
+            items(CuratedPalettes.all) { palette ->
+                VerticalPaletteChip(
+                    palette = palette,
+                    isSelected = palette.name == selectedPalette.name,
+                    onClick = { onSelectPalette(palette) }
+                )
+            }
+            item {
+                val displayPalette = if (selectedPalette.name == "Random") selectedPalette else CuratedPalettes.randomPlaceholder
+                VerticalPaletteChip(
+                    palette = displayPalette,
+                    isSelected = selectedPalette.name == "Random",
+                    onClick = { onSelectPalette(CuratedPalettes.random()) }
+                )
+            }
         }
     }
 }
