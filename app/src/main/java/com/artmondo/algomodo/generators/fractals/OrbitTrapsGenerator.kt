@@ -83,15 +83,12 @@ class OrbitTrapsGenerator : Generator {
         val aspect = w.toFloat() / h
         val rangeY = 3f / zoom
         val rangeX = rangeY * aspect
-
-        val pixels = IntArray(w * h)
         val isJulia = mode == "julia"
         val invTrapSize = 1f / trapSize
 
         val lutSize = 256
         val lutMax = lutSize - 1
         val paletteLut = IntArray(lutSize) { palette.lerpColor(it.toFloat() / lutMax) }
-        // Pre-computed darkened LUT for interior pixels (~15% brightness)
         val darkLut = IntArray(lutSize) { i ->
             val c = paletteLut[i]
             (0xFF shl 24) or
@@ -101,28 +98,35 @@ class OrbitTrapsGenerator : Generator {
         }
         val timeShift = time * speed * 0.01f
 
-        // Pre-compute pixel-to-complex mapping constants
-        val scaleX = rangeX / w
-        val scaleY = rangeY / h
-        val halfRX = rangeX * 0.5f
-        val halfRY = rangeY * 0.5f
-
         val trapIdx = when (trapShape) {
             "point" -> 0; "circle" -> 1; "cross" -> 2; "square" -> 3; else -> 0
         }
 
+        // Adaptive resolution: render at reduced size during animation, upscale after
+        val isAnim = time > 0f
+        val renderW = if (isAnim) (w * 3 / 5).coerceAtLeast(w / 2) else w
+        val renderH = if (isAnim) (h * 3 / 5).coerceAtLeast(h / 2) else h
+
+        val rScaleX = rangeX / renderW
+        val rScaleY = rangeY / renderH
+        val halfRX = rangeX * 0.5f
+        val halfRY = rangeY * 0.5f
+
+        val renderPixels = IntArray(renderW * renderH)
+
         val cores = Runtime.getRuntime().availableProcessors().coerceIn(2, 8)
         val threads = Array(cores) { t ->
             Thread {
-                val y0 = t * h / cores
-                val y1 = (t + 1) * h / cores
+                val y0 = t * renderH / cores
+                val y1 = (t + 1) * renderH / cores
 
+                // Brent's cycle detection state (per-thread, reused per pixel)
                 for (py in y0 until y1) {
-                    val y0v = py * scaleY - halfRY
-                    val rowOff = py * w
+                    val y0v = py * rScaleY - halfRY
+                    val rowOff = py * renderW
 
-                    for (px in 0 until w) {
-                        val x0 = px * scaleX - halfRX
+                    for (px in 0 until renderW) {
+                        val x0 = px * rScaleX - halfRX
 
                         var zr: Float
                         var zi: Float
@@ -137,18 +141,15 @@ class OrbitTrapsGenerator : Generator {
 
                         var minDist = Float.MAX_VALUE
                         var iter = 0
-                        // Cache squares — reused for escape check and Mandelbrot step
                         var zrSq = zr * zr
                         var ziSq = zi * zi
 
-                        // Specialized inner loops per trap shape to eliminate
-                        // branching and unnecessary rotation/sqrt from the hot path
                         when (trapIdx) {
                             0 -> {
-                                // Point trap: rotation preserves magnitude, so
-                                // dist = |z| = sqrt(zr²+zi²). Track squared min
-                                // distance to eliminate sqrt from the inner loop.
+                                // Point trap: no rotation, no sqrt in loop
                                 var minDistSq = Float.MAX_VALUE
+                                var oldZr = 10f; var oldZi = 10f
+                                var stepLim = 2; var stepCnt = 0
                                 while (iter < scaledMaxIter) {
                                     val magSq = zrSq + ziSq
                                     if (magSq > 64f) break
@@ -157,13 +158,22 @@ class OrbitTrapsGenerator : Generator {
                                     zr = zrSq - ziSq + cReal
                                     zrSq = zr * zr
                                     ziSq = zi * zi
+                                    if (abs(zr - oldZr) < 1e-5f && abs(zi - oldZi) < 1e-5f) {
+                                        iter = scaledMaxIter; break
+                                    }
+                                    stepCnt++
+                                    if (stepCnt >= stepLim) {
+                                        oldZr = zr; oldZi = zi; stepCnt = 0
+                                        stepLim = (stepLim shl 1).coerceAtMost(scaledMaxIter)
+                                    }
                                     iter++
                                 }
                                 minDist = sqrt(minDistSq)
                             }
                             1 -> {
-                                // Circle trap: rotation preserves magnitude, so
-                                // dist = ||z| - trapSize|. No rotation needed.
+                                // Circle trap: no rotation, sqrt needed
+                                var oldZr = 10f; var oldZi = 10f
+                                var stepLim = 2; var stepCnt = 0
                                 while (iter < scaledMaxIter) {
                                     val magSq = zrSq + ziSq
                                     if (magSq > 64f) break
@@ -173,11 +183,21 @@ class OrbitTrapsGenerator : Generator {
                                     zr = zrSq - ziSq + cReal
                                     zrSq = zr * zr
                                     ziSq = zi * zi
+                                    if (abs(zr - oldZr) < 1e-5f && abs(zi - oldZi) < 1e-5f) {
+                                        iter = scaledMaxIter; break
+                                    }
+                                    stepCnt++
+                                    if (stepCnt >= stepLim) {
+                                        oldZr = zr; oldZi = zi; stepCnt = 0
+                                        stepLim = (stepLim shl 1).coerceAtMost(scaledMaxIter)
+                                    }
                                     iter++
                                 }
                             }
                             2 -> {
-                                // Cross trap: needs rotated coordinates
+                                // Cross trap: needs rotation
+                                var oldZr = 10f; var oldZi = 10f
+                                var stepLim = 2; var stepCnt = 0
                                 while (iter < scaledMaxIter) {
                                     if (zrSq + ziSq > 64f) break
                                     val rz = zr * cosT - zi * sinT
@@ -188,11 +208,21 @@ class OrbitTrapsGenerator : Generator {
                                     zr = zrSq - ziSq + cReal
                                     zrSq = zr * zr
                                     ziSq = zi * zi
+                                    if (abs(zr - oldZr) < 1e-5f && abs(zi - oldZi) < 1e-5f) {
+                                        iter = scaledMaxIter; break
+                                    }
+                                    stepCnt++
+                                    if (stepCnt >= stepLim) {
+                                        oldZr = zr; oldZi = zi; stepCnt = 0
+                                        stepLim = (stepLim shl 1).coerceAtMost(scaledMaxIter)
+                                    }
                                     iter++
                                 }
                             }
                             else -> {
-                                // Square trap: needs rotated coordinates
+                                // Square trap: needs rotation
+                                var oldZr = 10f; var oldZi = 10f
+                                var stepLim = 2; var stepCnt = 0
                                 while (iter < scaledMaxIter) {
                                     if (zrSq + ziSq > 64f) break
                                     val rz = zr * cosT - zi * sinT
@@ -206,6 +236,14 @@ class OrbitTrapsGenerator : Generator {
                                     zr = zrSq - ziSq + cReal
                                     zrSq = zr * zr
                                     ziSq = zi * zi
+                                    if (abs(zr - oldZr) < 1e-5f && abs(zi - oldZi) < 1e-5f) {
+                                        iter = scaledMaxIter; break
+                                    }
+                                    stepCnt++
+                                    if (stepCnt >= stepLim) {
+                                        oldZr = zr; oldZi = zi; stepCnt = 0
+                                        stepLim = (stepLim shl 1).coerceAtMost(scaledMaxIter)
+                                    }
                                     iter++
                                 }
                             }
@@ -214,14 +252,29 @@ class OrbitTrapsGenerator : Generator {
                         val rawT = (minDist * invTrapSize).coerceIn(0f, 1f)
                         val shifted = ((rawT + timeShift) % 1f + 1f) % 1f
                         val lutIdx = (shifted * lutMax).toInt().coerceIn(0, lutMax)
-                        pixels[rowOff + px] = if (iter >= scaledMaxIter) darkLut[lutIdx] else paletteLut[lutIdx]
+                        renderPixels[rowOff + px] = if (iter >= scaledMaxIter) darkLut[lutIdx] else paletteLut[lutIdx]
                     }
                 }
             }.also { it.start() }
         }
         threads.forEach { it.join() }
 
-        bitmap.setPixels(pixels, 0, w, 0, 0, w, h)
+        // Upscale to full bitmap if rendered at reduced resolution
+        if (renderW < w) {
+            val pixels = IntArray(w * h)
+            val xMap = IntArray(w) { (it * renderW / w).coerceAtMost(renderW - 1) }
+            for (py in 0 until h) {
+                val sy = (py * renderH / h).coerceAtMost(renderH - 1)
+                val srcOff = sy * renderW
+                val dstOff = py * w
+                for (px in 0 until w) {
+                    pixels[dstOff + px] = renderPixels[srcOff + xMap[px]]
+                }
+            }
+            bitmap.setPixels(pixels, 0, w, 0, 0, w, h)
+        } else {
+            bitmap.setPixels(renderPixels, 0, w, 0, 0, w, h)
+        }
         canvas.drawBitmap(bitmap, 0f, 0f, null)
     }
 
