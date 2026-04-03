@@ -211,6 +211,8 @@ class VoronoiMosaicGenerator : Generator {
         }
 
         val gapThreshold = gap * 2f
+        // Average cell radius for normalizing raised/inset shading gradient
+        val avgCellRadius = sqrt(w.toFloat() * h / numPoints) * 0.5f
         val pixels = IntArray(w * h)
         val step = when (quality) { Quality.DRAFT -> 2; else -> 1 }
 
@@ -255,7 +257,6 @@ class VoronoiMosaicGenerator : Generator {
             }
         } else if (metricId == 1) {
             // ── MANHATTAN PATH: inline abs, early exit on |dx| ──
-            val gapThreshInv = 1f / gapThreshold.coerceAtLeast(1f)
             for (row in 0 until h step step) {
                 val y = row.toFloat()
                 val rowOff = row * w
@@ -288,10 +289,14 @@ class VoronoiMosaicGenerator : Generator {
                     val color = if (isGrout) groutColorInt
                     else {
                         val baseColor = cellColors[nearIdx]
-                        when (tileStyleId) {
-                            1 -> { val distToEdge = (edgeDist * gapThreshInv).coerceIn(1f, 3f); val factor = (0.85f + (distToEdge - 1f) * 0.05f).coerceIn(0.85f, 1.15f); Color.rgb((Color.red(baseColor) * factor).toInt().coerceIn(0, 255), (Color.green(baseColor) * factor).toInt().coerceIn(0, 255), (Color.blue(baseColor) * factor).toInt().coerceIn(0, 255)) }
-                            2 -> { val distToEdge = (edgeDist * gapThreshInv).coerceIn(1f, 3f); val factor = (1.15f - (distToEdge - 1f) * 0.05f).coerceIn(0.85f, 1.15f); Color.rgb((Color.red(baseColor) * factor).toInt().coerceIn(0, 255), (Color.green(baseColor) * factor).toInt().coerceIn(0, 255), (Color.blue(baseColor) * factor).toInt().coerceIn(0, 255)) }
-                            else -> baseColor
+                        if (tileStyleId == 0) baseColor
+                        else {
+                            val t = ((edgeDist - gapThreshold) / avgCellRadius).coerceIn(0f, 1f)
+                            val factor = if (tileStyleId == 1) 0.60f + t * 0.55f else 1.15f - t * 0.55f
+                            val r = ((baseColor shr 16 and 0xFF) * factor).toInt().coerceIn(0, 255)
+                            val g = ((baseColor shr 8 and 0xFF) * factor).toInt().coerceIn(0, 255)
+                            val b = ((baseColor and 0xFF) * factor).toInt().coerceIn(0, 255)
+                            (0xFF shl 24) or (r shl 16) or (g shl 8) or b
                         }
                     }
                     if (step == 1) {
@@ -306,7 +311,6 @@ class VoronoiMosaicGenerator : Generator {
             }
         } else if (metricId == 2) {
             // ── CHEBYSHEV PATH: inline abs/max, early exit on |dx| ──
-            val gapThreshInv = 1f / gapThreshold.coerceAtLeast(1f)
             for (row in 0 until h step step) {
                 val y = row.toFloat()
                 val rowOff = row * w
@@ -339,10 +343,14 @@ class VoronoiMosaicGenerator : Generator {
                     val color = if (isGrout) groutColorInt
                     else {
                         val baseColor = cellColors[nearIdx]
-                        when (tileStyleId) {
-                            1 -> { val distToEdge = (edgeDist * gapThreshInv).coerceIn(1f, 3f); val factor = (0.85f + (distToEdge - 1f) * 0.05f).coerceIn(0.85f, 1.15f); Color.rgb((Color.red(baseColor) * factor).toInt().coerceIn(0, 255), (Color.green(baseColor) * factor).toInt().coerceIn(0, 255), (Color.blue(baseColor) * factor).toInt().coerceIn(0, 255)) }
-                            2 -> { val distToEdge = (edgeDist * gapThreshInv).coerceIn(1f, 3f); val factor = (1.15f - (distToEdge - 1f) * 0.05f).coerceIn(0.85f, 1.15f); Color.rgb((Color.red(baseColor) * factor).toInt().coerceIn(0, 255), (Color.green(baseColor) * factor).toInt().coerceIn(0, 255), (Color.blue(baseColor) * factor).toInt().coerceIn(0, 255)) }
-                            else -> baseColor
+                        if (tileStyleId == 0) baseColor
+                        else {
+                            val t = ((edgeDist - gapThreshold) / avgCellRadius).coerceIn(0f, 1f)
+                            val factor = if (tileStyleId == 1) 0.60f + t * 0.55f else 1.15f - t * 0.55f
+                            val r = ((baseColor shr 16 and 0xFF) * factor).toInt().coerceIn(0, 255)
+                            val g = ((baseColor shr 8 and 0xFF) * factor).toInt().coerceIn(0, 255)
+                            val b = ((baseColor and 0xFF) * factor).toInt().coerceIn(0, 255)
+                            (0xFF shl 24) or (r shl 16) or (g shl 8) or b
                         }
                     }
                     if (step == 1) {
@@ -357,7 +365,6 @@ class VoronoiMosaicGenerator : Generator {
             }
         } else {
             // ── EUCLIDEAN GENERAL PATH (raised/inset tile styles) ──
-            val gapThreshInv = 1f / gapThreshold.coerceAtLeast(1f)
             for (row in 0 until h step step) {
                 val y = row.toFloat()
                 val rowOff = row * w
@@ -386,10 +393,14 @@ class VoronoiMosaicGenerator : Generator {
                     val color = if (isGrout) groutColorInt
                     else {
                         val baseColor = cellColors[nearIdx]
-                        when (tileStyleId) {
-                            1 -> { val distToEdge = (edgeDist * gapThreshInv).coerceIn(1f, 3f); val factor = (0.85f + (distToEdge - 1f) * 0.05f).coerceIn(0.85f, 1.15f); Color.rgb((Color.red(baseColor) * factor).toInt().coerceIn(0, 255), (Color.green(baseColor) * factor).toInt().coerceIn(0, 255), (Color.blue(baseColor) * factor).toInt().coerceIn(0, 255)) }
-                            2 -> { val distToEdge = (edgeDist * gapThreshInv).coerceIn(1f, 3f); val factor = (1.15f - (distToEdge - 1f) * 0.05f).coerceIn(0.85f, 1.15f); Color.rgb((Color.red(baseColor) * factor).toInt().coerceIn(0, 255), (Color.green(baseColor) * factor).toInt().coerceIn(0, 255), (Color.blue(baseColor) * factor).toInt().coerceIn(0, 255)) }
-                            else -> baseColor
+                        if (tileStyleId == 0) baseColor
+                        else {
+                            val t = ((edgeDist - gapThreshold) / avgCellRadius).coerceIn(0f, 1f)
+                            val factor = if (tileStyleId == 1) 0.60f + t * 0.55f else 1.15f - t * 0.55f
+                            val r = ((baseColor shr 16 and 0xFF) * factor).toInt().coerceIn(0, 255)
+                            val g = ((baseColor shr 8 and 0xFF) * factor).toInt().coerceIn(0, 255)
+                            val b = ((baseColor and 0xFF) * factor).toInt().coerceIn(0, 255)
+                            (0xFF shl 24) or (r shl 16) or (g shl 8) or b
                         }
                     }
                     if (step == 1) {
