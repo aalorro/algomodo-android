@@ -108,7 +108,9 @@ class CrystalGrowthGenerator : Generator {
         val w = bitmap.width
         val h = bitmap.height
         val interfaceLayers = (interfaceWidth * 100f).toInt().coerceIn(1, 3)
-        val targetSteps = warmupSteps + (time * stepsPerFrame).toInt()
+        // Static: use warmupSteps. Animation: grow from scratch so user watches crystal form.
+        val targetSteps = if (time <= 0f) warmupSteps
+        else (time * stepsPerFrame).toInt().coerceAtLeast(1)
         val totalCells = gridSize * gridSize
         val cx = gridSize / 2
         val cy = gridSize / 2
