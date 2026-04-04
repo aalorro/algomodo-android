@@ -256,6 +256,9 @@ class MainViewModel @Inject constructor(
         _state.update { it.copy(isAnimating = animating) }
     }
 
+    // Select params that should always keep their default during randomize/surpriseMe
+    private val ALWAYS_DEFAULT_PARAMS = setOf("fill")
+
     /**
      * Randomize a NumberParam to a safe range — avoids the bottom 15% of
      * the param range to prevent degenerate/blank output (zero density,
@@ -298,8 +301,12 @@ class MainViewModel @Inject constructor(
                     newParams[param.key] = rng.boolean()
                 }
                 is Parameter.SelectParam -> {
-                    val choices = param.options.filter { it != "none" }.ifEmpty { param.options }
-                    newParams[param.key] = rng.pick(choices)
+                    if (param.key in ALWAYS_DEFAULT_PARAMS) {
+                        newParams[param.key] = param.default
+                    } else {
+                        val choices = param.options.filter { it != "none" }.ifEmpty { param.options }
+                        newParams[param.key] = rng.pick(choices)
+                    }
                 }
                 is Parameter.TextParam, is Parameter.ColorParam -> {
                     // Never randomize text or color params
@@ -341,9 +348,13 @@ class MainViewModel @Inject constructor(
                 }
                 is Parameter.BooleanParam -> newParams[param.key] = rng.boolean()
                 is Parameter.SelectParam -> {
-                    // Filter out "none" — surprise me should always pick an active option
-                    val choices = param.options.filter { it != "none" }.ifEmpty { param.options }
-                    newParams[param.key] = rng.pick(choices)
+                    if (param.key in ALWAYS_DEFAULT_PARAMS) {
+                        newParams[param.key] = param.default
+                    } else {
+                        // Filter out "none" — surprise me should always pick an active option
+                        val choices = param.options.filter { it != "none" }.ifEmpty { param.options }
+                        newParams[param.key] = rng.pick(choices)
+                    }
                 }
                 is Parameter.TextParam -> newParams[param.key] = param.default
                 is Parameter.ColorParam -> newParams[param.key] = param.default

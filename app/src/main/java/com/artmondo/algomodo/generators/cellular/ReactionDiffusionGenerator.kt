@@ -11,6 +11,7 @@ import com.artmondo.algomodo.generators.ParamGroup
 import com.artmondo.algomodo.generators.Parameter
 import com.artmondo.algomodo.generators.Quality
 import kotlin.math.abs
+import kotlin.math.ceil
 import kotlin.math.pow
 
 class ReactionDiffusionGenerator : Generator {
@@ -27,12 +28,12 @@ class ReactionDiffusionGenerator : Generator {
         Parameter.SelectParam("Preset", "preset", ParamGroup.COMPOSITION, "Preset f/k combinations from the Gray-Scott parameter map — overrides Feed Rate and Kill Rate when not \"custom\"", listOf("custom", "spots", "stripes", "worms", "maze", "mitosis", "coral", "solitons", "spirals"), "spots"),
         Parameter.NumberParam("Feed Rate", "feedRate", ParamGroup.COMPOSITION, "Rate at which U is replenished (active only when preset = custom)", 0.01f, 0.08f, 0.001f, 0.035f),
         Parameter.NumberParam("Kill Rate", "killRate", ParamGroup.COMPOSITION, "Rate at which V is removed (active only when preset = custom)", 0.04f, 0.075f, 0.001f, 0.065f),
-        Parameter.NumberParam("Spatial Variation", "spatialVariation", ParamGroup.COMPOSITION, "Noise-based spatial modulation of f/k — creates zones with different pattern types that compete at their borders, producing continuously evolving boundaries", 0f, 1.0f, 0.05f, 0.35f),
+        Parameter.NumberParam("Spatial Variation", "spatialVariation", ParamGroup.COMPOSITION, "Noise-based spatial modulation of f/k — creates zones with different pattern types that compete at their borders, producing continuously evolving boundaries", 0f, 1.0f, 0.05f, 0.15f),
         Parameter.SelectParam("Init Mode", "initMode", ParamGroup.GEOMETRY, "patches: random circular seeds | noise: sparse scattered seeds across the whole field | center: single circular seed", listOf("patches", "noise", "center"), "patches"),
         Parameter.NumberParam("Diffusion U", "diffU", ParamGroup.TEXTURE, null, 0.1f, 1.0f, 0.05f, 0.8f),
         Parameter.NumberParam("Diffusion V", "diffV", ParamGroup.TEXTURE, null, 0.01f, 0.5f, 0.01f, 0.3f),
         Parameter.NumberParam("Steps / Frame", "stepsPerFrame", ParamGroup.FLOW_MOTION, "Simulation steps per animation frame — higher = faster evolution", 1f, 30f, 1f, 10f),
-        Parameter.NumberParam("Iterations", "iterations", ParamGroup.FLOW_MOTION, "Steps run for static (non-animated) render", 100f, 3000f, 100f, 800f),
+        Parameter.NumberParam("Iterations", "iterations", ParamGroup.FLOW_MOTION, "Steps run for static (non-animated) render", 100f, 3000f, 100f, 1500f),
         Parameter.SelectParam("Color Mode", "colorMode", ParamGroup.COLOR, "palette: smooth V→palette | uv-mix: palette + reaction-front brightness boost | edge: gradient magnitude (boundary highlighting) | threshold: binary", listOf("palette", "uv-mix", "edge", "threshold"), "palette"),
         Parameter.NumberParam("Color Gamma", "colorGamma", ParamGroup.COLOR, "< 1: lifts dark regions (reveals low-concentration detail) | > 1: increases contrast, darkens background", 0.25f, 4.0f, 0.25f, 1.0f)
     )
@@ -41,17 +42,16 @@ class ReactionDiffusionGenerator : Generator {
         "preset" to "spots",
         "feedRate" to 0.035f,
         "killRate" to 0.065f,
-        "spatialVariation" to 0.35f,
+        "spatialVariation" to 0.15f,
         "initMode" to "patches",
         "diffU" to 0.8f,
         "diffV" to 0.3f,
         "stepsPerFrame" to 10f,
-        "iterations" to 800f,
+        "iterations" to 1500f,
         "colorMode" to "palette",
         "colorGamma" to 1.0f
     )
 
-    /** Known Gray-Scott feed/kill presets for named patterns. */
     private fun presetFeedKill(preset: String): Pair<Float, Float>? = when (preset) {
         "spots"    -> 0.035f to 0.065f
         "stripes"  -> 0.035f to 0.060f
@@ -61,8 +61,33 @@ class ReactionDiffusionGenerator : Generator {
         "coral"    -> 0.062f to 0.061f
         "solitons" -> 0.030f to 0.060f
         "spirals"  -> 0.014f to 0.045f
-        else       -> null // "custom" or unknown
+        else       -> null
     }
+
+    // ---- Simulation cache: avoids re-running all steps from scratch each frame ----
+    private class SimState(
+        val gw: Int,
+        val gh: Int,
+        val seed: Int,
+        val baseFeed: Float,
+        val baseKill: Float,
+        val spatialVariation: Float,
+        val dA: Float,
+        val dB: Float,
+        val initMode: String,
+        val subSteps: Int,
+        var curA: FloatArray,
+        var curB: FloatArray,
+        var nxtA: FloatArray,
+        var nxtB: FloatArray,
+        val feedGrid: FloatArray,
+        val killGrid: FloatArray,
+        var stepsDone: Int
+    )
+
+    @Volatile private var cachedSim: SimState? = null
+    @Volatile private var reusePixels: IntArray? = null
+    @Volatile private var reuseGridColors: IntArray? = null
 
     override fun renderCanvas(
         canvas: Canvas,
@@ -73,20 +98,18 @@ class ReactionDiffusionGenerator : Generator {
         quality: Quality,
         time: Float
     ) {
-        // ── Read ALL params ──────────────────────────────────────────────
         val preset = (params["preset"] as? String) ?: "spots"
         val userFeed = (params["feedRate"] as? Number)?.toFloat() ?: 0.035f
         val userKill = (params["killRate"] as? Number)?.toFloat() ?: 0.065f
-        val spatialVariation = (params["spatialVariation"] as? Number)?.toFloat() ?: 0.35f
+        val spatialVariation = (params["spatialVariation"] as? Number)?.toFloat() ?: 0.15f
         val initMode = (params["initMode"] as? String) ?: "patches"
         val dA = (params["diffU"] as? Number)?.toFloat() ?: 0.8f
         val dB = (params["diffV"] as? Number)?.toFloat() ?: 0.3f
         val stepsPerFrame = (params["stepsPerFrame"] as? Number)?.toInt() ?: 10
-        val iterations = (params["iterations"] as? Number)?.toInt() ?: 800
+        val iterations = (params["iterations"] as? Number)?.toInt() ?: 1500
         val colorMode = (params["colorMode"] as? String) ?: "palette"
         val colorGamma = (params["colorGamma"] as? Number)?.toFloat() ?: 1.0f
 
-        // ── Preset: resolve base feed/kill ───────────────────────────────
         val presetFK = presetFeedKill(preset)
         val baseFeed = presetFK?.first ?: userFeed
         val baseKill = presetFK?.second ?: userKill
@@ -94,7 +117,6 @@ class ReactionDiffusionGenerator : Generator {
         val w = bitmap.width
         val h = bitmap.height
 
-        // Use a downscaled simulation grid for performance
         val scale = when (quality) {
             Quality.DRAFT -> 4
             Quality.BALANCED -> 2
@@ -102,67 +124,53 @@ class ReactionDiffusionGenerator : Generator {
         }
         val gw = w / scale
         val gh = h / scale
+        val totalCells = gw * gh
 
-        // ── Iterations: use param for static render, stepsPerFrame for animation ─
-        val totalSteps = if (time <= 0f) {
-            iterations
-        } else {
-            (time * stepsPerFrame * 10).toInt()
-        }
+        // Sub-stepping for numerical stability of explicit Euler:
+        // CFL condition requires dt * max(dA,dB) * 4 / h² < 1 (h=1 for unit grid)
+        val subSteps = ceil(maxOf(dA, dB).toDouble() * 4.0).toInt().coerceAtLeast(1)
+        val dt = 1f / subSteps
 
-        // ── Spatial variation: pre-compute per-cell f/k offsets using noise ──
-        val noise = SimplexNoise(seed)
-        val noiseScale = 3.0f // spatial frequency of the variation
-        val feedGrid = FloatArray(gw * gh)
-        val killGrid = FloatArray(gw * gh)
-        for (y in 0 until gh) {
-            for (x in 0 until gw) {
-                val idx = y * gw + x
-                val nx = x.toFloat() / gw * noiseScale
-                val ny = y.toFloat() / gh * noiseScale
-                // noise2D returns [-1,1]; scale by spatialVariation to modulate f/k
-                val nv = noise.noise2D(nx, ny) * spatialVariation
-                feedGrid[idx] = (baseFeed + nv * 0.02f).coerceIn(0.01f, 0.08f)
-                killGrid[idx] = (baseKill + nv * 0.01f).coerceIn(0.04f, 0.075f)
-            }
-        }
+        val totalSteps = if (time <= 0f) iterations
+        else (time * stepsPerFrame * 10).toInt()
 
-        // ── Init mode: set up chemical concentrations ────────────────────
-        val rng = SeededRNG(seed)
-        var a = FloatArray(gw * gh) { 1f }
-        var b = FloatArray(gw * gh) { 0f }
-
-        when (initMode) {
-            "center" -> {
-                // Single circular seed in the center
-                val cx = gw / 2
-                val cy = gh / 2
-                val radius = (gw.coerceAtMost(gh) / 10).coerceAtLeast(3)
-                for (dy in -radius..radius) {
-                    for (dx in -radius..radius) {
-                        if (dx * dx + dy * dy <= radius * radius) {
-                            val nx = (cx + dx + gw) % gw
-                            val ny = (cy + dy + gh) % gh
-                            b[ny * gw + nx] = 1f
-                        }
-                    }
+        // ---- Get or create simulation state (cache across frames) ----
+        val sim = cachedSim?.takeIf {
+            it.gw == gw && it.gh == gh && it.seed == seed &&
+                it.baseFeed == baseFeed && it.baseKill == baseKill &&
+                it.spatialVariation == spatialVariation &&
+                it.dA == dA && it.dB == dB &&
+                it.initMode == initMode &&
+                it.subSteps == subSteps &&
+                it.stepsDone <= totalSteps
+        } ?: run {
+            // Build spatial variation grids
+            val noise = SimplexNoise(seed)
+            val noiseFreq = 3.0f
+            val feedGrid = FloatArray(totalCells)
+            val killGrid = FloatArray(totalCells)
+            for (y in 0 until gh) {
+                for (x in 0 until gw) {
+                    val idx = y * gw + x
+                    val nx = x.toFloat() / gw * noiseFreq
+                    val ny = y.toFloat() / gh * noiseFreq
+                    val nv = noise.noise2D(nx, ny) * spatialVariation
+                    // Reduced modulation coefficients so presets stay distinct
+                    feedGrid[idx] = (baseFeed + nv * 0.008f).coerceIn(0.01f, 0.08f)
+                    killGrid[idx] = (baseKill + nv * 0.004f).coerceIn(0.04f, 0.075f)
                 }
             }
-            "noise" -> {
-                // Sparse scattered seeds across the whole field
-                for (idx in 0 until gw * gh) {
-                    if (rng.random() < 0.01f) {
-                        b[idx] = 1f
-                    }
-                }
-            }
-            else -> {
-                // "patches" (original behaviour): several random circular patches
-                val numSeeds = 5 + rng.integer(0, 5)
-                for (s in 0 until numSeeds) {
-                    val cx = rng.integer(gw / 4, 3 * gw / 4)
-                    val cy = rng.integer(gh / 4, 3 * gh / 4)
-                    val radius = rng.integer(2, gw / 15.coerceAtLeast(3))
+
+            // Initialize chemical concentrations
+            val rng = SeededRNG(seed)
+            val a = FloatArray(totalCells) { 1f }
+            val b = FloatArray(totalCells) { 0f }
+
+            when (initMode) {
+                "center" -> {
+                    val cx = gw / 2
+                    val cy = gh / 2
+                    val radius = (gw.coerceAtMost(gh) / 10).coerceAtLeast(3)
                     for (dy in -radius..radius) {
                         for (dx in -radius..radius) {
                             if (dx * dx + dy * dy <= radius * radius) {
@@ -173,83 +181,166 @@ class ReactionDiffusionGenerator : Generator {
                         }
                     }
                 }
-            }
-        }
-
-        // ── Evolve using double-buffering ────────────────────────────────
-        val dt = 1.0f
-        var curA = a
-        var curB = b
-        var nxtA = FloatArray(gw * gh)
-        var nxtB = FloatArray(gw * gh)
-
-        for (step in 0 until totalSteps) {
-            for (y in 0 until gh) {
-                for (x in 0 until gw) {
-                    val idx = y * gw + x
-                    val aVal = curA[idx]
-                    val bVal = curB[idx]
-
-                    // Laplacian with 5-point stencil
-                    val lapA = laplacian(curA, x, y, gw, gh)
-                    val lapB = laplacian(curB, x, y, gw, gh)
-
-                    // Per-cell feed/kill from spatial-variation grid
-                    val f = feedGrid[idx]
-                    val k = killGrid[idx]
-
-                    val abb = aVal * bVal * bVal
-                    nxtA[idx] = (aVal + (dA * lapA - abb + f * (1f - aVal)) * dt).coerceIn(0f, 1f)
-                    nxtB[idx] = (bVal + (dB * lapB + abb - (k + f) * bVal) * dt).coerceIn(0f, 1f)
+                "noise" -> {
+                    for (idx in 0 until totalCells) {
+                        if (rng.random() < 0.01f) b[idx] = 1f
+                    }
+                }
+                else -> {
+                    val numSeeds = 5 + rng.integer(0, 5)
+                    for (s in 0 until numSeeds) {
+                        val cx = rng.integer(gw / 4, 3 * gw / 4)
+                        val cy = rng.integer(gh / 4, 3 * gh / 4)
+                        val radius = rng.integer(2, gw / 15.coerceAtLeast(3))
+                        for (dy in -radius..radius) {
+                            for (dx in -radius..radius) {
+                                if (dx * dx + dy * dy <= radius * radius) {
+                                    val nx = (cx + dx + gw) % gw
+                                    val ny = (cy + dy + gh) % gh
+                                    b[ny * gw + nx] = 1f
+                                }
+                            }
+                        }
+                    }
                 }
             }
-            // Swap current and next buffers
-            val tmpA = curA; curA = nxtA; nxtA = tmpA
-            val tmpB = curB; curB = nxtB; nxtB = tmpB
+
+            SimState(
+                gw, gh, seed, baseFeed, baseKill, spatialVariation, dA, dB, initMode,
+                subSteps,
+                a, b, FloatArray(totalCells), FloatArray(totalCells),
+                feedGrid, killGrid, 0
+            )
+        }
+        cachedSim = sim
+
+        // ---- Evolve simulation: only advance from stepsDone to totalSteps ----
+        var curA = sim.curA
+        var curB = sim.curB
+        var nxtA = sim.nxtA
+        var nxtB = sim.nxtB
+        val feedGrid = sim.feedGrid
+        val killGrid = sim.killGrid
+        val gwm1 = gw - 1
+        val ghm1 = gh - 1
+
+        for (step in sim.stepsDone until totalSteps) {
+            // Sub-step loop for numerical stability
+            for (sub in 0 until subSteps) {
+                for (y in 0 until gh) {
+                    val rowOff = y * gw
+                    val upOff = if (y > 0) (y - 1) * gw else ghm1 * gw
+                    val downOff = if (y < ghm1) (y + 1) * gw else 0
+
+                    for (x in 0 until gw) {
+                        val left = if (x > 0) x - 1 else gwm1
+                        val right = if (x < gwm1) x + 1 else 0
+                        val idx = rowOff + x
+
+                        val aVal = curA[idx]
+                        val bVal = curB[idx]
+
+                        // Inlined 5-point Laplacian
+                        val lapA = curA[upOff + x] + curA[downOff + x] + curA[rowOff + left] + curA[rowOff + right] - 4f * aVal
+                        val lapB = curB[upOff + x] + curB[downOff + x] + curB[rowOff + left] + curB[rowOff + right] - 4f * bVal
+
+                        val f = feedGrid[idx]
+                        val k = killGrid[idx]
+                        val abb = aVal * bVal * bVal
+
+                        nxtA[idx] = (aVal + (dA * lapA - abb + f * (1f - aVal)) * dt).coerceIn(0f, 1f)
+                        nxtB[idx] = (bVal + (dB * lapB + abb - (k + f) * bVal) * dt).coerceIn(0f, 1f)
+                    }
+                }
+                // Swap buffers after each sub-step
+                val tmpA = curA; curA = nxtA; nxtA = tmpA
+                val tmpB = curB; curB = nxtB; nxtB = tmpB
+            }
+        }
+        sim.curA = curA
+        sim.curB = curB
+        sim.nxtA = nxtA
+        sim.nxtB = nxtB
+        sim.stepsDone = totalSteps
+
+        // ---- Phase 1: Compute color per grid cell ----
+        val gridColors: IntArray
+        val rgc = reuseGridColors
+        if (rgc != null && rgc.size >= totalCells) {
+            gridColors = rgc
+        } else {
+            gridColors = IntArray(totalCells)
+            reuseGridColors = gridColors
         }
 
-        // curA/curB now hold the final state
-        a = curA
-        b = curB
+        // Pre-compute gamma + palette LUT (eliminates per-cell pow() and lerpColor())
+        val palLutSize = 256
+        val palLutMax = palLutSize - 1
+        val gammaLut = IntArray(palLutSize) { i ->
+            val t = (i.toFloat() / palLutMax).pow(colorGamma).coerceIn(0f, 1f)
+            palette.lerpColor(t)
+        }
 
-        // ── Render to bitmap using colorMode and colorGamma ──────────────
-        val pixels = IntArray(w * h)
+        when (colorMode) {
+            "uv-mix" -> {
+                for (i in 0 until totalCells) {
+                    val base = gammaLut[(curB[i] * palLutMax).toInt().coerceIn(0, palLutMax)]
+                    val front = (curA[i] * curB[i] * 4f).coerceIn(0f, 1f)
+                    val boost = (front * 80f).toInt()
+                    gridColors[i] = Color.rgb(
+                        (Color.red(base) + boost).coerceAtMost(255),
+                        (Color.green(base) + boost).coerceAtMost(255),
+                        (Color.blue(base) + boost).coerceAtMost(255)
+                    )
+                }
+            }
+            "edge" -> {
+                for (y in 0 until gh) {
+                    val rowOff = y * gw
+                    val upOff = if (y > 0) (y - 1) * gw else ghm1 * gw
+                    val downOff = if (y < ghm1) (y + 1) * gw else 0
+                    for (x in 0 until gw) {
+                        val left = if (x > 0) x - 1 else gwm1
+                        val right = if (x < gwm1) x + 1 else 0
+                        val lapB = abs(curB[upOff + x] + curB[downOff + x] + curB[rowOff + left] + curB[rowOff + right] - 4f * curB[rowOff + x])
+                        val edgeVal = (lapB * 5f).coerceIn(0f, 1f)
+                        gridColors[rowOff + x] = gammaLut[(edgeVal * palLutMax).toInt().coerceIn(0, palLutMax)]
+                    }
+                }
+            }
+            "threshold" -> {
+                val colorHigh = palette.colorAt(4)
+                val colorLow = palette.colorAt(0)
+                val threshB = if (colorGamma != 1.0f) 0.25f.pow(1f / colorGamma) else 0.25f
+                for (i in 0 until totalCells) {
+                    gridColors[i] = if (curB[i] > threshB) colorHigh else colorLow
+                }
+            }
+            else /* palette */ -> {
+                for (i in 0 until totalCells) {
+                    gridColors[i] = gammaLut[(curB[i] * palLutMax).toInt().coerceIn(0, palLutMax)]
+                }
+            }
+        }
+
+        // ---- Phase 2: Expand grid colors to full pixel array ----
+        val pixels: IntArray
+        val rp = reusePixels
+        val pixelCount = w * h
+        if (rp != null && rp.size >= pixelCount) {
+            pixels = rp
+        } else {
+            pixels = IntArray(pixelCount)
+            reusePixels = pixels
+        }
+
+        val xMap = IntArray(w) { (it / scale).coerceAtMost(gwm1) }
         for (py in 0 until h) {
-            val gy = (py / scale).coerceAtMost(gh - 1)
+            val gy = (py / scale).coerceAtMost(ghm1)
+            val gridRow = gy * gw
+            val pixRow = py * w
             for (px in 0 until w) {
-                val gx = (px / scale).coerceAtMost(gw - 1)
-                val idx = gy * gw + gx
-                val aVal = a[idx]
-                val bVal = b[idx]
-
-                pixels[py * w + px] = when (colorMode) {
-                    "uv-mix" -> {
-                        // Palette mapped from V, with a brightness boost at the reaction front (where A and B are both present)
-                        val gammaB = bVal.pow(colorGamma).coerceIn(0f, 1f)
-                        val base = palette.lerpColor(gammaB)
-                        val front = (aVal * bVal * 4f).coerceIn(0f, 1f) // reaction-front intensity
-                        val rr = (Color.red(base) + (front * 80f).toInt()).coerceAtMost(255)
-                        val gg = (Color.green(base) + (front * 80f).toInt()).coerceAtMost(255)
-                        val bb = (Color.blue(base) + (front * 80f).toInt()).coerceAtMost(255)
-                        Color.rgb(rr, gg, bb)
-                    }
-                    "edge" -> {
-                        // Gradient magnitude of B — highlights boundaries
-                        val lapB = abs(laplacian(b, gx, gy, gw, gh))
-                        val edgeVal = (lapB * 5f).coerceIn(0f, 1f).pow(colorGamma).coerceIn(0f, 1f)
-                        palette.lerpColor(edgeVal)
-                    }
-                    "threshold" -> {
-                        // Binary: above/below a threshold for B concentration
-                        val gammaB = bVal.pow(colorGamma).coerceIn(0f, 1f)
-                        if (gammaB > 0.25f) palette.colorAt(4) else palette.colorAt(0)
-                    }
-                    else -> {
-                        // "palette" — smooth V -> palette with gamma correction
-                        val gammaB = bVal.pow(colorGamma).coerceIn(0f, 1f)
-                        palette.lerpColor(gammaB)
-                    }
-                }
+                pixels[pixRow + px] = gridColors[gridRow + xMap[px]]
             }
         }
 
@@ -257,14 +348,11 @@ class ReactionDiffusionGenerator : Generator {
         canvas.drawBitmap(bitmap, 0f, 0f, null)
     }
 
-    private fun laplacian(grid: FloatArray, x: Int, y: Int, w: Int, h: Int): Float {
-        val idx = y * w + x
-        val center = grid[idx]
-        val left = grid[y * w + (x - 1 + w) % w]
-        val right = grid[y * w + (x + 1) % w]
-        val up = grid[((y - 1 + h) % h) * w + x]
-        val down = grid[((y + 1) % h) * w + x]
-        // Standard 5-point stencil
-        return left + right + up + down - 4f * center
+    override fun estimateCost(params: Map<String, Any>, quality: Quality): Float {
+        val scale = when (quality) {
+            Quality.DRAFT -> 4; Quality.BALANCED -> 2; Quality.ULTRA -> 1
+        }
+        val iterations = (params["iterations"] as? Number)?.toInt() ?: 1500
+        return (iterations / scale.toFloat() / 500f).coerceIn(0.1f, 1f)
     }
 }

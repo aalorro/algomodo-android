@@ -4,7 +4,6 @@ import android.graphics.Bitmap
 import android.graphics.Canvas
 import android.graphics.Color
 import android.graphics.Paint
-import android.graphics.Path
 import android.graphics.PorterDuff
 import android.graphics.PorterDuffXfermode
 import com.artmondo.algomodo.audio.AudioAnalysis
@@ -64,6 +63,25 @@ class ParticleAdvectionGenerator : Generator {
         "reactivity" to 1.0f
     )
 
+    // ---- Trig LUT: ~10x faster than Math.sin/cos ----
+    private companion object {
+        const val LUT_SIZE = 4096
+        const val LUT_MASK = LUT_SIZE - 1
+        val INV_2PI_LUT = LUT_SIZE / (2f * PI.toFloat())
+        val SIN_LUT = FloatArray(LUT_SIZE) { sin(it * 2.0 * PI / LUT_SIZE).toFloat() }
+        val COS_LUT = FloatArray(LUT_SIZE) { cos(it * 2.0 * PI / LUT_SIZE).toFloat() }
+        const val COLOR_BUCKETS = 32
+    }
+
+    private fun fSin(x: Float): Float = SIN_LUT[((x * INV_2PI_LUT).toInt() + 65536) and LUT_MASK]
+    private fun fCos(x: Float): Float = COS_LUT[((x * INV_2PI_LUT).toInt() + 65536) and LUT_MASK]
+
+    // Reusable arrays
+    @Volatile private var reuseAllX: FloatArray? = null
+    @Volatile private var reuseAllY: FloatArray? = null
+    @Volatile private var reuseAllWrap: BooleanArray? = null
+    @Volatile private var reuseLineBuffer: FloatArray? = null
+
     override fun renderCanvas(
         canvas: Canvas, bitmap: Bitmap, params: Map<String, Any>,
         seed: Int, palette: Palette, quality: Quality, time: Float
@@ -100,7 +118,6 @@ class ParticleAdvectionGenerator : Generator {
         val nC = colors.size
         val vn = ValueNoise(seed)
 
-        // Background
         canvas.drawColor(Color.rgb(8, 8, 16))
 
         val noiseScale = effScale / minDim
@@ -132,44 +149,6 @@ class ParticleAdvectionGenerator : Generator {
         val orbNoiseMag = velMag * 0.3f
         val invMaxVelSqScaled = 1f / (maxVelSq * 0.64f)
 
-        var outVx = 0f; var outVy = 0f
-        fun computeVelocity(px: Float, py: Float) {
-            val nx = px * noiseScale + tNx
-            val ny = py * noiseScale + tNy
-
-            when (modeId) {
-                0 -> { // curl
-                    val angle = vn.noise(nx, ny) * TAU
-                    outVx = cos(angle) * velMag; outVy = sin(angle) * velMag
-                }
-                1 -> { // gradient
-                    val angle = vn.noise(nx, ny) * TAU + 1.5708f
-                    outVx = cos(angle) * velMag; outVy = sin(angle) * velMag
-                }
-                2 -> { // orbital
-                    outVx = 0f; outVy = 0f
-                    for (c in 0 until nOrb) {
-                        val dx = px - orbCx!![c]; val dy = py - orbCy!![c]
-                        val invR2 = 1f / (dx * dx + dy * dy + 100f)
-                        val f = orbStr!![c] * orbFStr * invR2
-                        outVx += -dy * f + dx * f * 0.15f
-                        outVy += dx * f + dy * f * 0.15f
-                    }
-                    val angle = vn.noise(nx, ny) * TAU
-                    outVx += cos(angle) * orbNoiseMag
-                    outVy += sin(angle) * orbNoiseMag
-                }
-                else -> { // turbulent
-                    val angle1 = vn.noise(nx, ny) * TAU
-                    val cosA = cos(angle1); val sinA = sin(angle1)
-                    outVx = cosA * velMag; outVy = sinA * velMag
-                    val angle2 = vn.noise(px * turbScale + tNx * 2f, py * turbScale + tNy * 2f) * TAU
-                    outVx += cos(angle2) * turbMag; outVy += sin(angle2) * turbMag
-                    outVx += sinA * turbMag * 0.3f; outVy -= cosA * turbMag * 0.3f
-                }
-            }
-        }
-
         // Seed particles
         val startX = FloatArray(actualCount); val startY = FloatArray(actualCount)
         val pColorIdx = IntArray(actualCount)
@@ -178,106 +157,203 @@ class ParticleAdvectionGenerator : Generator {
             pColorIdx[i] = rng.integer(0, nC - 1)
         }
 
-        val paint = Paint(Paint.ANTI_ALIAS_FLAG)
-        paint.style = Paint.Style.STROKE
-        paint.strokeWidth = lw
-        paint.strokeCap = Paint.Cap.BUTT
-        paint.strokeJoin = Paint.Join.MITER
-        // Additive blending
-        paint.xfermode = PorterDuffXfermode(PorterDuff.Mode.ADD)
-
         val phaseOffset = t * 0.4f
         val fadeMult = 1f + fadeRate * 2f
         val invTrailLen = 1f / trailLen
 
-        val trailX = FloatArray(trailLen + 1); val trailY = FloatArray(trailLen + 1)
-        val trailWrap = BooleanArray(trailLen)
-        val trailSpeedSq = if (colorMode == "speed") FloatArray(trailLen) else null
+        // ---- Phase 1: Compute all trails into flat SoA arrays ----
+        val trailStride = trailLen + 1
+        val totalTrailPts = actualCount * trailStride
+        val totalTrailSegs = actualCount * trailLen
+
+        val allX: FloatArray
+        val rax = reuseAllX
+        if (rax != null && rax.size >= totalTrailPts) { allX = rax } else {
+            allX = FloatArray(totalTrailPts); reuseAllX = allX
+        }
+        val allY: FloatArray
+        val ray = reuseAllY
+        if (ray != null && ray.size >= totalTrailPts) { allY = ray } else {
+            allY = FloatArray(totalTrailPts); reuseAllY = allY
+        }
+        val allWrap: BooleanArray
+        val raw = reuseAllWrap
+        if (raw != null && raw.size >= totalTrailSegs) { allWrap = raw } else {
+            allWrap = BooleanArray(totalTrailSegs); reuseAllWrap = allWrap
+        }
+
+        // Per-particle color keys for batching (quantized to COLOR_BUCKETS per band)
+        val colorKeys = IntArray(actualCount)
+        // Speed data for "speed" color mode
+        val bandSpeedSq = if (colorMode == "speed") FloatArray(actualCount) else null
 
         for (i in 0 until actualCount) {
+            val base = i * trailStride
+            val wBase = i * trailLen
+
             val driftAngle = vn.noise(startX[i] * 0.001f + phaseOffset, startY[i] * 0.001f) * TAU
             val driftMag = minDim * 0.08f
-            var px = startX[i] + cos(driftAngle) * driftMag
-            var py = startY[i] + sin(driftAngle) * driftMag
-            trailX[0] = px; trailY[0] = py
+            var px = startX[i] + fCos(driftAngle) * driftMag
+            var py = startY[i] + fSin(driftAngle) * driftMag
+            allX[base] = px; allY[base] = py
 
             for (s in 0 until trailLen) {
-                computeVelocity(px, py)
-                trailSpeedSq?.set(s, outVx * outVx + outVy * outVy)
+                // ---- Inline velocity computation (no closure overhead) ----
+                val nx = px * noiseScale + tNx
+                val ny = py * noiseScale + tNy
+                var vx: Float; var vy: Float
 
-                val magSq = outVx * outVx + outVy * outVy
-                if (magSq > maxVelSq) {
-                    val scale = maxVel / sqrt(magSq)
-                    outVx *= scale; outVy *= scale
+                when (modeId) {
+                    0 -> { // curl
+                        val angle = vn.noise(nx, ny) * TAU
+                        vx = fCos(angle) * velMag; vy = fSin(angle) * velMag
+                    }
+                    1 -> { // gradient
+                        val angle = vn.noise(nx, ny) * TAU + 1.5708f
+                        vx = fCos(angle) * velMag; vy = fSin(angle) * velMag
+                    }
+                    2 -> { // orbital
+                        vx = 0f; vy = 0f
+                        for (c in 0 until nOrb) {
+                            val dx = px - orbCx!![c]; val dy = py - orbCy!![c]
+                            val invR2 = 1f / (dx * dx + dy * dy + 100f)
+                            val f = orbStr!![c] * orbFStr * invR2
+                            vx += -dy * f + dx * f * 0.15f
+                            vy += dx * f + dy * f * 0.15f
+                        }
+                        val angle = vn.noise(nx, ny) * TAU
+                        vx += fCos(angle) * orbNoiseMag
+                        vy += fSin(angle) * orbNoiseMag
+                    }
+                    else -> { // turbulent
+                        val angle1 = vn.noise(nx, ny) * TAU
+                        val cosA = fCos(angle1); val sinA = fSin(angle1)
+                        vx = cosA * velMag; vy = sinA * velMag
+                        val angle2 = vn.noise(px * turbScale + tNx * 2f, py * turbScale + tNy * 2f) * TAU
+                        vx += fCos(angle2) * turbMag; vy += fSin(angle2) * turbMag
+                        vx += sinA * turbMag * 0.3f; vy -= cosA * turbMag * 0.3f
+                    }
                 }
 
-                val newPx = px + outVx * dt; val newPy = py + outVy * dt
+                // Clamp velocity
+                val magSq = vx * vx + vy * vy
+                if (magSq > maxVelSq) {
+                    val scale = maxVel / sqrt(magSq)
+                    vx *= scale; vy *= scale
+                }
+
+                // Store speed for first step (used by speed color mode)
+                if (s == 0) bandSpeedSq?.set(i, vx * vx + vy * vy)
+
+                // Advance + wrap
+                val newPx = px + vx * dt; val newPy = py + vy * dt
                 var wrapped = false
                 if (newPx < 0f) { px = newPx + w; wrapped = true }
                 else if (newPx > w) { px = newPx - w; wrapped = true }
                 else px = newPx
-
                 if (newPy < 0f) { py = newPy + h; wrapped = true }
                 else if (newPy > h) { py = newPy - h; wrapped = true }
                 else py = newPy
 
-                trailWrap[s] = wrapped
-                trailX[s + 1] = px; trailY[s + 1] = py
-            }
-
-            // Draw trail in bands
-            val bands = 4
-            val segsPerBand = (trailLen + bands - 1) / bands
-
-            for (band in 0 until bands) {
-                val sStart = band * segsPerBand
-                val sEnd = min((band + 1) * segsPerBand, trailLen)
-                if (sStart >= trailLen) break
-
-                val midAge = ((sStart + sEnd) * 0.5f) * invTrailLen
-                val baseAlpha = 0.85f + audioHigh * 0.15f
-                val alpha = ((1f - midAge * fadeMult) * baseAlpha * 255f).toInt().coerceIn(0, 255)
-                if (alpha < 5) break
-
-                val c: Int = when (colorMode) {
-                    "speed" -> {
-                        val speedSq = trailSpeedSq?.get(min(sStart, trailLen - 1)) ?: 0f
-                        val ci = min(nC - 1, (min(1f, speedSq * invMaxVelSqScaled) * (nC - 1)).toInt())
-                        colors[ci]
-                    }
-                    "direction" -> {
-                        val sn = min(sStart + 1, trailLen)
-                        val ddx = trailX[sn] - trailX[sStart]
-                        val ddy = trailY[sn] - trailY[sStart]
-                        val ang = (atan2(ddy, ddx) + PI.toFloat()) / TAU
-                        val ci = (ang * (nC - 1)).toInt().coerceIn(0, nC - 1)
-                        colors[ci]
-                    }
-                    "age" -> {
-                        val ci = (midAge * (nC - 1)).toInt().coerceIn(0, nC - 1)
-                        colors[ci]
-                    }
-                    else -> colors[pColorIdx[i]]
-                }
-
-                paint.color = Color.argb(alpha, Color.red(c), Color.green(c), Color.blue(c))
-
-                val path = Path()
-                path.moveTo(trailX[sStart], trailY[sStart])
-                for (s in sStart until sEnd) {
-                    if (trailWrap[s]) {
-                        canvas.drawPath(path, paint)
-                        path.reset()
-                        path.moveTo(trailX[s + 1], trailY[s + 1])
-                    } else {
-                        path.lineTo(trailX[s + 1], trailY[s + 1])
-                    }
-                }
-                canvas.drawPath(path, paint)
+                allWrap[wBase + s] = wrapped
+                allX[base + s + 1] = px; allY[base + s + 1] = py
             }
         }
 
-        // Reset xfermode
+        // ---- Phase 2: Batched drawing with quantized color buckets ----
+        // Instead of 10K drawPath calls (2500 particles × 4 bands, each with Path allocation),
+        // group segments by (band, color_bucket) → max 4 × 32 = 128 drawLines calls.
+        val isAnim = time > 0f
+        val paint = Paint().apply {
+            style = Paint.Style.STROKE
+            strokeWidth = lw
+            strokeCap = Paint.Cap.BUTT
+            strokeJoin = Paint.Join.MITER
+            xfermode = PorterDuffXfermode(PorterDuff.Mode.ADD)
+            isAntiAlias = !isAnim
+        }
+
+        val bands = 4
+        val segsPerBand = (trailLen + bands - 1) / bands
+        val baseAlpha = 0.85f + audioHigh * 0.15f
+
+        // Pre-allocate line buffer (max segments: all particles × segsPerBand × 4 floats)
+        val maxLineFloats = actualCount * segsPerBand * 4
+        val lineBuffer: FloatArray
+        val rlb = reuseLineBuffer
+        if (rlb != null && rlb.size >= maxLineFloats) { lineBuffer = rlb } else {
+            lineBuffer = FloatArray(maxLineFloats); reuseLineBuffer = lineBuffer
+        }
+
+        // Build palette LUT for color quantization
+        val palLutSize = COLOR_BUCKETS
+        val palLutMax = palLutSize - 1
+        val palLut = IntArray(palLutSize) { palette.lerpColor(it.toFloat() / palLutMax) }
+
+        for (band in 0 until bands) {
+            val sStart = band * segsPerBand
+            val sEnd = min((band + 1) * segsPerBand, trailLen)
+            if (sStart >= trailLen) break
+
+            val midAge = ((sStart + sEnd) * 0.5f) * invTrailLen
+            val alpha = ((1f - midAge * fadeMult) * baseAlpha * 255f).toInt().coerceIn(0, 255)
+            if (alpha < 5) break
+
+            // Compute color key per particle for this band
+            when (colorMode) {
+                "speed" -> {
+                    for (i in 0 until actualCount) {
+                        val speedSq = bandSpeedSq?.get(i) ?: 0f
+                        colorKeys[i] = min(palLutMax, (min(1f, speedSq * invMaxVelSqScaled) * palLutMax).toInt())
+                    }
+                }
+                "direction" -> {
+                    val TAUf = TAU
+                    for (i in 0 until actualCount) {
+                        val base = i * trailStride
+                        val sn = min(sStart + 1, trailLen)
+                        val ddx = allX[base + sn] - allX[base + sStart]
+                        val ddy = allY[base + sn] - allY[base + sStart]
+                        val ang = (atan2(ddy, ddx) + PI.toFloat()) / TAUf
+                        colorKeys[i] = (ang * palLutMax).toInt().coerceIn(0, palLutMax)
+                    }
+                }
+                "age" -> {
+                    // All particles have the same color in this band
+                    val ck = (midAge * palLutMax).toInt().coerceIn(0, palLutMax)
+                    for (i in 0 until actualCount) colorKeys[i] = ck
+                }
+                else /* palette */ -> {
+                    for (i in 0 until actualCount) {
+                        colorKeys[i] = (pColorIdx[i].toFloat() / max(1, nC - 1) * palLutMax).toInt().coerceIn(0, palLutMax)
+                    }
+                }
+            }
+
+            // Draw each color bucket: collect segments → one drawLines call per bucket
+            for (ck in 0 until palLutSize) {
+                var lineIdx = 0
+                for (i in 0 until actualCount) {
+                    if (colorKeys[i] != ck) continue
+                    val base = i * trailStride
+                    val wBase = i * trailLen
+                    for (s in sStart until sEnd) {
+                        if (!allWrap[wBase + s]) {
+                            lineBuffer[lineIdx++] = allX[base + s]
+                            lineBuffer[lineIdx++] = allY[base + s]
+                            lineBuffer[lineIdx++] = allX[base + s + 1]
+                            lineBuffer[lineIdx++] = allY[base + s + 1]
+                        }
+                    }
+                }
+                if (lineIdx > 0) {
+                    val c = palLut[ck]
+                    paint.color = Color.argb(alpha, Color.red(c), Color.green(c), Color.blue(c))
+                    canvas.drawLines(lineBuffer, 0, lineIdx, paint)
+                }
+            }
+        }
+
         paint.xfermode = null
     }
 

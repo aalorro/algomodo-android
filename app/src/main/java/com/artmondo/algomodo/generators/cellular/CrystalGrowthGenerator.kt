@@ -56,6 +56,33 @@ class CrystalGrowthGenerator : Generator {
         "colorMode" to "phase"
     )
 
+    // ---- Simulation cache: avoids re-running all 600 steps from scratch each frame ----
+    private class SimState(
+        val gridSize: Int,
+        val seed: Int,
+        val numSeeds: Int,
+        val undercooling: Float,
+        val undercoolingGradient: Float,
+        val seedRadius: Int,
+        val symmetry: Int,
+        val anisotropy: Float,
+        val interfaceLayers: Int,
+        val thermalNoise: Float,
+        val crystal: BooleanArray,
+        val growthOrder: IntArray,
+        val grainId: IntArray,
+        val temperature: FloatArray,
+        val rng: SeededRNG,
+        var growthCount: Int,
+        var stepsDone: Int
+    )
+
+    @Volatile private var cachedSim: SimState? = null
+    @Volatile private var reusePixels: IntArray? = null
+    @Volatile private var reuseGridColors: IntArray? = null
+    @Volatile private var reuseCandIdx: IntArray? = null
+    @Volatile private var reuseCandGrain: IntArray? = null
+
     override fun renderCanvas(
         canvas: Canvas,
         bitmap: Bitmap,
@@ -65,7 +92,6 @@ class CrystalGrowthGenerator : Generator {
         quality: Quality,
         time: Float
     ) {
-        // Read ALL parameters
         val numSeeds = (params["seedCount"] as? Number)?.toInt() ?: 1
         val undercooling = (params["undercooling"] as? Number)?.toFloat() ?: 0.5f
         val undercoolingGradient = (params["undercoolingGradient"] as? Number)?.toFloat() ?: 0.0f
@@ -81,135 +107,175 @@ class CrystalGrowthGenerator : Generator {
 
         val w = bitmap.width
         val h = bitmap.height
-
-        // Interface width scaled to grid: controls how many layers of neighbors are candidates
-        // Range 0.005..0.03 maps to 1..3 neighbor layers
         val interfaceLayers = (interfaceWidth * 100f).toInt().coerceIn(1, 3)
-
-        val steps = warmupSteps + (time * stepsPerFrame).toInt()
+        // Static: use warmupSteps. Animation: grow from scratch so user watches crystal form.
+        val targetSteps = if (time <= 0f) warmupSteps
+        else (time * stepsPerFrame).toInt().coerceAtLeast(1)
         val totalCells = gridSize * gridSize
         val cx = gridSize / 2
         val cy = gridSize / 2
+        val lastIdx = gridSize - 1
 
-        // Initialize from seed
-        val rng = SeededRNG(seed)
-        // Crystal occupation, growth order, and grain ID for coloring
-        val crystal = BooleanArray(totalCells)
-        val growthOrder = IntArray(totalCells) { -1 }
-        val grainId = IntArray(totalCells) { -1 }
-        // Temperature field for "temperature" and "composite" color modes
-        val temperature = FloatArray(totalCells) { 0f }
-        var growthCount = 0
+        // ---- Get or create simulation state (cache across frames) ----
+        val sim = cachedSim?.takeIf {
+            it.gridSize == gridSize && it.seed == seed &&
+                it.numSeeds == numSeeds &&
+                it.undercooling == undercooling &&
+                it.undercoolingGradient == undercoolingGradient &&
+                it.seedRadius == seedRadius &&
+                it.symmetry == symmetry &&
+                it.anisotropy == anisotropy &&
+                it.interfaceLayers == interfaceLayers &&
+                it.thermalNoise == thermalNoise &&
+                it.stepsDone <= targetSteps
+        } ?: run {
+            val rng = SeededRNG(seed)
+            val crystal = BooleanArray(totalCells)
+            val growthOrder = IntArray(totalCells) { -1 }
+            val grainId = IntArray(totalCells) { -1 }
+            val temperature = FloatArray(totalCells)
+            var growthCount = 0
 
-        // Place seed points with rotational symmetry, using seedRadius for circle seeds
-        for (s in 0 until numSeeds) {
-            val dist = if (numSeeds == 1) 0f else rng.range(gridSize * 0.05f, gridSize * 0.25f)
-            val baseAngle = if (numSeeds == 1) 0f else rng.randomAngle()
-            for (r in 0 until symmetry) {
-                val angle = baseAngle + r * (2.0 * PI / symmetry).toFloat()
-                val centerX = (cx + dist * cos(angle)).roundToInt().coerceIn(0, gridSize - 1)
-                val centerY = (cy + dist * sin(angle)).roundToInt().coerceIn(0, gridSize - 1)
-                // Place a circle of radius seedRadius around the seed point
-                for (dy in -seedRadius..seedRadius) {
-                    for (dx in -seedRadius..seedRadius) {
-                        if (dx * dx + dy * dy <= seedRadius * seedRadius) {
-                            val sx = (centerX + dx).coerceIn(0, gridSize - 1)
-                            val sy = (centerY + dy).coerceIn(0, gridSize - 1)
-                            val idx = sy * gridSize + sx
-                            if (!crystal[idx]) {
-                                crystal[idx] = true
-                                growthOrder[idx] = growthCount++
-                                grainId[idx] = s
-                                temperature[idx] = 1f
+            // Place seed points with rotational symmetry
+            for (s in 0 until numSeeds) {
+                val dist = if (numSeeds == 1) 0f else rng.range(gridSize * 0.05f, gridSize * 0.25f)
+                val baseAngle = if (numSeeds == 1) 0f else rng.randomAngle()
+                for (r in 0 until symmetry) {
+                    val angle = baseAngle + r * (2.0 * PI / symmetry).toFloat()
+                    val centerX = (cx + dist * cos(angle)).roundToInt().coerceIn(0, lastIdx)
+                    val centerY = (cy + dist * sin(angle)).roundToInt().coerceIn(0, lastIdx)
+                    for (dy in -seedRadius..seedRadius) {
+                        for (dx in -seedRadius..seedRadius) {
+                            if (dx * dx + dy * dy <= seedRadius * seedRadius) {
+                                val sx = (centerX + dx).coerceIn(0, lastIdx)
+                                val sy = (centerY + dy).coerceIn(0, lastIdx)
+                                val idx = sy * gridSize + sx
+                                if (!crystal[idx]) {
+                                    crystal[idx] = true
+                                    growthOrder[idx] = growthCount++
+                                    grainId[idx] = s
+                                    temperature[idx] = 1f
+                                }
                             }
                         }
                     }
                 }
             }
+
+            SimState(
+                gridSize, seed, numSeeds, undercooling, undercoolingGradient,
+                seedRadius, symmetry, anisotropy, interfaceLayers, thermalNoise,
+                crystal, growthOrder, grainId, temperature, rng,
+                growthCount, 0
+            )
+        }
+        cachedSim = sim
+
+        val crystal = sim.crystal
+        val growthOrder = sim.growthOrder
+        val grainId = sim.grainId
+        val temperature = sim.temperature
+        val rng = sim.rng
+        var growthCount = sim.growthCount
+
+        // Pre-compute rotation tables for symmetry (eliminates per-rotation trig)
+        val rotCos = DoubleArray(symmetry) { cos(it * 2.0 * PI / symmetry) }
+        val rotSin = DoubleArray(symmetry) { sin(it * 2.0 * PI / symmetry) }
+
+        // Flat candidate arrays (replace LinkedHashMap — no boxing, no hashing)
+        val rci = reuseCandIdx
+        val candIdx: IntArray
+        if (rci != null && rci.size >= totalCells) {
+            candIdx = rci
+        } else {
+            candIdx = IntArray(totalCells)
+            reuseCandIdx = candIdx
+        }
+        val rcg = reuseCandGrain
+        val candGrain: IntArray
+        if (rcg != null && rcg.size >= totalCells) {
+            candGrain = rcg
+        } else {
+            candGrain = IntArray(totalCells)
+            reuseCandGrain = candGrain
         }
 
-        // Evolve: each step, find boundary empty cells and grow with probability
-        val dx4 = intArrayOf(0, 1, 0, -1)
-        val dy4 = intArrayOf(-1, 0, 1, 0)
+        val invGridSize = 1f / gridSize
 
-        for (step in 0 until steps) {
-            // Collect boundary candidates based on interfaceLayers
-            // Each candidate also stores the grain ID of the nearest crystal neighbor
-            val candidateSet = LinkedHashMap<Int, Int>() // idx -> nearest grain ID
+        // ---- Advance simulation from stepsDone to targetSteps ----
+        for (step in sim.stepsDone until targetSteps) {
+            // Collect boundary candidates using flat arrays
+            var candCount = 0
             for (y in 0 until gridSize) {
+                val rowOff = y * gridSize
                 for (x in 0 until gridSize) {
-                    val idx = y * gridSize + x
+                    val idx = rowOff + x
                     if (crystal[idx]) continue
+
                     var nearestDist = Int.MAX_VALUE
                     var nearestGrain = -1
-                    // Search in a square of radius interfaceLayers
                     for (dy in -interfaceLayers..interfaceLayers) {
+                        val ny = y + dy
+                        if (ny < 0 || ny > lastIdx) continue
+                        val nRowOff = ny * gridSize
                         for (dx in -interfaceLayers..interfaceLayers) {
                             val nx = x + dx
-                            val ny = y + dy
-                            if (nx in 0 until gridSize && ny in 0 until gridSize) {
-                                val nIdx = ny * gridSize + nx
-                                if (crystal[nIdx]) {
-                                    val dist = abs(dx) + abs(dy) // Manhattan distance
-                                    if (dist < nearestDist) {
-                                        nearestDist = dist
-                                        nearestGrain = grainId[nIdx]
-                                    }
+                            if (nx < 0 || nx > lastIdx) continue
+                            val nIdx = nRowOff + nx
+                            if (crystal[nIdx]) {
+                                val dist = abs(dx) + abs(dy)
+                                if (dist < nearestDist) {
+                                    nearestDist = dist
+                                    nearestGrain = grainId[nIdx]
                                 }
                             }
                         }
                     }
                     if (nearestDist <= interfaceLayers) {
-                        candidateSet[idx] = nearestGrain
+                        candIdx[candCount] = idx
+                        candGrain[candCount] = nearestGrain
+                        candCount++
                     }
                 }
             }
 
-            // Grow candidates with symmetry
-            for ((candIdx, candGrain) in candidateSet) {
-                val candX = candIdx % gridSize
-                val candY = candIdx / gridSize
+            // Grow candidates
+            val aniso10 = anisotropy * 10f
+            for (c in 0 until candCount) {
+                val cIdx = candIdx[c]
+                val candX = cIdx % gridSize
+                val candY = cIdx / gridSize
 
-                // Compute local undercooling with spatial gradient (left-to-right)
-                val xFrac = candX.toFloat() / gridSize.toFloat() // 0 on left, 1 on right
-                val localUndercooling = (undercooling + undercoolingGradient * (xFrac - 0.5f))
+                // Spatial gradient
+                val localUndercooling = (undercooling + undercoolingGradient * (candX * invGridSize - 0.5f))
                     .coerceIn(0.01f, 0.99f)
 
-                // Compute anisotropy factor: boost probability along symmetry axes
-                val relX = (candX - cx).toFloat()
-                val relY = (candY - cy).toFloat()
+                // Simplified anisotropy: cos(angle * symmetry) is equivalent to the sector computation
+                val relX = (candX - cx).toDouble()
+                val relY = (candY - cy).toDouble()
                 val cellAngle = atan2(relY, relX)
-                // Angular distance to the nearest symmetry axis
-                val sectorAngle = (2.0 * PI / symmetry).toFloat()
-                val angleInSector = ((cellAngle % sectorAngle) + sectorAngle) % sectorAngle
-                val distToAxis = if (angleInSector <= sectorAngle / 2f) angleInSector else sectorAngle - angleInSector
-                // anisotropy factor: 1.0 on axis, reduced off axis
-                // cos^2 shape: maximum at axis, minimum at midpoint between axes
-                val anisotropyFactor = 1f + anisotropy * 10f * cos(distToAxis * symmetry).coerceIn(-1f, 1f)
+                val anisotropyFactor = 1f + aniso10 * cos(cellAngle * symmetry).toFloat()
 
-                // Thermal noise perturbation
                 val noisePerturbation = if (thermalNoise > 0f) {
                     rng.range(-thermalNoise, thermalNoise)
                 } else 0f
 
-                // Final growth probability
                 val growProb = (localUndercooling * anisotropyFactor + noisePerturbation)
                     .coerceIn(0f, 1f)
 
                 if (rng.random() < growProb) {
-                    // Apply rotational symmetry
+                    val cGrain = candGrain[c]
                     val relXi = candX - cx
                     val relYi = candY - cy
                     for (r in 0 until symmetry) {
-                        val angle = r * (2.0 * PI / symmetry)
-                        val rotX = (relXi * cos(angle) - relYi * sin(angle)).roundToInt() + cx
-                        val rotY = (relXi * sin(angle) + relYi * cos(angle)).roundToInt() + cy
-                        if (rotX in 0 until gridSize && rotY in 0 until gridSize) {
+                        val rotX = (relXi * rotCos[r] - relYi * rotSin[r]).roundToInt() + cx
+                        val rotY = (relXi * rotSin[r] + relYi * rotCos[r]).roundToInt() + cy
+                        if (rotX in 0..lastIdx && rotY in 0..lastIdx) {
                             val rIdx = rotY * gridSize + rotX
                             if (!crystal[rIdx]) {
                                 crystal[rIdx] = true
                                 growthOrder[rIdx] = growthCount++
-                                grainId[rIdx] = candGrain
+                                grainId[rIdx] = cGrain
                                 temperature[rIdx] = 1f
                             }
                         }
@@ -217,40 +283,51 @@ class CrystalGrowthGenerator : Generator {
                 }
             }
 
-            // Decay temperature field each step (for temperature-based coloring)
+            // Decay temperature field
             for (i in 0 until totalCells) {
                 temperature[i] *= 0.98f
             }
-            // Heat up cells that just grew (already set to 1f above)
+        }
+        sim.growthCount = growthCount
+        sim.stepsDone = targetSteps
+
+        // ---- Phase 1: Compute color per grid cell ----
+        val gridColors: IntArray
+        val rgc = reuseGridColors
+        if (rgc != null && rgc.size >= totalCells) {
+            gridColors = rgc
+        } else {
+            gridColors = IntArray(totalCells)
+            reuseGridColors = gridColors
         }
 
-        // Render to bitmap
-        val pixels = IntArray(w * h)
-        val cellW = w.toFloat() / gridSize
-        val cellH = h.toFloat() / gridSize
         val maxOrder = growthCount.coerceAtLeast(1)
+        val palLutSize = 256
+        val palLutMax = palLutSize - 1
+        val palLut = IntArray(palLutSize) { palette.lerpColor(it.toFloat() / palLutMax) }
 
-        // Precompute distance-to-crystal for temperature mode background glow
-        // Simple: use temperature array values for crystal cells, for non-crystal compute
-        // a proximity-based heat value by checking distance to nearest crystal cell
-        val heatField = FloatArray(totalCells)
-        if (colorMode == "temperature" || colorMode == "composite") {
-            // Diffuse: run a few blur passes on the temperature field including crystal contributions
+        // Heat field for temperature/composite background glow
+        val needHeat = colorMode == "temperature" || colorMode == "composite"
+        val heatField: FloatArray?
+        if (needHeat) {
+            heatField = FloatArray(totalCells)
             for (i in 0 until totalCells) {
                 heatField[i] = if (crystal[i]) temperature[i].coerceIn(0f, 1f) else 0f
             }
-            // Simple box-blur diffusion, 3 passes
             val temp = FloatArray(totalCells)
+            val dx4 = intArrayOf(0, 1, 0, -1)
+            val dy4 = intArrayOf(-1, 0, 1, 0)
             for (pass in 0..2) {
                 for (y in 0 until gridSize) {
+                    val rowOff = y * gridSize
                     for (x in 0 until gridSize) {
-                        val idx = y * gridSize + x
+                        val idx = rowOff + x
                         var sum = heatField[idx]
                         var count = 1
                         for (d in 0..3) {
                             val nx = x + dx4[d]
                             val ny = y + dy4[d]
-                            if (nx in 0 until gridSize && ny in 0 until gridSize) {
+                            if (nx in 0..lastIdx && ny in 0..lastIdx) {
                                 sum += heatField[ny * gridSize + nx]
                                 count++
                             }
@@ -260,9 +337,11 @@ class CrystalGrowthGenerator : Generator {
                 }
                 System.arraycopy(temp, 0, heatField, 0, totalCells)
             }
+        } else {
+            heatField = null
         }
 
-        // Determine unique grain count for grain coloring
+        // Grain count for grain coloring
         val grainCount = if (colorMode == "grain") {
             var maxGrain = 0
             for (i in 0 until totalCells) {
@@ -271,64 +350,80 @@ class CrystalGrowthGenerator : Generator {
             (maxGrain + 1).coerceAtLeast(1)
         } else 1
 
-        for (py in 0 until h) {
-            val gy = (py / cellH).toInt().coerceAtMost(gridSize - 1)
-            for (px in 0 until w) {
-                val gx = (px / cellW).toInt().coerceAtMost(gridSize - 1)
-                val idx = gy * gridSize + gx
-                pixels[py * w + px] = if (crystal[idx]) {
-                    when (colorMode) {
-                        "temperature" -> {
-                            // Color by temperature: recently grown cells are hot
-                            val t = temperature[idx].coerceIn(0f, 1f)
-                            palette.lerpColor(t)
-                        }
-                        "composite" -> {
-                            // Blend phase (growth order) and temperature
-                            val phaseT = growthOrder[idx].toFloat() / maxOrder
-                            val tempT = temperature[idx].coerceIn(0f, 1f)
-                            val blended = phaseT * 0.6f + tempT * 0.4f
-                            palette.lerpColor(blended.coerceIn(0f, 1f))
-                        }
-                        "grain" -> {
-                            // Each grain gets a distinct palette hue band
-                            val g = grainId[idx]
-                            if (g >= 0) {
-                                val grainBase = g.toFloat() / grainCount
-                                val orderWithinGrain = growthOrder[idx].toFloat() / maxOrder
-                                // Map to a narrow band within the palette for this grain
-                                val bandWidth = 1f / grainCount
-                                val t = grainBase + orderWithinGrain * bandWidth * 0.8f
-                                palette.lerpColor(t.coerceIn(0f, 1f))
-                            } else {
-                                palette.lerpColor(0f)
-                            }
-                        }
-                        else -> {
-                            // "phase" mode: color by growth order
-                            val t = growthOrder[idx].toFloat() / maxOrder
-                            palette.lerpColor(t)
+        val invMaxOrder = 1f / maxOrder
+        val invGrainCount = 1f / grainCount
+
+        for (i in 0 until totalCells) {
+            if (crystal[i]) {
+                gridColors[i] = when (colorMode) {
+                    "temperature" -> {
+                        palLut[(temperature[i].coerceIn(0f, 1f) * palLutMax).toInt().coerceIn(0, palLutMax)]
+                    }
+                    "composite" -> {
+                        val phaseT = growthOrder[i] * invMaxOrder
+                        val tempT = temperature[i].coerceIn(0f, 1f)
+                        val blended = (phaseT * 0.6f + tempT * 0.4f).coerceIn(0f, 1f)
+                        palLut[(blended * palLutMax).toInt().coerceIn(0, palLutMax)]
+                    }
+                    "grain" -> {
+                        val g = grainId[i]
+                        if (g >= 0) {
+                            val grainBase = g * invGrainCount
+                            val orderWithin = growthOrder[i] * invMaxOrder
+                            val bandWidth = invGrainCount
+                            val t = (grainBase + orderWithin * bandWidth * 0.8f).coerceIn(0f, 1f)
+                            palLut[(t * palLutMax).toInt().coerceIn(0, palLutMax)]
+                        } else {
+                            palLut[0]
                         }
                     }
-                } else {
-                    // Background: for temperature/composite modes, show a faint thermal glow
-                    if ((colorMode == "temperature" || colorMode == "composite") && heatField[idx] > 0.01f) {
-                        val t = heatField[idx].coerceIn(0f, 1f)
-                        // Faint background glow: interpolate from black toward the palette's warm end
-                        val glowColor = palette.lerpColor(t)
-                        val alpha = (t * 0.3f).coerceIn(0f, 1f)
-                        val r = (Color.red(glowColor) * alpha).toInt()
-                        val g = (Color.green(glowColor) * alpha).toInt()
-                        val b = (Color.blue(glowColor) * alpha).toInt()
-                        Color.rgb(r, g, b)
-                    } else {
-                        Color.BLACK
+                    else /* phase */ -> {
+                        val t = growthOrder[i] * invMaxOrder
+                        palLut[(t * palLutMax).toInt().coerceIn(0, palLutMax)]
                     }
                 }
+            } else if (needHeat && heatField!![i] > 0.01f) {
+                val t = heatField[i].coerceIn(0f, 1f)
+                val glowColor = palLut[(t * palLutMax).toInt().coerceIn(0, palLutMax)]
+                val alpha = (t * 0.3f).coerceIn(0f, 1f)
+                gridColors[i] = Color.rgb(
+                    (Color.red(glowColor) * alpha).toInt(),
+                    (Color.green(glowColor) * alpha).toInt(),
+                    (Color.blue(glowColor) * alpha).toInt()
+                )
+            } else {
+                gridColors[i] = Color.BLACK
+            }
+        }
+
+        // ---- Phase 2: Expand grid colors to full pixel array ----
+        val pixels: IntArray
+        val rp = reusePixels
+        val pixelCount = w * h
+        if (rp != null && rp.size >= pixelCount) {
+            pixels = rp
+        } else {
+            pixels = IntArray(pixelCount)
+            reusePixels = pixels
+        }
+
+        val xMap = IntArray(w) { (it * gridSize / w).coerceAtMost(lastIdx) }
+        for (py in 0 until h) {
+            val gy = (py * gridSize / h).coerceAtMost(lastIdx)
+            val gridRow = gy * gridSize
+            val pixRow = py * w
+            for (px in 0 until w) {
+                pixels[pixRow + px] = gridColors[gridRow + xMap[px]]
             }
         }
 
         bitmap.setPixels(pixels, 0, w, 0, 0, w, h)
         canvas.drawBitmap(bitmap, 0f, 0f, null)
+    }
+
+    override fun estimateCost(params: Map<String, Any>, quality: Quality): Float {
+        val gridSize = (params["gridSize"] as? Number)?.toInt() ?: 128
+        val warmupSteps = (params["warmupSteps"] as? Number)?.toInt() ?: 600
+        return (gridSize * gridSize.toLong() * warmupSteps / 100_000_000f).coerceIn(0.1f, 1f)
     }
 }

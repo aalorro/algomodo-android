@@ -41,6 +41,21 @@ class IsingModelGenerator : Generator {
         "boundary" to "periodic"
     )
 
+    // ---- Simulation cache: avoids re-running all sweeps from scratch each frame ----
+    private class SimState(
+        val gridSize: Int,
+        val seed: Int,
+        val boundary: String,
+        val spin: IntArray,
+        val flipAge: IntArray,
+        var sweepsDone: Int,
+        var rngState: Long
+    )
+
+    @Volatile private var cachedSim: SimState? = null
+    @Volatile private var reuseGridColors: IntArray? = null
+    @Volatile private var reusePixels: IntArray? = null
+
     override fun renderCanvas(
         canvas: Canvas,
         bitmap: Bitmap,
@@ -60,112 +75,198 @@ class IsingModelGenerator : Generator {
 
         val w = bitmap.width
         val h = bitmap.height
-        // Use iterations as warmup, then animate with sweepsPerFrame
-        val sweeps = iterations + (time * sweepsPerFrame).toInt()
-        val totalCells = gridSize * gridSize
+        val N = gridSize
+        val totalCells = N * N
+        val targetSweeps = iterations + (time * sweepsPerFrame).toInt()
+        val periodic = boundary == "periodic"
 
-        // Initialize spins randomly from seed
-        val rng = SeededRNG(seed)
-        val spin = IntArray(totalCells) {
-            if (rng.boolean()) 1 else -1
+        // ---- Get or create simulation state (cache across frames) ----
+        val sim = cachedSim?.takeIf {
+            it.gridSize == N && it.seed == seed &&
+                it.boundary == boundary && it.sweepsDone <= targetSweeps
+        } ?: run {
+            val rng = SeededRNG(seed)
+            val spin = IntArray(totalCells) { if (rng.boolean()) 1 else -1 }
+            val flipAge = IntArray(totalCells) { -1 }
+            SimState(N, seed, boundary, spin, flipAge, 0,
+                seed.toLong() xor 0x5DEECE66DL xor (seed.toLong() shl 32))
         }
+        cachedSim = sim
 
+        // ---- Precompute Boltzmann acceptance LUT ----
+        // For each (spin, neighborSum) pair, precompute acceptance probability.
+        // Eliminates exp() from the hot loop entirely.
+        // Index: acceptLut[sIdx][neighborSum + 4]
+        //   sIdx: s=+1 → 0, s=-1 → 1
+        //   neighborSum ∈ [-4, 4] → index [0, 8]
         val beta = 1f / temperature
-
-        // Track flip-age for flip-age display mode (step when each cell was last flipped)
-        val flipAge = IntArray(totalCells) { -1 }
-
-        // Metropolis Monte Carlo sweeps
-        for (sweep in 0 until sweeps) {
-            // Each sweep: attempt N*N flips
-            for (attempt in 0 until totalCells) {
-                val x = rng.integer(0, gridSize - 1)
-                val y = rng.integer(0, gridSize - 1)
-                val idx = y * gridSize + x
-                val s = spin[idx]
-
-                // Sum of neighbors, respecting boundary mode
-                val neighborSum = if (boundary == "open") {
-                    var sum = 0
-                    if (y > 0) sum += spin[(y - 1) * gridSize + x]
-                    if (y < gridSize - 1) sum += spin[(y + 1) * gridSize + x]
-                    if (x > 0) sum += spin[y * gridSize + (x - 1)]
-                    if (x < gridSize - 1) sum += spin[y * gridSize + (x + 1)]
-                    sum
-                } else {
-                    // periodic (torus)
-                    val top = spin[((y - 1 + gridSize) % gridSize) * gridSize + x]
-                    val bottom = spin[((y + 1) % gridSize) * gridSize + x]
-                    val left = spin[y * gridSize + (x - 1 + gridSize) % gridSize]
-                    val right = spin[y * gridSize + (x + 1) % gridSize]
-                    top + bottom + left + right
-                }
-
-                // Energy change for flipping, including external field contribution
-                // dE = 2*s*sum(neighbors) + 2*s*H
-                val dEBase = 2 * s * neighborSum
-                val dEField = 2f * s * externalField
-                val dETotal = dEBase + dEField
-                // Use precomputed table for base lattice dE, and direct Boltzmann for field correction
-                val acceptP = if (dETotal <= 0f) 1f else exp(-beta * dETotal).coerceAtMost(1f)
-
-                if (rng.random() < acceptP) {
-                    spin[idx] = -s
-                    flipAge[idx] = sweep
-                }
+        val acceptLut = Array(2) { sIdx ->
+            val s = if (sIdx == 0) 1f else -1f
+            FloatArray(9) { nsIdx ->
+                val nsum = nsIdx - 4
+                val dE = 2f * s * (nsum + externalField)
+                if (dE <= 0f) 1f else exp((-beta * dE).toDouble()).toFloat().coerceAtMost(1f)
             }
         }
 
-        // Render based on displayMode
-        val cellW = w.toFloat() / gridSize
-        val cellH = h.toFloat() / gridSize
-        val pixels = IntArray(w * h)
-        val colorUp = palette.colorAt(0)
-        val colorDown = palette.colorAt(palette.colorInts().size - 1)
+        // ---- Advance simulation: checkerboard Metropolis ----
+        // Checkerboard update: process even/odd cells in alternating half-sweeps.
+        // Each cell's 4 neighbors are on the opposite parity → no data races.
+        // Eliminates random x,y selection (2 fewer RNG calls per flip).
+        // Uses fast xorshift64 instead of full SeededRNG.
+        var rng = sim.rngState
+        val spin = sim.spin
+        val flipAge = sim.flipAge
 
-        for (py in 0 until h) {
-            val gy = (py / cellH).toInt().coerceAtMost(gridSize - 1)
-            for (px in 0 until w) {
-                val gx = (px / cellW).toInt().coerceAtMost(gridSize - 1)
-                val idx = gy * gridSize + gx
+        for (sweep in sim.sweepsDone until targetSweeps) {
+            for (parity in 0..1) {
+                for (y in 0 until N) {
+                    val rowOff = y * N
+                    val topOff: Int
+                    val botOff: Int
+                    if (periodic) {
+                        topOff = (if (y > 0) y - 1 else N - 1) * N
+                        botOff = (if (y < N - 1) y + 1 else 0) * N
+                    } else {
+                        topOff = if (y > 0) (y - 1) * N else -1
+                        botOff = if (y < N - 1) (y + 1) * N else -1
+                    }
+                    var x = (y + parity) and 1
+                    while (x < N) {
+                        val idx = rowOff + x
+                        val s = spin[idx]
+                        val sIdx = (1 - s) ushr 1 // s=1→0, s=-1→1
 
-                pixels[py * w + px] = when (displayMode) {
-                    "palette" -> if (spin[idx] == 1) colorUp else colorDown
-                    "local-mag" -> {
-                        // 3x3 local magnetization average mapped to palette gradient
+                        // Neighbor sum (4 reads for periodic, 2-4 for open)
+                        var nsum = 0
+                        if (topOff >= 0) nsum += spin[topOff + x]
+                        if (botOff >= 0) nsum += spin[botOff + x]
+                        if (periodic) {
+                            nsum += spin[rowOff + (if (x > 0) x - 1 else N - 1)]
+                            nsum += spin[rowOff + (if (x < N - 1) x + 1 else 0)]
+                        } else {
+                            if (x > 0) nsum += spin[idx - 1]
+                            if (x < N - 1) nsum += spin[idx + 1]
+                        }
+
+                        // Fast xorshift64 RNG
+                        rng = rng xor (rng shl 13)
+                        rng = rng xor (rng ushr 7)
+                        rng = rng xor (rng shl 17)
+                        val r = (rng ushr 40 and 0xFFFFFFL).toFloat() / 16777216f
+
+                        if (r < acceptLut[sIdx][nsum + 4]) {
+                            spin[idx] = -s
+                            flipAge[idx] = sweep
+                        }
+                        x += 2
+                    }
+                }
+            }
+        }
+        sim.sweepsDone = targetSweeps
+        sim.rngState = rng
+
+        // ---- Phase 1: Compute color per grid cell (not per pixel) ----
+        val gridColors: IntArray
+        val rgc = reuseGridColors
+        if (rgc != null && rgc.size >= totalCells) {
+            gridColors = rgc
+        } else {
+            gridColors = IntArray(totalCells)
+            reuseGridColors = gridColors
+        }
+
+        when (displayMode) {
+            "palette" -> {
+                val colorUp = palette.colorAt(0)
+                val colorDown = palette.colorAt(palette.colorInts().size - 1)
+                for (i in 0 until totalCells) {
+                    gridColors[i] = if (spin[i] == 1) colorUp else colorDown
+                }
+            }
+            "local-mag" -> {
+                // Pre-compute 3×3 local magnetization per grid cell → palette color.
+                // 16K computations instead of 2.6M (one per pixel).
+                val palLutSize = 256
+                val palLutMax = palLutSize - 1
+                val palLut = IntArray(palLutSize) { palette.lerpColor(it.toFloat() / palLutMax) }
+                for (gy in 0 until N) {
+                    for (gx in 0 until N) {
                         var localSum = 0
                         var count = 0
                         for (dy in -1..1) {
                             for (dx in -1..1) {
-                                val nx = (gx + dx + gridSize) % gridSize
-                                val ny = (gy + dy + gridSize) % gridSize
-                                localSum += spin[ny * gridSize + nx]
+                                val nx: Int; val ny: Int
+                                if (periodic) {
+                                    nx = (gx + dx + N) % N
+                                    ny = (gy + dy + N) % N
+                                } else {
+                                    nx = gx + dx; ny = gy + dy
+                                    if (nx !in 0 until N || ny !in 0 until N) continue
+                                }
+                                localSum += spin[ny * N + nx]
                                 count++
                             }
                         }
-                        val mag = (localSum.toFloat() / count + 1f) / 2f // normalize -1..1 to 0..1
-                        palette.lerpColor(mag.coerceIn(0f, 1f))
-                    }
-                    "flip-age" -> {
-                        // Color by how recently the cell was last flipped
-                        if (flipAge[idx] < 0) {
-                            Color.BLACK
-                        } else {
-                            // Use time-since-last-flip relative to a window, not total sweeps
-                            val window = (sweeps * 0.15f).toInt().coerceAtLeast(5)
-                            val timeSinceFlip = sweeps - flipAge[idx]
-                            val recency = (1f - timeSinceFlip.toFloat() / window).coerceIn(0f, 1f)
-                            palette.lerpColor(recency)
-                        }
-                    }
-                    else /* spin */ -> {
-                        if (spin[idx] == 1) colorUp else colorDown
+                        val mag = (localSum.toFloat() / count + 1f) * 0.5f
+                        gridColors[gy * N + gx] = palLut[(mag * palLutMax).toInt().coerceIn(0, palLutMax)]
                     }
                 }
+            }
+            "flip-age" -> {
+                val palLutSize = 256
+                val palLutMax = palLutSize - 1
+                val palLut = IntArray(palLutSize) { palette.lerpColor(it.toFloat() / palLutMax) }
+                val window = (targetSweeps * 0.15f).toInt().coerceAtLeast(5)
+                val invWindow = 1f / window
+                for (i in 0 until totalCells) {
+                    gridColors[i] = if (flipAge[i] < 0) {
+                        Color.BLACK
+                    } else {
+                        val recency = (1f - (targetSweeps - flipAge[i]) * invWindow).coerceIn(0f, 1f)
+                        palLut[(recency * palLutMax).toInt().coerceIn(0, palLutMax)]
+                    }
+                }
+            }
+            else /* spin */ -> {
+                val colorUp = palette.colorAt(0)
+                val colorDown = palette.colorAt(palette.colorInts().size - 1)
+                for (i in 0 until totalCells) {
+                    gridColors[i] = if (spin[i] == 1) colorUp else colorDown
+                }
+            }
+        }
+
+        // ---- Phase 2: Expand grid colors to full pixel array ----
+        val pixels: IntArray
+        val rp = reusePixels
+        val pixelCount = w * h
+        if (rp != null && rp.size >= pixelCount) {
+            pixels = rp
+        } else {
+            pixels = IntArray(pixelCount)
+            reusePixels = pixels
+        }
+
+        // Pre-compute x → grid column mapping (avoids per-pixel division)
+        val xMap = IntArray(w) { (it * N / w).coerceAtMost(N - 1) }
+        for (py in 0 until h) {
+            val gy = (py * N / h).coerceAtMost(N - 1)
+            val gridRow = gy * N
+            val pixRow = py * w
+            for (px in 0 until w) {
+                pixels[pixRow + px] = gridColors[gridRow + xMap[px]]
             }
         }
 
         bitmap.setPixels(pixels, 0, w, 0, 0, w, h)
         canvas.drawBitmap(bitmap, 0f, 0f, null)
+    }
+
+    override fun estimateCost(params: Map<String, Any>, quality: Quality): Float {
+        val gridSize = (params["gridSize"] as? Number)?.toInt() ?: 128
+        val iterations = (params["iterations"] as? Number)?.toInt() ?: 300
+        return (gridSize * gridSize.toLong() * iterations / 50_000_000f).coerceIn(0.1f, 1f)
     }
 }
