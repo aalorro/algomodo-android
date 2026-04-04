@@ -75,8 +75,87 @@ class StrangeAttractorDensityGenerator : Generator {
     @Volatile private var reuseColorAcc: FloatArray? = null
     @Volatile private var reusePixels: IntArray? = null
 
+    // Cached quality-checked base params per seed+attractor to avoid recomputing each frame
+    private var cachedSeed = Int.MIN_VALUE
+    private var cachedAttIdx = -1
+    private var cachedA = 0f; private var cachedB = 0f
+    private var cachedC = 0f; private var cachedD = 0f
+
     private fun fSin(x: Float): Float = SIN_LUT[(x * INV_2PI_LUT).toInt() and LUT_MASK]
     private fun fCos(x: Float): Float = COS_LUT[(x * INV_2PI_LUT).toInt() and LUT_MASK]
+
+    /** Estimate Lyapunov exponent — positive means chaotic (interesting). */
+    private fun estimateLyapunov(attIdx: Int, a: Float, b: Float, c: Float, d: Float): Float {
+        val bSafe = if (attIdx == ATT_BEDHEAD && abs(b) < 0.01f) 0.01f else b
+        var x = 0.1f; var y = 0.1f
+        var lyap = 0f
+        val n = 1000
+        for (i in 0 until 200 + n) {
+            val nx: Float; val ny: Float
+            // Compute next point
+            when (attIdx) {
+                ATT_CLIFFORD -> { nx = fSin(a * y) + c * fCos(a * x); ny = fSin(b * x) + d * fCos(b * y) }
+                ATT_DEJONG -> { nx = fSin(a * y) - fCos(b * x); ny = fSin(c * x) - fCos(d * y) }
+                ATT_SVENSSON -> { nx = d * fSin(a * x) - fSin(b * y); ny = c * fCos(a * x) + fCos(b * y) }
+                else -> { nx = fSin(x * y / bSafe) * y + fCos(a * x - y); ny = x + fSin(y) / bSafe }
+            }
+            if (!nx.isFinite() || !ny.isFinite() || abs(nx) > 1e6f || abs(ny) > 1e6f) return -1f
+            if (i >= 200) {
+                val dx = nx - x; val dy = ny - y
+                val dist = sqrt(dx * dx + dy * dy)
+                if (dist > 1e-12f) lyap += ln(dist)
+            }
+            x = nx; y = ny
+        }
+        return lyap / n
+    }
+
+    /** Find quality-checked params: try perturbations until we get a chaotic attractor. */
+    private fun findGoodParams(seed: Int, attIdx: Int): FloatArray {
+        if (cachedSeed == seed && cachedAttIdx == attIdx) {
+            return floatArrayOf(cachedA, cachedB, cachedC, cachedD)
+        }
+        val rng = SeededRNG(seed)
+        var bestA = rng.range(-2.5f, 2.5f)
+        var bestB = rng.range(-2.5f, 2.5f)
+        var bestC = rng.range(-2.5f, 2.5f)
+        var bestD = rng.range(-2.5f, 2.5f)
+        var bestLyap = estimateLyapunov(attIdx, bestA, bestB, bestC, bestD)
+
+        if (bestLyap < 0.3f) {
+            // Try perturbations with a secondary RNG
+            val rng2 = SeededRNG(seed xor 0x5A5A5A5A.toInt())
+            for (attempt in 0 until 16) {
+                val pa = bestA + rng2.range(-0.8f, 0.8f)
+                val pb = bestB + rng2.range(-0.8f, 0.8f)
+                val pc = bestC + rng2.range(-0.8f, 0.8f)
+                val pd = bestD + rng2.range(-0.8f, 0.8f)
+                val lyap = estimateLyapunov(attIdx, pa, pb, pc, pd)
+                if (lyap > bestLyap) {
+                    bestA = pa; bestB = pb; bestC = pc; bestD = pd; bestLyap = lyap
+                    if (lyap >= 0.3f) break
+                }
+            }
+            // If still bad, try fully random params
+            if (bestLyap < 0.1f) {
+                for (attempt in 0 until 12) {
+                    val pa = rng2.range(-2.5f, 2.5f)
+                    val pb = rng2.range(-2.5f, 2.5f)
+                    val pc = rng2.range(-2.5f, 2.5f)
+                    val pd = rng2.range(-2.5f, 2.5f)
+                    val lyap = estimateLyapunov(attIdx, pa, pb, pc, pd)
+                    if (lyap > bestLyap) {
+                        bestA = pa; bestB = pb; bestC = pc; bestD = pd; bestLyap = lyap
+                        if (lyap >= 0.3f) break
+                    }
+                }
+            }
+        }
+
+        cachedSeed = seed; cachedAttIdx = attIdx
+        cachedA = bestA; cachedB = bestB; cachedC = bestC; cachedD = bestD
+        return floatArrayOf(bestA, bestB, bestC, bestD)
+    }
 
     override fun renderCanvas(
         canvas: Canvas,
@@ -98,8 +177,8 @@ class StrangeAttractorDensityGenerator : Generator {
         val isAnim = time > 0f
 
         val scaledIterations = when {
-            isAnim && quality == Quality.DRAFT -> iterations / 5
-            isAnim -> iterations * 2 / 5
+            isAnim && quality == Quality.DRAFT -> iterations / 4
+            isAnim -> iterations * 3 / 5
             quality == Quality.DRAFT -> iterations / 3
             quality == Quality.ULTRA -> iterations * 2
             else -> iterations
@@ -110,19 +189,20 @@ class StrangeAttractorDensityGenerator : Generator {
         val renderH = if (isAnim) (h * 3 / 5).coerceAtLeast(h / 2) else h
         val histSz = renderW * renderH
 
-        val rng = SeededRNG(seed)
-        val anim = time * speed * 0.1f
-
-        val a = rng.range(-2.5f, 2.5f) + sin(anim * 0.7f) * 0.15f
-        val b = rng.range(-2.5f, 2.5f) + cos(anim * 0.9f) * 0.15f
-        val c = rng.range(-2.5f, 2.5f) + sin(anim * 1.1f) * 0.15f
-        val d = rng.range(-2.5f, 2.5f) + cos(anim * 1.3f) * 0.15f
-
         val attIdx = when (attractor) {
             "clifford" -> ATT_CLIFFORD; "dejong" -> ATT_DEJONG
             "svensson" -> ATT_SVENSSON; "bedhead" -> ATT_BEDHEAD
             else -> ATT_CLIFFORD
         }
+
+        // Quality-checked base params (cached per seed+attractor)
+        val baseParams = findGoodParams(seed, attIdx)
+        val anim = time * speed * 0.1f
+        val a = baseParams[0] + sin(anim * 0.7f) * 0.15f
+        val b = baseParams[1] + cos(anim * 0.9f) * 0.15f
+        val c = baseParams[2] + sin(anim * 1.1f) * 0.15f
+        val d = baseParams[3] + cos(anim * 1.3f) * 0.15f
+
         val bSafe = if (attIdx == ATT_BEDHEAD && abs(b) < 0.01f) 0.01f else b
         val trackExtra = colorMode == "velocity" || colorMode == "angle"
 
@@ -152,8 +232,8 @@ class StrangeAttractorDensityGenerator : Generator {
         }
 
         // ---- Phase 1: Bounds estimation (quick pass, LUT trig) ----
-        val warmup = 100
-        val boundsIter = 5000.coerceAtMost(scaledIterations / 5)
+        val warmup = 200
+        val boundsIter = 10000.coerceAtMost(scaledIterations / 4)
         var bx = 0.1f; var by = 0.1f
         var minX = Float.MAX_VALUE; var maxX = -Float.MAX_VALUE
         var minY = Float.MAX_VALUE; var maxY = -Float.MAX_VALUE
@@ -189,8 +269,8 @@ class StrangeAttractorDensityGenerator : Generator {
             }
         }
 
-        val padX = (maxX - minX) * 0.1f
-        val padY = (maxY - minY) * 0.1f
+        val padX = (maxX - minX) * 0.05f
+        val padY = (maxY - minY) * 0.05f
         minX -= padX; maxX += padX; minY -= padY; maxY += padY
 
         if (!minX.isFinite() || !maxX.isFinite() || maxX <= minX || maxY <= minY) {
@@ -201,11 +281,13 @@ class StrangeAttractorDensityGenerator : Generator {
 
         val invRangeX = (renderW - 1f) / (maxX - minX)
         val invRangeY = (renderH - 1f) / (maxY - minY)
-        val rHm1 = renderH - 1
+        val rWm1f = (renderW - 2).toFloat()
+        val rHm1f = (renderH - 2).toFloat()
 
-        // ---- Phase 2: Multi-threaded histogram accumulation ----
-        // Attractor is ergodic — parallel trajectories from different starts converge.
-        // Shared histogram with benign races (occasional lost increment is invisible).
+        // ---- Phase 2: Multi-threaded histogram accumulation with bilinear splatting ----
+        // Bilinear splatting distributes each point to 4 neighboring pixels based on
+        // sub-pixel position, filling thin structures that fall between pixels.
+        // Uses ×16 fixed-point scale for integer histogram (benign races on shared array).
         val mainIter = (scaledIterations - warmup - boundsIter).coerceAtLeast(0)
         val cores = Runtime.getRuntime().availableProcessors().coerceIn(2, 8)
         val perThread = mainIter / cores
@@ -213,6 +295,7 @@ class StrangeAttractorDensityGenerator : Generator {
         val CL = COS_LUT
         val INV = INV_2PI_LUT
         val MASK = LUT_MASK
+        val rW = renderW
 
         val threads = Array(cores) { t ->
             Thread {
@@ -233,18 +316,25 @@ class StrangeAttractorDensityGenerator : Generator {
                     } else { tx = 0.1f; ty = 0.1f }
                 }
 
-                // Main histogram loop — attractor-specific inlined paths avoid per-iteration branching
+                // Main histogram loop — attractor-specific inlined paths with bilinear splatting
                 if (!trackExtra) {
-                    // DENSITY MODE: fully inlined LUT, no tracking overhead
                     when (attIdx) {
                         ATT_CLIFFORD -> {
                             for (i in 0 until perThread) {
                                 val nx = SL[(a * ty * INV).toInt() and MASK] + c * CL[(a * tx * INV).toInt() and MASK]
                                 val ny = SL[(b * tx * INV).toInt() and MASK] + d * CL[(b * ty * INV).toInt() and MASK]
                                 tx = nx; ty = ny
-                                val px = ((nx - minX) * invRangeX).toInt()
-                                val py = rHm1 - ((ny - minY) * invRangeY).toInt()
-                                if (px in 0 until renderW && py in 0 until renderH) histogram[py * renderW + px]++
+                                val fx = (nx - minX) * invRangeX
+                                val fy = (renderH - 1f) - (ny - minY) * invRangeY
+                                if (fx >= 0f && fx < rWm1f && fy >= 0f && fy < rHm1f) {
+                                    val ix = fx.toInt(); val iy = fy.toInt()
+                                    val sx = fx - ix; val sy = fy - iy
+                                    val idx = iy * rW + ix
+                                    histogram[idx] += ((1f - sx) * (1f - sy) * 16f).toInt()
+                                    histogram[idx + 1] += (sx * (1f - sy) * 16f).toInt()
+                                    histogram[idx + rW] += ((1f - sx) * sy * 16f).toInt()
+                                    histogram[idx + rW + 1] += (sx * sy * 16f).toInt()
+                                }
                             }
                         }
                         ATT_DEJONG -> {
@@ -252,9 +342,17 @@ class StrangeAttractorDensityGenerator : Generator {
                                 val nx = SL[(a * ty * INV).toInt() and MASK] - CL[(b * tx * INV).toInt() and MASK]
                                 val ny = SL[(c * tx * INV).toInt() and MASK] - CL[(d * ty * INV).toInt() and MASK]
                                 tx = nx; ty = ny
-                                val px = ((nx - minX) * invRangeX).toInt()
-                                val py = rHm1 - ((ny - minY) * invRangeY).toInt()
-                                if (px in 0 until renderW && py in 0 until renderH) histogram[py * renderW + px]++
+                                val fx = (nx - minX) * invRangeX
+                                val fy = (renderH - 1f) - (ny - minY) * invRangeY
+                                if (fx >= 0f && fx < rWm1f && fy >= 0f && fy < rHm1f) {
+                                    val ix = fx.toInt(); val iy = fy.toInt()
+                                    val sx = fx - ix; val sy = fy - iy
+                                    val idx = iy * rW + ix
+                                    histogram[idx] += ((1f - sx) * (1f - sy) * 16f).toInt()
+                                    histogram[idx + 1] += (sx * (1f - sy) * 16f).toInt()
+                                    histogram[idx + rW] += ((1f - sx) * sy * 16f).toInt()
+                                    histogram[idx + rW + 1] += (sx * sy * 16f).toInt()
+                                }
                             }
                         }
                         ATT_SVENSSON -> {
@@ -262,27 +360,42 @@ class StrangeAttractorDensityGenerator : Generator {
                                 val nx = d * SL[(a * tx * INV).toInt() and MASK] - SL[(b * ty * INV).toInt() and MASK]
                                 val ny = c * CL[(a * tx * INV).toInt() and MASK] + CL[(b * ty * INV).toInt() and MASK]
                                 tx = nx; ty = ny
-                                val px = ((nx - minX) * invRangeX).toInt()
-                                val py = rHm1 - ((ny - minY) * invRangeY).toInt()
-                                if (px in 0 until renderW && py in 0 until renderH) histogram[py * renderW + px]++
+                                val fx = (nx - minX) * invRangeX
+                                val fy = (renderH - 1f) - (ny - minY) * invRangeY
+                                if (fx >= 0f && fx < rWm1f && fy >= 0f && fy < rHm1f) {
+                                    val ix = fx.toInt(); val iy = fy.toInt()
+                                    val sx = fx - ix; val sy = fy - iy
+                                    val idx = iy * rW + ix
+                                    histogram[idx] += ((1f - sx) * (1f - sy) * 16f).toInt()
+                                    histogram[idx + 1] += (sx * (1f - sy) * 16f).toInt()
+                                    histogram[idx + rW] += ((1f - sx) * sy * 16f).toInt()
+                                    histogram[idx + rW + 1] += (sx * sy * 16f).toInt()
+                                }
                             }
                         }
                         else -> {
-                            // Bedhead — can diverge, needs validity check
                             for (i in 0 until perThread) {
                                 val nx = SL[(tx * ty / bSafe * INV).toInt() and MASK] * ty + CL[((a * tx - ty) * INV).toInt() and MASK]
                                 val ny = tx + SL[(ty * INV).toInt() and MASK] / bSafe
                                 if (nx.isFinite() && ny.isFinite() && abs(nx) < 1e6f && abs(ny) < 1e6f) {
                                     tx = nx; ty = ny
-                                    val px = ((nx - minX) * invRangeX).toInt()
-                                    val py = rHm1 - ((ny - minY) * invRangeY).toInt()
-                                    if (px in 0 until renderW && py in 0 until renderH) histogram[py * renderW + px]++
+                                    val fx = (nx - minX) * invRangeX
+                                    val fy = (renderH - 1f) - (ny - minY) * invRangeY
+                                    if (fx >= 0f && fx < rWm1f && fy >= 0f && fy < rHm1f) {
+                                        val ix = fx.toInt(); val iy = fy.toInt()
+                                        val sx = fx - ix; val sy = fy - iy
+                                        val idx = iy * rW + ix
+                                        histogram[idx] += ((1f - sx) * (1f - sy) * 16f).toInt()
+                                        histogram[idx + 1] += (sx * (1f - sy) * 16f).toInt()
+                                        histogram[idx + rW] += ((1f - sx) * sy * 16f).toInt()
+                                        histogram[idx + rW + 1] += (sx * sy * 16f).toInt()
+                                    }
                                 } else { tx = 0.1f + t * 0.017f; ty = 0.1f + t * 0.013f }
                             }
                         }
                     }
                 } else {
-                    // VELOCITY / ANGLE MODE — generic loop with tracking
+                    // VELOCITY / ANGLE MODE — bilinear splatting with tracking
                     for (i in 0 until perThread) {
                         val nx: Float; val ny: Float
                         when (attIdx) {
@@ -292,16 +405,27 @@ class StrangeAttractorDensityGenerator : Generator {
                             else -> { nx = fSin(tx * ty / bSafe) * ty + fCos(a * tx - ty); ny = tx + fSin(ty) / bSafe }
                         }
                         if (nx.isFinite() && ny.isFinite() && abs(nx) < 1e6f && abs(ny) < 1e6f) {
-                            val dx = nx - tx; val dy = ny - ty
+                            val ddx = nx - tx; val ddy = ny - ty
                             tx = nx; ty = ny
-                            val px = ((nx - minX) * invRangeX).toInt()
-                            val py = rHm1 - ((ny - minY) * invRangeY).toInt()
-                            if (px in 0 until renderW && py in 0 until renderH) {
-                                val idx = py * renderW + px
-                                histogram[idx]++
+                            val fx = (nx - minX) * invRangeX
+                            val fy = (renderH - 1f) - (ny - minY) * invRangeY
+                            if (fx >= 0f && fx < rWm1f && fy >= 0f && fy < rHm1f) {
+                                val ix = fx.toInt(); val iy = fy.toInt()
+                                val idx = iy * rW + ix
+                                // Point-increment for tracking modes (bilinear on histogram only)
+                                val sx = fx - ix; val sy = fy - iy
+                                histogram[idx] += ((1f - sx) * (1f - sy) * 16f).toInt()
+                                histogram[idx + 1] += (sx * (1f - sy) * 16f).toInt()
+                                histogram[idx + rW] += ((1f - sx) * sy * 16f).toInt()
+                                histogram[idx + rW + 1] += (sx * sy * 16f).toInt()
+                                // Color accumulator uses nearest pixel for simplicity
+                                val nearIdx = if (sx < 0.5f && sy < 0.5f) idx
+                                    else if (sx >= 0.5f && sy < 0.5f) idx + 1
+                                    else if (sx < 0.5f) idx + rW
+                                    else idx + rW + 1
                                 when (colorMode) {
-                                    "velocity" -> colorAcc!![idx] += sqrt(dx * dx + dy * dy)
-                                    "angle" -> colorAcc!![idx] += ((atan2(dy, dx) / PI.toFloat()) + 1f) * 0.5f
+                                    "velocity" -> colorAcc!![nearIdx] += sqrt(ddx * ddx + ddy * ddy)
+                                    "angle" -> colorAcc!![nearIdx] += ((atan2(ddy, ddx) / PI.toFloat()) + 1f) * 0.5f
                                 }
                             }
                         } else { tx = 0.1f + t * 0.017f; ty = 0.1f + t * 0.013f }
