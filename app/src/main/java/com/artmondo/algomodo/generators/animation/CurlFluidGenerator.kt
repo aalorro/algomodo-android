@@ -100,26 +100,26 @@ class CurlFluidGenerator : Generator {
         "colorMode" to "palette"
     )
 
-    /**
-     * Compute the curl of the noise field at (x, y) using central differences.
-     */
-    private fun curlNoise(
-        noise: SimplexNoise,
-        x: Float, y: Float,
-        scale: Float,
-        timeOffset: Float
-    ): Pair<Float, Float> {
-        val eps = 0.01f
-        val nx = x * scale
-        val ny = y * scale
+    // ---- Simulation cache ----
+    // Avoids re-simulating the entire particle history each frame.
+    // The animation thread calls renderCanvas with incrementing time;
+    // we advance particles by only the delta instead of replaying from t=0.
+    @Volatile private var simCache: SimCache? = null
 
-        val dFdy = (noise.noise2D(nx, ny + eps + timeOffset) -
-                noise.noise2D(nx, ny - eps + timeOffset)) / (2f * eps)
-        val dFdx = (noise.noise2D(nx + eps, ny + timeOffset) -
-                noise.noise2D(nx - eps, ny + timeOffset)) / (2f * eps)
-
-        return Pair(dFdy, -dFdx)
-    }
+    private class SimCache(
+        val seed: Int,
+        val count: Int,
+        val trailLen: Int,
+        val noiseScale: Float,
+        val speed: Float,
+        val evolution: Float,
+        var stepCount: Int,            // total simulation steps completed
+        val px: FloatArray,            // current x positions [count]
+        val py: FloatArray,            // current y positions [count]
+        val trail: FloatArray,         // ring buffer [count * trailLen * 2] interleaved x,y
+        val trailHead: IntArray,       // next write index per particle [count]
+        val trailSize: IntArray        // trail points stored per particle [count]
+    )
 
     override fun renderCanvas(
         canvas: Canvas,
@@ -148,13 +148,99 @@ class CurlFluidGenerator : Generator {
         val trailDecay = (params["trailDecay"] as? Number)?.toFloat() ?: 0.025f
         val colorMode = (params["colorMode"] as? String) ?: "palette"
 
-        val rng = SeededRNG(seed)
         val noise = SimplexNoise(seed)
         val colors = palette.colorInts()
 
-        // Dark background
         canvas.drawColor(Color.rgb(4, 4, 8))
 
+        val dt = 0.016f
+        val trailLen = when (quality) {
+            Quality.DRAFT -> 30
+            Quality.BALANCED -> 50
+            Quality.ULTRA -> 70
+        }
+        val totalSteps = (time / dt).toInt().coerceAtLeast(1)
+
+        // ---- Resolve simulation state from cache or build from scratch ----
+        val cached = simCache
+        val sim: SimCache
+
+        if (cached != null &&
+            cached.seed == seed &&
+            cached.count == particleCount &&
+            cached.trailLen == trailLen &&
+            cached.noiseScale == noiseScale &&
+            cached.speed == speed &&
+            cached.evolution == evolution &&
+            totalSteps >= cached.stepCount &&
+            totalSteps - cached.stepCount < 120
+        ) {
+            // Continue from cached state — advance only the delta
+            sim = cached
+            val stepsNeeded = totalSteps - sim.stepCount
+            for (s in 0 until stepsNeeded) {
+                val noiseT = (sim.stepCount + s) * dt * evolution
+                advanceAll(sim, noise, noiseT, w, h, dim)
+            }
+            sim.stepCount = totalSteps
+        } else {
+            // Full simulation from scratch
+            sim = SimCache(
+                seed = seed,
+                count = particleCount,
+                trailLen = trailLen,
+                noiseScale = noiseScale,
+                speed = speed,
+                evolution = evolution,
+                stepCount = 0,
+                px = FloatArray(particleCount),
+                py = FloatArray(particleCount),
+                trail = FloatArray(particleCount * trailLen * 2),
+                trailHead = IntArray(particleCount),
+                trailSize = IntArray(particleCount)
+            )
+
+            val rng = SeededRNG(seed)
+            for (i in 0 until particleCount) {
+                sim.px[i] = rng.random() * w
+                sim.py[i] = rng.random() * h
+            }
+
+            // Coarse skip to near the trail start (8x step size)
+            val coarseEnd = (totalSteps - trailLen).coerceAtLeast(0)
+            val coarseStep = 8
+            val eps = 0.01f
+            val invEps2 = 1f / (2f * eps)
+
+            var step = 0
+            while (step < coarseEnd) {
+                val noiseT = step * dt * evolution
+                for (i in 0 until particleCount) {
+                    val nx = sim.px[i] / dim * noiseScale
+                    val ny = sim.py[i] / dim * noiseScale
+                    val dFdy = (noise.noise2D(nx, ny + eps + noiseT) -
+                            noise.noise2D(nx, ny - eps + noiseT)) * invEps2
+                    val dFdx = (noise.noise2D(nx + eps, ny + noiseT) -
+                            noise.noise2D(nx - eps, ny + noiseT)) * invEps2
+                    sim.px[i] += dFdy * speed * coarseStep
+                    sim.py[i] += -dFdx * speed * coarseStep
+                    if (sim.px[i] < 0) sim.px[i] += w; if (sim.px[i] >= w) sim.px[i] -= w
+                    if (sim.py[i] < 0) sim.py[i] += h; if (sim.py[i] >= h) sim.py[i] -= h
+                }
+                step += coarseStep
+            }
+
+            // Fine steps for trail collection
+            for (s in step until totalSteps) {
+                val noiseT = s * dt * evolution
+                advanceAll(sim, noise, noiseT, w, h, dim)
+            }
+            sim.stepCount = totalSteps
+        }
+
+        simCache = sim
+
+        // ---- Render trails ----
         val paint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
             style = Paint.Style.STROKE
             strokeWidth = lineWidth + 1f
@@ -162,120 +248,171 @@ class CurlFluidGenerator : Generator {
             strokeJoin = Paint.Join.ROUND
         }
 
-        // Simulation parameters
-        val dt = 0.016f
-        // Trail length: how many recent positions to draw as a polyline
-        val trailLen = when (quality) {
-            Quality.DRAFT -> 30
-            Quality.BALANCED -> 50
-            Quality.ULTRA -> 70
+        val segCount = 2 // tail + head (reduced from 4 for speed)
+        val decayMul = (1f - trailDecay * 4f).coerceIn(0.05f, 1f)
+        val minAlpha = (40 * decayMul).toInt().coerceAtLeast(5)
+        val alphas = IntArray(segCount) { seg ->
+            (minAlpha + (seg.toFloat() / segCount * (220 - minAlpha)).toInt()).coerceIn(5, 220)
         }
-        // Total simulation steps from time=0 to now
-        val totalSteps = (time / dt).toInt().coerceAtLeast(1)
-        val timeOffset = time * evolution
+        val dimSq004 = dim * dim * 0.04f
 
-        for (i in 0 until particleCount) {
-            var px = rng.random() * w
-            var py = rng.random() * h
-            val colorIdx = i % colors.size
-            val baseColor = colors[colorIdx]
+        if (colorMode == "palette") {
+            // Batched rendering: collect all trails by (colorIdx, segment) into
+            // shared Path objects, then draw once per group. Reduces draw calls
+            // from particleCount*segCount (~8000) to nColors*segCount (~20).
+            val nColors = colors.size
+            val paths = Array(nColors) { Array(segCount) { Path() } }
 
-            // Fast-forward to near the end, only keeping trail positions
-            val drawStart = (totalSteps - trailLen).coerceAtLeast(0)
+            for (i in 0 until particleCount) {
+                val size = sim.trailSize[i]
+                if (size < 2) continue
+                val colorIdx = i % nColors
+                val oldest = (sim.trailHead[i] - size + trailLen + trailLen) % trailLen
+                val segSize = size / segCount
 
-            // Skip steps quickly
-            for (step in 0 until drawStart) {
-                val nx = px / dim
-                val ny = py / dim
-                val stepTime = timeOffset + step * dt * evolution * 0.5f
-                val (cx, cy) = curlNoise(noise, nx, ny, noiseScale, stepTime)
-                px += cx * speed
-                py += cy * speed
-                if (px < 0) px += w; if (px >= w) px -= w
-                if (py < 0) py += h; if (py >= h) py -= h
-            }
+                for (seg in 0 until segCount) {
+                    val startK = seg * segSize
+                    val endK = if (seg == segCount - 1) size else (seg + 1) * segSize + 1
+                    val path = paths[colorIdx][seg]
 
-            // Collect trail positions
-            val trailX = FloatArray(trailLen)
-            val trailY = FloatArray(trailLen)
-            var trailCount = 0
+                    val firstRing = (oldest + startK) % trailLen
+                    val firstBase = (i * trailLen + firstRing) * 2
+                    path.moveTo(sim.trail[firstBase], sim.trail[firstBase + 1])
+                    var prevX = sim.trail[firstBase]
+                    var prevY = sim.trail[firstBase + 1]
 
-            for (step in drawStart until totalSteps) {
-                val nx = px / dim
-                val ny = py / dim
-                val stepTime = timeOffset + step * dt * evolution * 0.5f
-                val (cx, cy) = curlNoise(noise, nx, ny, noiseScale, stepTime)
-                px += cx * speed
-                py += cy * speed
-                if (px < 0) px += w; if (px >= w) px -= w
-                if (py < 0) py += h; if (py >= h) py -= h
-
-                if (trailCount < trailLen) {
-                    trailX[trailCount] = px
-                    trailY[trailCount] = py
-                    trailCount++
+                    for (k in startK + 1 until endK) {
+                        val ring = (oldest + k) % trailLen
+                        val base = (i * trailLen + ring) * 2
+                        val x = sim.trail[base]
+                        val y = sim.trail[base + 1]
+                        val dx = x - prevX
+                        val dy = y - prevY
+                        if (dx * dx + dy * dy > dimSq004) {
+                            path.moveTo(x, y)
+                        } else {
+                            path.lineTo(x, y)
+                        }
+                        prevX = x
+                        prevY = y
+                    }
                 }
             }
 
-            // Draw the trail as a polyline with fading alpha
-            if (trailCount >= 2) {
-                // Draw in segments for alpha gradient
-                val segCount = minOf(4, trailCount - 1)
-                val segSize = trailCount / segCount
+            for (colorIdx in 0 until nColors) {
+                val c = colors[colorIdx]
+                val r = Color.red(c); val g = Color.green(c); val b = Color.blue(c)
+                for (seg in 0 until segCount) {
+                    if (paths[colorIdx][seg].isEmpty) continue
+                    paint.color = Color.argb(alphas[seg], r, g, b)
+                    canvas.drawPath(paths[colorIdx][seg], paint)
+                }
+            }
+        } else {
+            // velocity/position: per-particle colors — reuse single Path
+            val path = Path()
+            val eps = 0.01f
+            val invEps2 = 1f / (2f * eps)
+            val noiseT = time * evolution
+
+            for (i in 0 until particleCount) {
+                val size = sim.trailSize[i]
+                if (size < 2) continue
+                val oldest = (sim.trailHead[i] - size + trailLen + trailLen) % trailLen
+                val segSize = size / segCount
 
                 for (seg in 0 until segCount) {
-                    val path = Path()
-                    val startIdx = seg * segSize
-                    val endIdx = if (seg == segCount - 1) trailCount else (seg + 1) * segSize + 1
+                    path.reset()
+                    val startK = seg * segSize
+                    val endK = if (seg == segCount - 1) size else (seg + 1) * segSize + 1
 
-                    path.moveTo(trailX[startIdx], trailY[startIdx])
-                    var valid = true
+                    val firstRing = (oldest + startK) % trailLen
+                    val firstBase = (i * trailLen + firstRing) * 2
+                    path.moveTo(sim.trail[firstBase], sim.trail[firstBase + 1])
+                    var prevX = sim.trail[firstBase]
+                    var prevY = sim.trail[firstBase + 1]
 
-                    for (k in startIdx + 1 until endIdx) {
-                        // Skip large jumps (wrapping)
-                        val dx = trailX[k] - trailX[k - 1]
-                        val dy = trailY[k] - trailY[k - 1]
-                        if (dx * dx + dy * dy > dim * dim * 0.04f) {
-                            path.moveTo(trailX[k], trailY[k])
+                    for (k in startK + 1 until endK) {
+                        val ring = (oldest + k) % trailLen
+                        val base = (i * trailLen + ring) * 2
+                        val x = sim.trail[base]
+                        val y = sim.trail[base + 1]
+                        val dx = x - prevX
+                        val dy = y - prevY
+                        if (dx * dx + dy * dy > dimSq004) {
+                            path.moveTo(x, y)
                         } else {
-                            path.lineTo(trailX[k], trailY[k])
+                            path.lineTo(x, y)
                         }
+                        prevX = x
+                        prevY = y
                     }
 
-                    // Alpha increases toward the head of the trail
-                    // trailDecay modulates fade: higher decay → older segments more transparent
-                    val decayMul = (1f - trailDecay * 4f).coerceIn(0.05f, 1f)
-                    val minAlpha = (40 * decayMul).toInt().coerceAtLeast(5)
-                    val alpha = (minAlpha + (seg.toFloat() / segCount * (220 - minAlpha)).toInt()).coerceIn(5, 220)
+                    val midK = (startK + endK) / 2
+                    val midRing = (oldest + midK.coerceAtMost(size - 1)) % trailLen
+                    val midBase = (i * trailLen + midRing) * 2
 
                     val c = when (colorMode) {
                         "velocity" -> {
-                            // Color based on local curl magnitude
-                            val midIdx = (startIdx + endIdx) / 2
-                            val nx = trailX[midIdx.coerceAtMost(trailCount - 1)] / dim
-                            val ny = trailY[midIdx.coerceAtMost(trailCount - 1)] / dim
-                            val (curlX, curlY) = curlNoise(noise, nx, ny, noiseScale, timeOffset)
-                            val mag = sqrt(curlX * curlX + curlY * curlY).coerceIn(0f, 1f)
+                            val nx = sim.trail[midBase] / dim * noiseScale
+                            val ny = sim.trail[midBase + 1] / dim * noiseScale
+                            val dFdy = (noise.noise2D(nx, ny + eps + noiseT) -
+                                    noise.noise2D(nx, ny - eps + noiseT)) * invEps2
+                            val dFdx = (noise.noise2D(nx + eps, ny + noiseT) -
+                                    noise.noise2D(nx - eps, ny + noiseT)) * invEps2
+                            val mag = sqrt(dFdy * dFdy + dFdx * dFdx).coerceIn(0f, 1f)
                             palette.lerpColor(mag)
                         }
                         "position" -> {
-                            val midIdx = (startIdx + endIdx) / 2
-                            val posVal = (trailX[midIdx.coerceAtMost(trailCount - 1)] / w +
-                                    trailY[midIdx.coerceAtMost(trailCount - 1)] / h) * 0.5f
+                            val posVal = (sim.trail[midBase] / w +
+                                    sim.trail[midBase + 1] / h) * 0.5f
                             palette.lerpColor(posVal.coerceIn(0f, 1f))
                         }
-                        else -> baseColor
+                        else -> colors[i % colors.size]
                     }
 
                     paint.color = Color.argb(
-                        alpha,
-                        Color.red(c),
-                        Color.green(c),
-                        Color.blue(c)
+                        alphas[seg],
+                        Color.red(c), Color.green(c), Color.blue(c)
                     )
                     canvas.drawPath(path, paint)
                 }
             }
+        }
+    }
+
+    /** Advance all particles by one step and record positions in trail ring buffer. */
+    private fun advanceAll(
+        sim: SimCache,
+        noise: SimplexNoise,
+        noiseT: Float,
+        w: Float, h: Float, dim: Float
+    ) {
+        val eps = 0.01f
+        val invEps2 = 1f / (2f * eps)
+        val ns = sim.noiseScale
+        val spd = sim.speed
+        val tl = sim.trailLen
+        val invDim = 1f / dim
+
+        for (i in 0 until sim.count) {
+            val nx = sim.px[i] * invDim * ns
+            val ny = sim.py[i] * invDim * ns
+            val dFdy = (noise.noise2D(nx, ny + eps + noiseT) -
+                    noise.noise2D(nx, ny - eps + noiseT)) * invEps2
+            val dFdx = (noise.noise2D(nx + eps, ny + noiseT) -
+                    noise.noise2D(nx - eps, ny + noiseT)) * invEps2
+            sim.px[i] += dFdy * spd
+            sim.py[i] += -dFdx * spd
+            if (sim.px[i] < 0f) sim.px[i] += w; if (sim.px[i] >= w) sim.px[i] -= w
+            if (sim.py[i] < 0f) sim.py[i] += h; if (sim.py[i] >= h) sim.py[i] -= h
+
+            // Store in trail ring buffer
+            val base = (i * tl + sim.trailHead[i]) * 2
+            sim.trail[base] = sim.px[i]
+            sim.trail[base + 1] = sim.py[i]
+            sim.trailHead[i] = (sim.trailHead[i] + 1) % tl
+            if (sim.trailSize[i] < tl) sim.trailSize[i]++
         }
     }
 
