@@ -11,6 +11,7 @@ import com.artmondo.algomodo.generators.ParamGroup
 import com.artmondo.algomodo.generators.Parameter
 import com.artmondo.algomodo.generators.Quality
 import kotlin.math.abs
+import kotlin.math.ceil
 import kotlin.math.pow
 
 class ReactionDiffusionGenerator : Generator {
@@ -27,12 +28,12 @@ class ReactionDiffusionGenerator : Generator {
         Parameter.SelectParam("Preset", "preset", ParamGroup.COMPOSITION, "Preset f/k combinations from the Gray-Scott parameter map — overrides Feed Rate and Kill Rate when not \"custom\"", listOf("custom", "spots", "stripes", "worms", "maze", "mitosis", "coral", "solitons", "spirals"), "spots"),
         Parameter.NumberParam("Feed Rate", "feedRate", ParamGroup.COMPOSITION, "Rate at which U is replenished (active only when preset = custom)", 0.01f, 0.08f, 0.001f, 0.035f),
         Parameter.NumberParam("Kill Rate", "killRate", ParamGroup.COMPOSITION, "Rate at which V is removed (active only when preset = custom)", 0.04f, 0.075f, 0.001f, 0.065f),
-        Parameter.NumberParam("Spatial Variation", "spatialVariation", ParamGroup.COMPOSITION, "Noise-based spatial modulation of f/k — creates zones with different pattern types that compete at their borders, producing continuously evolving boundaries", 0f, 1.0f, 0.05f, 0.35f),
+        Parameter.NumberParam("Spatial Variation", "spatialVariation", ParamGroup.COMPOSITION, "Noise-based spatial modulation of f/k — creates zones with different pattern types that compete at their borders, producing continuously evolving boundaries", 0f, 1.0f, 0.05f, 0.15f),
         Parameter.SelectParam("Init Mode", "initMode", ParamGroup.GEOMETRY, "patches: random circular seeds | noise: sparse scattered seeds across the whole field | center: single circular seed", listOf("patches", "noise", "center"), "patches"),
         Parameter.NumberParam("Diffusion U", "diffU", ParamGroup.TEXTURE, null, 0.1f, 1.0f, 0.05f, 0.8f),
         Parameter.NumberParam("Diffusion V", "diffV", ParamGroup.TEXTURE, null, 0.01f, 0.5f, 0.01f, 0.3f),
         Parameter.NumberParam("Steps / Frame", "stepsPerFrame", ParamGroup.FLOW_MOTION, "Simulation steps per animation frame — higher = faster evolution", 1f, 30f, 1f, 10f),
-        Parameter.NumberParam("Iterations", "iterations", ParamGroup.FLOW_MOTION, "Steps run for static (non-animated) render", 100f, 3000f, 100f, 800f),
+        Parameter.NumberParam("Iterations", "iterations", ParamGroup.FLOW_MOTION, "Steps run for static (non-animated) render", 100f, 3000f, 100f, 1500f),
         Parameter.SelectParam("Color Mode", "colorMode", ParamGroup.COLOR, "palette: smooth V→palette | uv-mix: palette + reaction-front brightness boost | edge: gradient magnitude (boundary highlighting) | threshold: binary", listOf("palette", "uv-mix", "edge", "threshold"), "palette"),
         Parameter.NumberParam("Color Gamma", "colorGamma", ParamGroup.COLOR, "< 1: lifts dark regions (reveals low-concentration detail) | > 1: increases contrast, darkens background", 0.25f, 4.0f, 0.25f, 1.0f)
     )
@@ -41,12 +42,12 @@ class ReactionDiffusionGenerator : Generator {
         "preset" to "spots",
         "feedRate" to 0.035f,
         "killRate" to 0.065f,
-        "spatialVariation" to 0.35f,
+        "spatialVariation" to 0.15f,
         "initMode" to "patches",
         "diffU" to 0.8f,
         "diffV" to 0.3f,
         "stepsPerFrame" to 10f,
-        "iterations" to 800f,
+        "iterations" to 1500f,
         "colorMode" to "palette",
         "colorGamma" to 1.0f
     )
@@ -74,6 +75,7 @@ class ReactionDiffusionGenerator : Generator {
         val dA: Float,
         val dB: Float,
         val initMode: String,
+        val subSteps: Int,
         var curA: FloatArray,
         var curB: FloatArray,
         var nxtA: FloatArray,
@@ -99,12 +101,12 @@ class ReactionDiffusionGenerator : Generator {
         val preset = (params["preset"] as? String) ?: "spots"
         val userFeed = (params["feedRate"] as? Number)?.toFloat() ?: 0.035f
         val userKill = (params["killRate"] as? Number)?.toFloat() ?: 0.065f
-        val spatialVariation = (params["spatialVariation"] as? Number)?.toFloat() ?: 0.35f
+        val spatialVariation = (params["spatialVariation"] as? Number)?.toFloat() ?: 0.15f
         val initMode = (params["initMode"] as? String) ?: "patches"
         val dA = (params["diffU"] as? Number)?.toFloat() ?: 0.8f
         val dB = (params["diffV"] as? Number)?.toFloat() ?: 0.3f
         val stepsPerFrame = (params["stepsPerFrame"] as? Number)?.toInt() ?: 10
-        val iterations = (params["iterations"] as? Number)?.toInt() ?: 800
+        val iterations = (params["iterations"] as? Number)?.toInt() ?: 1500
         val colorMode = (params["colorMode"] as? String) ?: "palette"
         val colorGamma = (params["colorGamma"] as? Number)?.toFloat() ?: 1.0f
 
@@ -124,6 +126,11 @@ class ReactionDiffusionGenerator : Generator {
         val gh = h / scale
         val totalCells = gw * gh
 
+        // Sub-stepping for numerical stability of explicit Euler:
+        // CFL condition requires dt * max(dA,dB) * 4 / h² < 1 (h=1 for unit grid)
+        val subSteps = ceil(maxOf(dA, dB).toDouble() * 4.0).toInt().coerceAtLeast(1)
+        val dt = 1f / subSteps
+
         val totalSteps = if (time <= 0f) iterations
         else (time * stepsPerFrame * 10).toInt()
 
@@ -134,6 +141,7 @@ class ReactionDiffusionGenerator : Generator {
                 it.spatialVariation == spatialVariation &&
                 it.dA == dA && it.dB == dB &&
                 it.initMode == initMode &&
+                it.subSteps == subSteps &&
                 it.stepsDone <= totalSteps
         } ?: run {
             // Build spatial variation grids
@@ -147,8 +155,9 @@ class ReactionDiffusionGenerator : Generator {
                     val nx = x.toFloat() / gw * noiseFreq
                     val ny = y.toFloat() / gh * noiseFreq
                     val nv = noise.noise2D(nx, ny) * spatialVariation
-                    feedGrid[idx] = (baseFeed + nv * 0.02f).coerceIn(0.01f, 0.08f)
-                    killGrid[idx] = (baseKill + nv * 0.01f).coerceIn(0.04f, 0.075f)
+                    // Reduced modulation coefficients so presets stay distinct
+                    feedGrid[idx] = (baseFeed + nv * 0.008f).coerceIn(0.01f, 0.08f)
+                    killGrid[idx] = (baseKill + nv * 0.004f).coerceIn(0.04f, 0.075f)
                 }
             }
 
@@ -198,6 +207,7 @@ class ReactionDiffusionGenerator : Generator {
 
             SimState(
                 gw, gh, seed, baseFeed, baseKill, spatialVariation, dA, dB, initMode,
+                subSteps,
                 a, b, FloatArray(totalCells), FloatArray(totalCells),
                 feedGrid, killGrid, 0
             )
@@ -215,34 +225,37 @@ class ReactionDiffusionGenerator : Generator {
         val ghm1 = gh - 1
 
         for (step in sim.stepsDone until totalSteps) {
-            for (y in 0 until gh) {
-                val rowOff = y * gw
-                val upOff = if (y > 0) (y - 1) * gw else ghm1 * gw
-                val downOff = if (y < ghm1) (y + 1) * gw else 0
+            // Sub-step loop for numerical stability
+            for (sub in 0 until subSteps) {
+                for (y in 0 until gh) {
+                    val rowOff = y * gw
+                    val upOff = if (y > 0) (y - 1) * gw else ghm1 * gw
+                    val downOff = if (y < ghm1) (y + 1) * gw else 0
 
-                for (x in 0 until gw) {
-                    val left = if (x > 0) x - 1 else gwm1
-                    val right = if (x < gwm1) x + 1 else 0
-                    val idx = rowOff + x
+                    for (x in 0 until gw) {
+                        val left = if (x > 0) x - 1 else gwm1
+                        val right = if (x < gwm1) x + 1 else 0
+                        val idx = rowOff + x
 
-                    val aVal = curA[idx]
-                    val bVal = curB[idx]
+                        val aVal = curA[idx]
+                        val bVal = curB[idx]
 
-                    // Inlined 5-point Laplacian (no function call, no modulo)
-                    val lapA = curA[upOff + x] + curA[downOff + x] + curA[rowOff + left] + curA[rowOff + right] - 4f * aVal
-                    val lapB = curB[upOff + x] + curB[downOff + x] + curB[rowOff + left] + curB[rowOff + right] - 4f * bVal
+                        // Inlined 5-point Laplacian
+                        val lapA = curA[upOff + x] + curA[downOff + x] + curA[rowOff + left] + curA[rowOff + right] - 4f * aVal
+                        val lapB = curB[upOff + x] + curB[downOff + x] + curB[rowOff + left] + curB[rowOff + right] - 4f * bVal
 
-                    val f = feedGrid[idx]
-                    val k = killGrid[idx]
-                    val abb = aVal * bVal * bVal
+                        val f = feedGrid[idx]
+                        val k = killGrid[idx]
+                        val abb = aVal * bVal * bVal
 
-                    nxtA[idx] = (aVal + dA * lapA - abb + f * (1f - aVal)).coerceIn(0f, 1f)
-                    nxtB[idx] = (bVal + dB * lapB + abb - (k + f) * bVal).coerceIn(0f, 1f)
+                        nxtA[idx] = (aVal + (dA * lapA - abb + f * (1f - aVal)) * dt).coerceIn(0f, 1f)
+                        nxtB[idx] = (bVal + (dB * lapB + abb - (k + f) * bVal) * dt).coerceIn(0f, 1f)
+                    }
                 }
+                // Swap buffers after each sub-step
+                val tmpA = curA; curA = nxtA; nxtA = tmpA
+                val tmpB = curB; curB = nxtB; nxtB = tmpB
             }
-            // Swap buffers
-            val tmpA = curA; curA = nxtA; nxtA = tmpA
-            val tmpB = curB; curB = nxtB; nxtB = tmpB
         }
         sim.curA = curA
         sim.curB = curB
@@ -282,7 +295,6 @@ class ReactionDiffusionGenerator : Generator {
                 }
             }
             "edge" -> {
-                // Compute Laplacian of B per grid cell (not per pixel)
                 for (y in 0 until gh) {
                     val rowOff = y * gw
                     val upOff = if (y > 0) (y - 1) * gw else ghm1 * gw
@@ -299,7 +311,6 @@ class ReactionDiffusionGenerator : Generator {
             "threshold" -> {
                 val colorHigh = palette.colorAt(4)
                 val colorLow = palette.colorAt(0)
-                // Pre-compute threshold in un-gamma'd space
                 val threshB = if (colorGamma != 1.0f) 0.25f.pow(1f / colorGamma) else 0.25f
                 for (i in 0 until totalCells) {
                     gridColors[i] = if (curB[i] > threshB) colorHigh else colorLow
@@ -341,7 +352,7 @@ class ReactionDiffusionGenerator : Generator {
         val scale = when (quality) {
             Quality.DRAFT -> 4; Quality.BALANCED -> 2; Quality.ULTRA -> 1
         }
-        val iterations = (params["iterations"] as? Number)?.toInt() ?: 800
+        val iterations = (params["iterations"] as? Number)?.toInt() ?: 1500
         return (iterations / scale.toFloat() / 500f).coerceIn(0.1f, 1f)
     }
 }
