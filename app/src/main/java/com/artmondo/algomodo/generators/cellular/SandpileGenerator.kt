@@ -38,6 +38,23 @@ class SandpileGenerator : Generator {
         "colorMode" to "grain-count"
     )
 
+    // ---- Simulation cache: avoids re-running all topple cycles from scratch each frame ----
+    private class SimState(
+        val gridSize: Int,
+        val seed: Int,
+        val dropSite: String,
+        val dropRate: Int,
+        val hasToppleCount: Boolean,
+        val grid: IntArray,
+        val toppleCount: IntArray?,
+        var stepsDone: Int
+    )
+
+    @Volatile private var cachedSim: SimState? = null
+    @Volatile private var reusePixels: IntArray? = null
+    @Volatile private var reuseGridColors: IntArray? = null
+    @Volatile private var reuseStack: IntArray? = null
+
     override fun renderCanvas(
         canvas: Canvas,
         bitmap: Bitmap,
@@ -57,47 +74,57 @@ class SandpileGenerator : Generator {
 
         val w = bitmap.width
         val h = bitmap.height
-        val steps = ((totalGrains.toFloat() / dropRate.coerceAtLeast(1)) * (time * 0.1f + 1f)).toInt()
+        val targetSteps = ((totalGrains.toFloat() / dropRate.coerceAtLeast(1)) * (time * 0.1f + 1f)).toInt()
         val totalCells = gridSize * gridSize
         val cx = gridSize / 2
         val cy = gridSize / 2
-
-        val grid = IntArray(totalCells)
         val needToppleHistory = colorMode == "topple-count"
         val needAvalanche = colorMode == "avalanche"
-        val toppleCount = if (needToppleHistory) IntArray(totalCells) else null
-        val recentlyToppled = if (needAvalanche) BooleanArray(totalCells) else null
+        val lastIdx = gridSize - 1
 
-        // Pre-compute flat-index drop positions for non-drift modes
+        // ---- Get or create simulation state (cache across frames) ----
+        val sim = cachedSim?.takeIf {
+            it.gridSize == gridSize && it.seed == seed &&
+                it.dropSite == dropSite && it.dropRate == dropRate &&
+                it.hasToppleCount == needToppleHistory &&
+                it.stepsDone <= targetSteps
+        } ?: SimState(
+            gridSize, seed, dropSite, dropRate, needToppleHistory,
+            IntArray(totalCells),
+            if (needToppleHistory) IntArray(totalCells) else null,
+            0
+        )
+        cachedSim = sim
+
+        val grid = sim.grid
+        val toppleCount = sim.toppleCount
+
+        // Pre-compute drop positions
         val dropIndices: IntArray = when (dropSite) {
             "multi" -> {
                 val q = gridSize / 4
-                intArrayOf(
-                    q * gridSize + q,
-                    q * gridSize + 3 * q,
-                    3 * q * gridSize + q,
-                    3 * q * gridSize + 3 * q
-                )
+                intArrayOf(q * gridSize + q, q * gridSize + 3 * q, 3 * q * gridSize + q, 3 * q * gridSize + 3 * q)
             }
-            "drift" -> intArrayOf() // computed per-step
+            "drift" -> intArrayOf()
             else -> {
-                val dx = (cx + (seed % 3) - 1).coerceIn(0, gridSize - 1)
-                val dy = (cy + ((seed / 3) % 3) - 1).coerceIn(0, gridSize - 1)
+                val dx = (cx + (seed % 3) - 1).coerceIn(0, lastIdx)
+                val dy = (cy + ((seed / 3) % 3) - 1).coerceIn(0, lastIdx)
                 intArrayOf(dy * gridSize + dx)
             }
         }
 
-        // Stack-based toppling: only process cells that actually need it
-        // Max stack growth: dropRate + 3 * maxTopples (each topple pushes <=4, pops 1)
-        val stack = IntArray(3 * maxTopples + dropRate + 16)
-        var stackTop: Int
-        val lastIdx = gridSize - 1
+        // Reusable stack for toppling
+        val stackSize = 3 * maxTopples + dropRate + 16
+        val rs = reuseStack
+        val stack = if (rs != null && rs.size >= stackSize) rs else IntArray(stackSize).also { reuseStack = it }
 
-        for (step in 0 until steps) {
-            stackTop = 0
-            val isLastStep = step == steps - 1
+        // ---- Advance simulation from stepsDone to targetSteps ----
+        val recentlyToppled = if (needAvalanche) BooleanArray(totalCells) else null
 
-            // Compute drop index for drift mode (once per step, not per grain)
+        for (step in sim.stepsDone until targetSteps) {
+            var stackTop = 0
+            val isLastStep = step == targetSteps - 1
+
             val driftIdx = if (dropSite == "drift") {
                 val angle = step * 0.05f
                 val r = gridSize / 6f
@@ -106,7 +133,7 @@ class SandpileGenerator : Generator {
                 dy * gridSize + dx
             } else -1
 
-            // Drop grains and seed the stack with any cells that reach threshold
+            // Drop grains and seed the stack
             for (d in 0 until dropRate) {
                 val dIdx = if (driftIdx >= 0) driftIdx else dropIndices[d % dropIndices.size]
                 grid[dIdx]++
@@ -133,26 +160,35 @@ class SandpileGenerator : Generator {
                 if (y < lastIdx) { val n = idx + gridSize; grid[n]++; if (grid[n] >= threshold) stack[stackTop++] = n }
             }
         }
+        sim.stepsDone = targetSteps
 
-        // Render: block-fill pixels per grid cell with pre-computed color LUTs
-        val pixels = IntArray(w * h)
+        // ---- Phase 1: Compute color per grid cell ----
+        val gridColors: IntArray
+        val rgc = reuseGridColors
+        if (rgc != null && rgc.size >= totalCells) {
+            gridColors = rgc
+        } else {
+            gridColors = IntArray(totalCells)
+            reuseGridColors = gridColors
+        }
 
         when (colorMode) {
             "fractal" -> {
                 val lut = IntArray(threshold) { i ->
                     palette.lerpColor(i.toFloat() / (threshold - 1).coerceAtLeast(1))
                 }
-                blockFill(pixels, grid, gridSize, w, h, threshold) { lut[it] }
+                for (i in 0 until totalCells) {
+                    gridColors[i] = lut[grid[i].coerceIn(0, threshold - 1)]
+                }
             }
             "topple-count" -> {
                 val tc = toppleCount!!
                 val maxTc = tc.max().coerceAtLeast(1)
                 val logMax = ln(maxTc.toFloat() + 1f)
-                // 256-entry palette LUT to avoid per-cell lerpColor
                 val palLut = IntArray(256) { i -> palette.lerpColor(i / 255f) }
-                blockFillIndexed(pixels, gridSize, w, h) { idx ->
-                    val v = tc[idx]
-                    if (v == 0) Color.BLACK
+                for (i in 0 until totalCells) {
+                    val v = tc[i]
+                    gridColors[i] = if (v == 0) Color.BLACK
                     else palLut[(ln(v.toFloat() + 1f) / logMax * 255f).toInt().coerceIn(0, 255)]
                 }
             }
@@ -163,16 +199,39 @@ class SandpileGenerator : Generator {
                     if (i == 0) Color.BLACK
                     else palette.lerpColor(i.toFloat() / (threshold - 1) * 0.5f)
                 }
-                blockFillIndexed(pixels, gridSize, w, h) { idx ->
-                    if (rt[idx]) brightColor
-                    else grainLut[grid[idx].coerceIn(0, threshold - 1)]
+                for (i in 0 until totalCells) {
+                    gridColors[i] = if (rt[i]) brightColor
+                    else grainLut[grid[i].coerceIn(0, threshold - 1)]
                 }
             }
             else /* grain-count */ -> {
                 val lut = IntArray(threshold) { i ->
                     if (i == 0) Color.BLACK else palette.lerpColor(i.toFloat() / (threshold - 1))
                 }
-                blockFill(pixels, grid, gridSize, w, h, threshold) { lut[it] }
+                for (i in 0 until totalCells) {
+                    gridColors[i] = lut[grid[i].coerceIn(0, threshold - 1)]
+                }
+            }
+        }
+
+        // ---- Phase 2: Expand grid colors to full pixel array ----
+        val pixels: IntArray
+        val rp = reusePixels
+        val pixelCount = w * h
+        if (rp != null && rp.size >= pixelCount) {
+            pixels = rp
+        } else {
+            pixels = IntArray(pixelCount)
+            reusePixels = pixels
+        }
+
+        val xMap = IntArray(w) { (it * gridSize / w).coerceAtMost(lastIdx) }
+        for (py in 0 until h) {
+            val gy = (py * gridSize / h).coerceAtMost(lastIdx)
+            val gridRow = gy * gridSize
+            val pixRow = py * w
+            for (px in 0 until w) {
+                pixels[pixRow + px] = gridColors[gridRow + xMap[px]]
             }
         }
 
@@ -180,45 +239,9 @@ class SandpileGenerator : Generator {
         canvas.drawBitmap(bitmap, 0f, 0f, null)
     }
 
-    /** Fill pixel blocks using only the grain value (0..threshold-1). */
-    private inline fun blockFill(
-        pixels: IntArray, grid: IntArray, gridSize: Int,
-        w: Int, h: Int, threshold: Int,
-        colorOf: (Int) -> Int
-    ) {
-        for (gy in 0 until gridSize) {
-            val pyStart = gy * h / gridSize
-            val pyEnd = (gy + 1) * h / gridSize
-            val rowBase = gy * gridSize
-            for (gx in 0 until gridSize) {
-                val color = colorOf(grid[rowBase + gx].coerceIn(0, threshold - 1))
-                val pxStart = gx * w / gridSize
-                val pxEnd = (gx + 1) * w / gridSize
-                for (py in pyStart until pyEnd) {
-                    java.util.Arrays.fill(pixels, py * w + pxStart, py * w + pxEnd, color)
-                }
-            }
-        }
-    }
-
-    /** Fill pixel blocks using the flat grid index for full flexibility. */
-    private inline fun blockFillIndexed(
-        pixels: IntArray, gridSize: Int,
-        w: Int, h: Int,
-        colorOf: (Int) -> Int
-    ) {
-        for (gy in 0 until gridSize) {
-            val pyStart = gy * h / gridSize
-            val pyEnd = (gy + 1) * h / gridSize
-            val rowBase = gy * gridSize
-            for (gx in 0 until gridSize) {
-                val color = colorOf(rowBase + gx)
-                val pxStart = gx * w / gridSize
-                val pxEnd = (gx + 1) * w / gridSize
-                for (py in pyStart until pyEnd) {
-                    java.util.Arrays.fill(pixels, py * w + pxStart, py * w + pxEnd, color)
-                }
-            }
-        }
+    override fun estimateCost(params: Map<String, Any>, quality: Quality): Float {
+        val gridSize = (params["gridSize"] as? Number)?.toInt() ?: 128
+        val totalGrains = (params["totalGrains"] as? Number)?.toInt() ?: 100000
+        return (gridSize * gridSize.toLong() * totalGrains / 500_000_000f).coerceIn(0.1f, 1f)
     }
 }

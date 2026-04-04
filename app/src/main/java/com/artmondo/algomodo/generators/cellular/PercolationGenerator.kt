@@ -49,6 +49,22 @@ class PercolationGenerator : Generator {
         "colorMode" to "cluster-size"
     )
 
+    // ---- Caches: reuse allocations across frames ----
+    private class CellValueCache(
+        val gridSize: Int,
+        val seed: Int,
+        val noiseMix: Float,
+        val noiseScale: Float,
+        val cellValue: FloatArray
+    )
+
+    @Volatile private var cachedCellValue: CellValueCache? = null
+    @Volatile private var reuseClusterLabel: IntArray? = null
+    @Volatile private var reusePixels: IntArray? = null
+    @Volatile private var reuseGridColors: IntArray? = null
+    @Volatile private var reuseBfsQueue: IntArray? = null
+    @Volatile private var reuseOpen: BooleanArray? = null
+
     override fun renderCanvas(
         canvas: Canvas,
         bitmap: Bitmap,
@@ -58,7 +74,6 @@ class PercolationGenerator : Generator {
         quality: Quality,
         time: Float
     ) {
-        // Read ALL parameters
         val baseP = (params["occupancyP"] as? Number)?.toFloat() ?: 0.593f
         val gridSize = (params["gridSize"] as? Number)?.toInt() ?: 128
         val mode = params["percolationMode"] as? String ?: "site"
@@ -70,7 +85,6 @@ class PercolationGenerator : Generator {
         val sweepAmp = (params["sweepAmp"] as? Number)?.toFloat() ?: 0.2f
         val colorMode = params["colorMode"] as? String ?: "cluster-size"
 
-        // Apply sweep: oscillate p around the base value using time
         val probability = (baseP + sweepAmp * sin(time * sweepSpeed * 2f * Math.PI.toFloat()))
             .coerceIn(0.01f, 1f)
 
@@ -78,73 +92,124 @@ class PercolationGenerator : Generator {
         val h = bitmap.height
         val totalCells = gridSize * gridSize
 
-        val rng = SeededRNG(seed)
-        val noise = SimplexNoise(seed)
-
-        // Generate per-cell random value blended with simplex noise
-        // This value is in [0, 1) and is used for both site and invasion modes
-        val cellValue = FloatArray(totalCells)
-        for (cy in 0 until gridSize) {
-            for (cx in 0 until gridSize) {
-                val idx = cy * gridSize + cx
-                val randVal = rng.random()
-                // Simplex noise returns [-1, 1]; remap to [0, 1]
-                val nx = cx.toFloat() / gridSize * noiseScale
-                val ny = cy.toFloat() / gridSize * noiseScale
-                val noiseVal = (noise.noise2D(nx, ny) + 1f) * 0.5f
-                // Blend: noiseMix=0 → pure random, noiseMix=1 → pure noise
-                cellValue[idx] = randVal * (1f - noiseMix) + noiseVal * noiseMix
+        // ---- Cache cellValue array (depends only on seed, gridSize, noiseMix, noiseScale) ----
+        val cvc = cachedCellValue
+        val cellValue: FloatArray
+        if (cvc != null && cvc.gridSize == gridSize && cvc.seed == seed &&
+            cvc.noiseMix == noiseMix && cvc.noiseScale == noiseScale
+        ) {
+            cellValue = cvc.cellValue
+        } else {
+            val rng = SeededRNG(seed)
+            val noise = SimplexNoise(seed)
+            cellValue = FloatArray(totalCells)
+            for (cy in 0 until gridSize) {
+                for (cx in 0 until gridSize) {
+                    val idx = cy * gridSize + cx
+                    val randVal = rng.random()
+                    val nx = cx.toFloat() / gridSize * noiseScale
+                    val ny = cy.toFloat() / gridSize * noiseScale
+                    val noiseVal = (noise.noise2D(nx, ny) + 1f) * 0.5f
+                    cellValue[idx] = randVal * (1f - noiseMix) + noiseVal * noiseMix
+                }
             }
+            cachedCellValue = CellValueCache(gridSize, seed, noiseMix, noiseScale, cellValue)
         }
 
-        val dx4 = intArrayOf(0, 1, 0, -1)
-        val dy4 = intArrayOf(-1, 0, 1, 0)
+        // ---- Reusable cluster label array ----
+        val rcl = reuseClusterLabel
+        val clusterLabel: IntArray
+        if (rcl != null && rcl.size >= totalCells) {
+            clusterLabel = rcl
+            java.util.Arrays.fill(clusterLabel, 0, totalCells, -1)
+        } else {
+            clusterLabel = IntArray(totalCells) { -1 }
+            reuseClusterLabel = clusterLabel
+        }
 
-        // Cluster label array: -1 = not open / not assigned
-        val clusterLabel = IntArray(totalCells) { -1 }
+        var nextCluster = 0
+        val clusterSizes: IntArray
+        val isSpanning: BooleanArray
 
         if (mode == "site") {
-            // Site percolation: cell is open if its blended value < probability
-            val open = BooleanArray(totalCells) { cellValue[it] < probability }
+            // ---- Site percolation with IntArray BFS queue ----
+            val ro = reuseOpen
+            val open: BooleanArray
+            if (ro != null && ro.size >= totalCells) {
+                open = ro
+            } else {
+                open = BooleanArray(totalCells)
+                reuseOpen = open
+            }
+            for (i in 0 until totalCells) {
+                open[i] = cellValue[i] < probability
+            }
 
-            // Union-Find to label connected clusters
-            var nextCluster = 0
-            val queue = ArrayDeque<Int>()
+            // IntArray-based BFS queue (faster than ArrayDeque)
+            val rbq = reuseBfsQueue
+            val queue: IntArray
+            if (rbq != null && rbq.size >= totalCells) {
+                queue = rbq
+            } else {
+                queue = IntArray(totalCells)
+                reuseBfsQueue = queue
+            }
 
             for (startIdx in 0 until totalCells) {
                 if (open[startIdx] && clusterLabel[startIdx] == -1) {
                     val clusterId = nextCluster++
                     clusterLabel[startIdx] = clusterId
-                    queue.add(startIdx)
+                    var qHead = 0
+                    var qTail = 0
+                    queue[qTail++] = startIdx
 
-                    while (queue.isNotEmpty()) {
-                        val idx = queue.removeFirst()
+                    while (qHead < qTail) {
+                        val idx = queue[qHead++]
                         val cx = idx % gridSize
                         val cy = idx / gridSize
 
-                        for (d in 0..3) {
-                            val nx = cx + dx4[d]
-                            val ny = cy + dy4[d]
-                            if (nx in 0 until gridSize && ny in 0 until gridSize) {
-                                val nIdx = ny * gridSize + nx
-                                if (open[nIdx] && clusterLabel[nIdx] == -1) {
-                                    clusterLabel[nIdx] = clusterId
-                                    queue.add(nIdx)
-                                }
+                        // Up
+                        if (cy > 0) {
+                            val nIdx = idx - gridSize
+                            if (open[nIdx] && clusterLabel[nIdx] == -1) {
+                                clusterLabel[nIdx] = clusterId
+                                queue[qTail++] = nIdx
+                            }
+                        }
+                        // Right
+                        if (cx < gridSize - 1) {
+                            val nIdx = idx + 1
+                            if (open[nIdx] && clusterLabel[nIdx] == -1) {
+                                clusterLabel[nIdx] = clusterId
+                                queue[qTail++] = nIdx
+                            }
+                        }
+                        // Down
+                        if (cy < gridSize - 1) {
+                            val nIdx = idx + gridSize
+                            if (open[nIdx] && clusterLabel[nIdx] == -1) {
+                                clusterLabel[nIdx] = clusterId
+                                queue[qTail++] = nIdx
+                            }
+                        }
+                        // Left
+                        if (cx > 0) {
+                            val nIdx = idx - 1
+                            if (open[nIdx] && clusterLabel[nIdx] == -1) {
+                                clusterLabel[nIdx] = clusterId
+                                queue[qTail++] = nIdx
                             }
                         }
                     }
                 }
             }
 
-            // Compute cluster sizes
-            val clusterSizes = IntArray(nextCluster)
+            clusterSizes = IntArray(nextCluster)
             for (idx in 0 until totalCells) {
                 val c = clusterLabel[idx]
                 if (c >= 0) clusterSizes[c]++
             }
 
-            // Find the spanning cluster: clusters that touch both top and bottom rows
             val touchesTop = BooleanArray(nextCluster)
             val touchesBottom = BooleanArray(nextCluster)
             for (x in 0 until gridSize) {
@@ -153,120 +218,65 @@ class PercolationGenerator : Generator {
                 val bottomC = clusterLabel[(gridSize - 1) * gridSize + x]
                 if (bottomC >= 0) touchesBottom[bottomC] = true
             }
-            val isSpanning = BooleanArray(nextCluster) { touchesTop[it] && touchesBottom[it] }
-
-            // Find max cluster size for log scaling
-            val maxSize = clusterSizes.maxOrNull()?.coerceAtLeast(1) ?: 1
-
-            // Render
-            renderPixels(
-                bitmap, canvas, w, h, gridSize, totalCells,
-                clusterLabel, clusterSizes, isSpanning,
-                maxSize, showSpanning, colorMode, palette
-            )
+            isSpanning = BooleanArray(nextCluster) { touchesTop[it] && touchesBottom[it] }
         } else {
-            // Invasion percolation: BFS from seed points, opening cells in order
-            // of ascending cellValue (resistance). Opens exactly (probability * totalCells) cells.
+            // ---- Invasion percolation ----
             val cellsToOpen = (probability * totalCells).toInt().coerceIn(1, totalCells)
-
-            // Pick invasion seed positions spread across the grid
-            val seedRng = SeededRNG(seed + 7919) // separate stream for seed placement
-            val seedPositions = mutableListOf<Int>()
+            val seedRng = SeededRNG(seed + 7919)
             val seedCount = invasionSeedCount.coerceIn(1, 12)
-            for (i in 0 until seedCount) {
-                val sx = seedRng.integer(0, gridSize - 1)
-                val sy = seedRng.integer(0, gridSize - 1)
-                seedPositions.add(sy * gridSize + sx)
-            }
-
-            // Priority queue: sort candidate cells by cellValue (resistance)
-            // Each entry: (cellValue, cellIndex, clusterIndex)
             val opened = BooleanArray(totalCells)
-            var nextCluster = 0
 
-            // Use a sorted structure: simple approach with a mutable list sorted on insertion
-            // For performance, use a TreeMap-like approach with a priority queue
             val frontier = java.util.PriorityQueue<Long>(totalCells / 4 + 16,
                 compareBy { Float.fromBits((it ushr 32).toInt()) })
 
-            // Encode: upper 32 bits = float bits of cellValue, lower 32 bits = cell index
-            fun encode(value: Float, idx: Int): Long {
-                return (value.toBits().toLong() shl 32) or (idx.toLong() and 0xFFFFFFFFL)
-            }
-            fun decodeIdx(packed: Long): Int = (packed and 0xFFFFFFFFL).toInt()
-
-            // Initialize each seed as its own cluster
-            for (seedIdx in seedPositions) {
+            for (i in 0 until seedCount) {
+                val sx = seedRng.integer(0, gridSize - 1)
+                val sy = seedRng.integer(0, gridSize - 1)
+                val seedIdx = sy * gridSize + sx
                 if (!opened[seedIdx]) {
                     opened[seedIdx] = true
                     clusterLabel[seedIdx] = nextCluster++
-
-                    // Add neighbors to frontier
-                    val cx = seedIdx % gridSize
-                    val cy = seedIdx / gridSize
-                    for (d in 0..3) {
-                        val nx = cx + dx4[d]
-                        val ny = cy + dy4[d]
-                        if (nx in 0 until gridSize && ny in 0 until gridSize) {
-                            val nIdx = ny * gridSize + nx
-                            if (!opened[nIdx]) {
-                                frontier.add(encode(cellValue[nIdx], nIdx))
-                            }
-                        }
-                    }
+                    val scx = seedIdx % gridSize
+                    val scy = seedIdx / gridSize
+                    if (scy > 0) { val nIdx = seedIdx - gridSize; if (!opened[nIdx]) frontier.add(encode(cellValue[nIdx], nIdx)) }
+                    if (scx < gridSize - 1) { val nIdx = seedIdx + 1; if (!opened[nIdx]) frontier.add(encode(cellValue[nIdx], nIdx)) }
+                    if (scy < gridSize - 1) { val nIdx = seedIdx + gridSize; if (!opened[nIdx]) frontier.add(encode(cellValue[nIdx], nIdx)) }
+                    if (scx > 0) { val nIdx = seedIdx - 1; if (!opened[nIdx]) frontier.add(encode(cellValue[nIdx], nIdx)) }
                 }
             }
 
-            // Grow: open cells with lowest resistance first
-            var openedCount = seedPositions.count { opened[it] } // seeds already opened
+            var openedCount = nextCluster
             while (openedCount < cellsToOpen && frontier.isNotEmpty()) {
                 val packed = frontier.poll() ?: break
-                val idx = decodeIdx(packed)
-                if (opened[idx]) continue // already opened by another path
+                val idx = (packed and 0xFFFFFFFFL).toInt()
+                if (opened[idx]) continue
 
                 opened[idx] = true
                 openedCount++
 
-                // Assign to the cluster of an already-opened neighbor
                 val cx = idx % gridSize
                 val cy = idx / gridSize
-                for (d in 0..3) {
-                    val nx = cx + dx4[d]
-                    val ny = cy + dy4[d]
-                    if (nx in 0 until gridSize && ny in 0 until gridSize) {
-                        val nIdx = ny * gridSize + nx
-                        if (opened[nIdx] && clusterLabel[nIdx] >= 0 && clusterLabel[idx] == -1) {
-                            clusterLabel[idx] = clusterLabel[nIdx]
-                        }
-                    }
-                }
-                // If still unlabeled (shouldn't happen normally), assign new cluster
-                if (clusterLabel[idx] == -1) {
-                    clusterLabel[idx] = nextCluster++
-                }
+                // Assign to cluster of an opened neighbor
+                if (cy > 0) { val nIdx = idx - gridSize; if (opened[nIdx] && clusterLabel[nIdx] >= 0 && clusterLabel[idx] == -1) clusterLabel[idx] = clusterLabel[nIdx] }
+                if (cx < gridSize - 1) { val nIdx = idx + 1; if (opened[nIdx] && clusterLabel[nIdx] >= 0 && clusterLabel[idx] == -1) clusterLabel[idx] = clusterLabel[nIdx] }
+                if (cy < gridSize - 1) { val nIdx = idx + gridSize; if (opened[nIdx] && clusterLabel[nIdx] >= 0 && clusterLabel[idx] == -1) clusterLabel[idx] = clusterLabel[nIdx] }
+                if (cx > 0) { val nIdx = idx - 1; if (opened[nIdx] && clusterLabel[nIdx] >= 0 && clusterLabel[idx] == -1) clusterLabel[idx] = clusterLabel[nIdx] }
+                if (clusterLabel[idx] == -1) clusterLabel[idx] = nextCluster++
 
                 // Add unopened neighbors to frontier
-                for (d in 0..3) {
-                    val nx = cx + dx4[d]
-                    val ny = cy + dy4[d]
-                    if (nx in 0 until gridSize && ny in 0 until gridSize) {
-                        val nIdx = ny * gridSize + nx
-                        if (!opened[nIdx]) {
-                            frontier.add(encode(cellValue[nIdx], nIdx))
-                        }
-                    }
-                }
+                if (cy > 0) { val nIdx = idx - gridSize; if (!opened[nIdx]) frontier.add(encode(cellValue[nIdx], nIdx)) }
+                if (cx < gridSize - 1) { val nIdx = idx + 1; if (!opened[nIdx]) frontier.add(encode(cellValue[nIdx], nIdx)) }
+                if (cy < gridSize - 1) { val nIdx = idx + gridSize; if (!opened[nIdx]) frontier.add(encode(cellValue[nIdx], nIdx)) }
+                if (cx > 0) { val nIdx = idx - 1; if (!opened[nIdx]) frontier.add(encode(cellValue[nIdx], nIdx)) }
             }
 
-            // Compute cluster sizes
             val clusterCount = nextCluster.coerceAtLeast(1)
-            val clusterSizes = IntArray(clusterCount)
+            clusterSizes = IntArray(clusterCount)
             for (idx in 0 until totalCells) {
                 val c = clusterLabel[idx]
                 if (c >= 0) clusterSizes[c]++
             }
 
-            // Find spanning clusters
             val touchesTop = BooleanArray(clusterCount)
             val touchesBottom = BooleanArray(clusterCount)
             for (x in 0 until gridSize) {
@@ -275,92 +285,95 @@ class PercolationGenerator : Generator {
                 val bottomC = clusterLabel[(gridSize - 1) * gridSize + x]
                 if (bottomC >= 0) touchesBottom[bottomC] = true
             }
-            val isSpanning = BooleanArray(clusterCount) { touchesTop[it] && touchesBottom[it] }
-
-            val maxSize = clusterSizes.maxOrNull()?.coerceAtLeast(1) ?: 1
-
-            // Render
-            renderPixels(
-                bitmap, canvas, w, h, gridSize, totalCells,
-                clusterLabel, clusterSizes, isSpanning,
-                maxSize, showSpanning, colorMode, palette
-            )
+            isSpanning = BooleanArray(clusterCount) { touchesTop[it] && touchesBottom[it] }
         }
-    }
 
-    /**
-     * Shared pixel rendering for both site and invasion modes.
-     * Colors each cell based on [colorMode], optionally highlighting spanning clusters.
-     */
-    private fun renderPixels(
-        bitmap: Bitmap,
-        canvas: Canvas,
-        w: Int,
-        h: Int,
-        gridSize: Int,
-        totalCells: Int,
-        clusterLabel: IntArray,
-        clusterSizes: IntArray,
-        isSpanning: BooleanArray,
-        maxSize: Int,
-        showSpanning: Boolean,
-        colorMode: String,
-        palette: Palette
-    ) {
-        val cellW = w.toFloat() / gridSize
-        val cellH = h.toFloat() / gridSize
-        val pixels = IntArray(w * h)
+        // ---- Phase 1: Compute color per grid cell ----
+        val maxSize = clusterSizes.maxOrNull()?.coerceAtLeast(1) ?: 1
+        val logMax = ln(maxSize.toFloat() + 1f)
         val paletteColors = palette.colorInts()
         val numPaletteColors = paletteColors.size
-        val logMax = ln(maxSize.toFloat() + 1f)
 
-        for (py in 0 until h) {
-            val gy = (py / cellH).toInt().coerceAtMost(gridSize - 1)
-            for (px in 0 until w) {
-                val gx = (px / cellW).toInt().coerceAtMost(gridSize - 1)
-                val idx = gy * gridSize + gx
-                val cluster = clusterLabel[idx]
+        val gridColors: IntArray
+        val rgc = reuseGridColors
+        if (rgc != null && rgc.size >= totalCells) {
+            gridColors = rgc
+        } else {
+            gridColors = IntArray(totalCells)
+            reuseGridColors = gridColors
+        }
 
-                if (cluster < 0) {
-                    // Blocked / unopened cell
-                    pixels[py * w + px] = Color.BLACK
-                } else if (showSpanning && isSpanning[cluster]) {
-                    // Spanning cluster highlighted: bright white-tinted palette color
-                    val baseColor = when (colorMode) {
-                        "cluster-size" -> {
-                            val t = ln(clusterSizes[cluster].toFloat() + 1f) / logMax
-                            palette.lerpColor(t)
-                        }
-                        "cluster-id" -> paletteColors[cluster % numPaletteColors]
-                        else -> paletteColors[0] // monochrome
-                    }
-                    // Brighten toward white to highlight the spanning cluster
-                    val r = ((Color.red(baseColor) + 255) / 2).coerceAtMost(255)
-                    val g = ((Color.green(baseColor) + 255) / 2).coerceAtMost(255)
-                    val b = ((Color.blue(baseColor) + 255) / 2).coerceAtMost(255)
-                    pixels[py * w + px] = Color.rgb(r, g, b)
-                } else {
-                    // Normal open cell: color by colorMode
-                    pixels[py * w + px] = when (colorMode) {
-                        "cluster-size" -> {
-                            // Log-scaled palette mapping by cluster area
-                            val t = ln(clusterSizes[cluster].toFloat() + 1f) / logMax
-                            palette.lerpColor(t)
-                        }
-                        "cluster-id" -> {
-                            // Each cluster gets a distinct palette color by index
-                            paletteColors[cluster % numPaletteColors]
-                        }
-                        else -> {
-                            // Monochrome: flat single palette color
-                            paletteColors[0]
-                        }
-                    }
+        // Pre-compute palette LUT for cluster-size mode (avoids per-cell lerpColor)
+        val palLutSize = 256
+        val palLutMax = palLutSize - 1
+        val palLut = if (colorMode == "cluster-size") {
+            IntArray(palLutSize) { palette.lerpColor(it.toFloat() / palLutMax) }
+        } else null
+
+        // Pre-compute per-cluster colors to avoid repeated work for large clusters
+        val clusterColor = IntArray(clusterSizes.size)
+        val clusterSpanColor = if (showSpanning) IntArray(clusterSizes.size) else null
+        for (c in clusterSizes.indices) {
+            val base = when (colorMode) {
+                "cluster-size" -> {
+                    val t = ln(clusterSizes[c].toFloat() + 1f) / logMax
+                    palLut!![(t * palLutMax).toInt().coerceIn(0, palLutMax)]
                 }
+                "cluster-id" -> paletteColors[c % numPaletteColors]
+                else -> paletteColors[0]
+            }
+            clusterColor[c] = base
+            if (showSpanning && isSpanning[c]) {
+                clusterSpanColor!![c] = Color.rgb(
+                    ((Color.red(base) + 255) / 2).coerceAtMost(255),
+                    ((Color.green(base) + 255) / 2).coerceAtMost(255),
+                    ((Color.blue(base) + 255) / 2).coerceAtMost(255)
+                )
+            }
+        }
+
+        for (i in 0 until totalCells) {
+            val cluster = clusterLabel[i]
+            gridColors[i] = if (cluster < 0) {
+                Color.BLACK
+            } else if (showSpanning && isSpanning[cluster]) {
+                clusterSpanColor!![cluster]
+            } else {
+                clusterColor[cluster]
+            }
+        }
+
+        // ---- Phase 2: Expand grid colors to full pixel array ----
+        val pixels: IntArray
+        val rp = reusePixels
+        val pixelCount = w * h
+        if (rp != null && rp.size >= pixelCount) {
+            pixels = rp
+        } else {
+            pixels = IntArray(pixelCount)
+            reusePixels = pixels
+        }
+
+        val xMap = IntArray(w) { (it * gridSize / w).coerceAtMost(gridSize - 1) }
+        for (py in 0 until h) {
+            val gy = (py * gridSize / h).coerceAtMost(gridSize - 1)
+            val gridRow = gy * gridSize
+            val pixRow = py * w
+            for (px in 0 until w) {
+                pixels[pixRow + px] = gridColors[gridRow + xMap[px]]
             }
         }
 
         bitmap.setPixels(pixels, 0, w, 0, 0, w, h)
         canvas.drawBitmap(bitmap, 0f, 0f, null)
+    }
+
+    private fun encode(value: Float, idx: Int): Long {
+        return (value.toBits().toLong() shl 32) or (idx.toLong() and 0xFFFFFFFFL)
+    }
+
+    override fun estimateCost(params: Map<String, Any>, quality: Quality): Float {
+        val gridSize = (params["gridSize"] as? Number)?.toInt() ?: 128
+        return (gridSize * gridSize / 16384f).coerceIn(0.1f, 1f)
     }
 }
