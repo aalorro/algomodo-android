@@ -14,10 +14,13 @@ import com.artmondo.algomodo.generators.Quality
 import com.artmondo.algomodo.rendering.SvgBuilder
 import com.artmondo.algomodo.rendering.SvgPath
 import kotlin.math.PI
+import kotlin.math.abs
 import kotlin.math.cos
 import kotlin.math.max
 import kotlin.math.min
+import kotlin.math.roundToInt
 import kotlin.math.sin
+import kotlin.math.sqrt
 
 class LSystemGenerator : Generator {
 
@@ -89,7 +92,7 @@ class LSystemGenerator : Generator {
             name = "Fill",
             key = "fill",
             group = ParamGroup.COMPOSITION,
-            help = "auto: fit single pattern to canvas | half: tile to ~50% coverage | full: tile to fill the page",
+            help = "auto: single pattern | half: scatter random instances across ~half the canvas | full: fill the page with unique randomly placed elements",
             options = listOf("auto", "half", "full"),
             default = "auto"
         ),
@@ -249,79 +252,139 @@ class LSystemGenerator : Generator {
     }
 
     /**
-     * Tile raw segments into a grid to achieve the target coverage fraction.
-     * Returns the original segments if already above the target or fill is "auto".
+     * Scatter-fill the canvas with unique L-system instances at random positions,
+     * rotations, and scales. Each instance is re-interpreted with a different seed
+     * for organic presets (Tree/Plant) so every element looks unique.
+     * Geometric presets keep their exact shape but vary in rotation/scale.
+     *
+     * Returns canvas-coordinate segments (skip fitSegments after this).
      */
-    private fun tileSegments(
-        segments: List<Segment>,
-        canvasW: Float, canvasH: Float,
-        fill: String, mirror: Boolean
+    private fun scatterFill(
+        instructions: String,
+        refSegments: List<Segment>,
+        stepLength: Float,
+        angleDeg: Float,
+        startAngleRad: Float,
+        drawChars: Set<Char>,
+        stochastic: Float,
+        seed: Int,
+        canvasW: Float,
+        canvasH: Float,
+        fill: String,
+        isOrganic: Boolean
     ): List<Segment> {
-        if (fill == "auto" || segments.isEmpty()) return segments
+        if (refSegments.isEmpty()) return emptyList()
 
-        // Bounding box of raw segments
+        val rng = SeededRNG(seed xor 0x5CA77E4.toInt())
+
+        // Reference bounding box for scaling
         var minX = Float.MAX_VALUE; var maxX = -Float.MAX_VALUE
         var minY = Float.MAX_VALUE; var maxY = -Float.MAX_VALUE
-        for (seg in segments) {
+        for (seg in refSegments) {
             minX = min(minX, min(seg.x1, seg.x2))
             maxX = max(maxX, max(seg.x1, seg.x2))
             minY = min(minY, min(seg.y1, seg.y2))
             maxY = max(maxY, max(seg.y1, seg.y2))
         }
-
         val rawW = (maxX - minX).coerceAtLeast(1f)
         val rawH = (maxY - minY).coerceAtLeast(1f)
-        val spacing = max(rawW, rawH) * 0.08f
+        val cx = (minX + maxX) * 0.5f
+        val cy = (minY + maxY) * 0.5f
 
-        val margin = canvasW * 0.05f
+        val margin = canvasW * 0.03f
         val availW = canvasW - 2f * margin
         val availH = canvasH - 2f * margin
         val canvasAR = availW / availH
 
-        val targetCoverage = if (fill == "full") 0.80f else 0.45f
-
-        // Grow grid until coverage target is reached
-        var nx = 1; var ny = 1
-        for (attempt in 0 until 30) {
-            val tiledW = nx * rawW + (nx - 1) * spacing
-            val tiledH = ny * rawH + (ny - 1) * spacing
-            val fitScale = min(availW / tiledW, availH / tiledH)
-            val coverage = (tiledW * fitScale * tiledH * fitScale) / (availW * availH)
-            if (coverage >= targetCoverage) break
-            // Add column or row depending on which brings aspect ratio closer to canvas
-            val tiledAR = tiledW / tiledH
-            if (tiledAR < canvasAR) nx++ else ny++
-            // Safety cap on total segments
-            if (nx * ny * segments.size > 300_000) break
+        // Determine grid layout — roughly square cells matching canvas aspect ratio
+        val targetCells = if (fill == "full") rng.integer(14, 22) else rng.integer(5, 9)
+        var bestCols = 1; var bestRows = 1; var bestDiff = Int.MAX_VALUE
+        for (cols in 1..8) {
+            val rows = (cols.toFloat() / canvasAR).roundToInt().coerceIn(1, 12)
+            val diff = abs(cols * rows - targetCells)
+            if (diff < bestDiff || (diff == bestDiff && cols * rows > bestCols * bestRows)) {
+                bestCols = cols; bestRows = rows; bestDiff = diff
+            }
         }
 
-        if (nx == 1 && ny == 1) return segments
+        val gridCols = bestCols
+        val gridRows = bestRows
+        val cellW = availW / gridCols
+        val cellH = availH / gridRows
 
-        val tiled = ArrayList<Segment>(nx * ny * segments.size)
-        val midX = (minX + maxX) * 0.5f
-        for (gy in 0 until ny) {
-            val oy = gy * (rawH + spacing)
-            for (gx in 0 until nx) {
-                val ox = gx * (rawW + spacing)
-                // Mirror alternating columns horizontally for visual variety
-                val mirrorX = mirror && gx % 2 == 1
-                for (seg in segments) {
-                    val sx1: Float; val sx2: Float
-                    if (mirrorX) {
-                        sx1 = 2f * midX - seg.x1
-                        sx2 = 2f * midX - seg.x2
-                    } else {
-                        sx1 = seg.x1; sx2 = seg.x2
+        val result = ArrayList<Segment>()
+        val maxTotalSegs = 250_000
+        val segsPerInstance = refSegments.size
+
+        for (row in 0 until gridRows) {
+            for (col in 0 until gridCols) {
+                if (result.size + segsPerInstance > maxTotalSegs) break
+
+                // For half fill, randomly skip ~40% of cells
+                if (fill == "half" && rng.random() < 0.4f) continue
+
+                // Cell center with position jitter
+                val px = margin + (col + 0.5f) * cellW + rng.range(-cellW * 0.12f, cellW * 0.12f)
+                val py = margin + (row + 0.5f) * cellH + rng.range(-cellH * 0.12f, cellH * 0.12f)
+
+                // Scale to fit cell with random size variation
+                val maxDim = max(rawW, rawH)
+                val fitScale = min(cellW * 0.88f, cellH * 0.88f) / maxDim
+                val scale = fitScale * rng.range(0.5f, 1.0f)
+
+                // Random rotation
+                val rot = rng.range(0f, 2f * PI.toFloat())
+                val cosR = cos(rot)
+                val sinR = sin(rot)
+
+                // Generate a unique instance per cell
+                val instanceSeed = seed + row * 100 + col + 1
+                val segs = if (isOrganic) {
+                    // Organic presets: re-interpret with different seed + slight angle jitter
+                    val jitter = stochastic.coerceAtLeast(3f)
+                    val angleVar = angleDeg + rng.range(-4f, 4f)
+                    interpret(instructions, stepLength, angleVar, startAngleRad,
+                        drawChars, jitter, instanceSeed)
+                } else {
+                    // Geometric presets: keep exact shape, variety comes from rotation/scale
+                    refSegments
+                }
+
+                // Recompute center for organic instances (their bbox shifts with jitter)
+                val icx: Float; val icy: Float
+                if (isOrganic && segs !== refSegments) {
+                    var iMinX = Float.MAX_VALUE; var iMaxX = -Float.MAX_VALUE
+                    var iMinY = Float.MAX_VALUE; var iMaxY = -Float.MAX_VALUE
+                    for (seg in segs) {
+                        iMinX = min(iMinX, min(seg.x1, seg.x2))
+                        iMaxX = max(iMaxX, max(seg.x1, seg.x2))
+                        iMinY = min(iMinY, min(seg.y1, seg.y2))
+                        iMaxY = max(iMaxY, max(seg.y1, seg.y2))
                     }
-                    tiled.add(Segment(
-                        sx1 - minX + ox, seg.y1 - minY + oy,
-                        sx2 - minX + ox, seg.y2 - minY + oy,
+                    icx = (iMinX + iMaxX) * 0.5f
+                    icy = (iMinY + iMaxY) * 0.5f
+                } else {
+                    icx = cx; icy = cy
+                }
+
+                // Transform: center → scale → rotate → translate to cell position
+                for (seg in segs) {
+                    val dx1 = (seg.x1 - icx) * scale
+                    val dy1 = (seg.y1 - icy) * scale
+                    val dx2 = (seg.x2 - icx) * scale
+                    val dy2 = (seg.y2 - icy) * scale
+                    result.add(Segment(
+                        px + dx1 * cosR - dy1 * sinR,
+                        py + dx1 * sinR + dy1 * cosR,
+                        px + dx2 * cosR - dy2 * sinR,
+                        py + dx2 * sinR + dy2 * cosR,
                         seg.depth
                     ))
                 }
             }
         }
-        return tiled
+
+        return result
     }
 
     private fun fitSegments(
@@ -389,10 +452,13 @@ class LSystemGenerator : Generator {
             instructions, stepLength, angleDeg, startAngleRad,
             def.drawChars, stochastic, seed
         )
-        // Mirror columns for branching presets (Tree, Plant) for natural forest look
-        val mirrorCols = preset.lowercase().let { it == "tree" || it == "plant" }
-        val tiledSegments = tileSegments(rawSegments, w, h, fill, mirrorCols)
-        val segments = fitSegments(tiledSegments, w, h, w * 0.05f)
+        val isOrganic = preset.lowercase().let { it == "tree" || it == "plant" }
+        val segments = if (fill != "auto") {
+            scatterFill(instructions, rawSegments, stepLength, angleDeg, startAngleRad,
+                def.drawChars, stochastic, seed, w, h, fill, isOrganic)
+        } else {
+            fitSegments(rawSegments, w, h, w * 0.05f)
+        }
 
         canvas.drawColor(Color.BLACK)
 
@@ -498,9 +564,13 @@ class LSystemGenerator : Generator {
             instructions, stepLength, angleDeg, startAngleRad,
             def.drawChars, stochastic, seed
         )
-        val mirrorCols = preset.lowercase().let { it == "tree" || it == "plant" }
-        val tiledSegments = tileSegments(rawSegments, w, h, fill, mirrorCols)
-        val segments = fitSegments(tiledSegments, w, h, w * 0.05f)
+        val isOrganic = preset.lowercase().let { it == "tree" || it == "plant" }
+        val segments = if (fill != "auto") {
+            scatterFill(instructions, rawSegments, stepLength, angleDeg, startAngleRad,
+                def.drawChars, stochastic, seed, w, h, fill, isOrganic)
+        } else {
+            fitSegments(rawSegments, w, h, w * 0.05f)
+        }
 
         if (segments.isEmpty()) return emptyList()
 
