@@ -174,8 +174,8 @@ class CurlFluidGenerator : Generator {
         val gridH = (48f * h / w).toInt().coerceIn(24, 96)
         val gw1 = gridW + 1   // curl grid has +1 points (vertex-centered)
         val gh1 = gridH + 1
-        val noiseW = gridW + 2 // +2 border cells for central differences
-        val noiseH = gridH + 2
+        val noiseW = gridW + 3 // +3: curl grid (gw1×gh1) needs ±1 neighbor → noise grid is 2 wider each side
+        val noiseH = gridH + 3
         val cellW = w / gridW
         val cellH = h / gridH
         val invCellW = 1f / cellW
