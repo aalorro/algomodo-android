@@ -2,7 +2,6 @@ package com.artmondo.algomodo.generators.cellular
 
 import android.graphics.Bitmap
 import android.graphics.Canvas
-import android.graphics.Color
 import com.artmondo.algomodo.core.rng.SeededRNG
 import com.artmondo.algomodo.data.palettes.Palette
 import com.artmondo.algomodo.generators.Generator
@@ -38,6 +37,22 @@ class CyclicCaGenerator : Generator {
         "stepsPerFrame" to 2f
     )
 
+    // ---- Simulation cache: avoids re-running all steps from scratch each frame ----
+    private class SimState(
+        val gridSize: Int,
+        val seed: Int,
+        val numStates: Int,
+        val threshold: Int,
+        val neighborhood: String,
+        var grid: IntArray,
+        var nextGrid: IntArray,
+        var stepsDone: Int
+    )
+
+    @Volatile private var cachedSim: SimState? = null
+    @Volatile private var reusePixels: IntArray? = null
+    @Volatile private var reuseGridColors: IntArray? = null
+
     override fun renderCanvas(
         canvas: Canvas,
         bitmap: Bitmap,
@@ -48,73 +63,124 @@ class CyclicCaGenerator : Generator {
         time: Float
     ) {
         val numStates = (params["states"] as? Number)?.toInt() ?: 8
-        val gridSize = (params["gridSize"] as? Number)?.toInt() ?: 150
-        val threshold = (params["threshold"] as? Number)?.toInt() ?: 1
+        val gridSize = (params["gridSize"] as? Number)?.toInt() ?: 128
+        val threshold = (params["threshold"] as? Number)?.toInt() ?: 2
         val neighborhood = (params["neighborhood"] as? String) ?: "moore"
         val warmupSteps = (params["warmupSteps"] as? Number)?.toInt() ?: 100
         val stepsPerSecond = (params["stepsPerFrame"] as? Number)?.toFloat() ?: 2f
 
         val w = bitmap.width
         val h = bitmap.height
-        val steps = warmupSteps + (time * stepsPerSecond).toInt()
+        val targetSteps = warmupSteps + (time * stepsPerSecond).toInt()
         val totalCells = gridSize * gridSize
+        val N = gridSize
+        val Nm1 = N - 1
 
-        // Initialize from seed
-        val rng = SeededRNG(seed)
-        var grid = IntArray(totalCells) { rng.integer(0, numStates - 1) }
+        // ---- Get or create simulation state (cache across frames) ----
+        val sim = cachedSim?.takeIf {
+            it.gridSize == gridSize && it.seed == seed &&
+                it.numStates == numStates && it.threshold == threshold &&
+                it.neighborhood == neighborhood &&
+                it.stepsDone <= targetSteps
+        } ?: run {
+            val rng = SeededRNG(seed)
+            SimState(
+                gridSize, seed, numStates, threshold, neighborhood,
+                IntArray(totalCells) { rng.integer(0, numStates - 1) },
+                IntArray(totalCells),
+                0
+            )
+        }
+        cachedSim = sim
 
-        // Evolve
-        for (s in 0 until steps) {
-            val next = IntArray(totalCells)
-            for (y in 0 until gridSize) {
-                for (x in 0 until gridSize) {
-                    val idx = y * gridSize + x
-                    val currentState = grid[idx]
-                    val nextState = (currentState + 1) % numStates
+        // ---- Advance simulation from stepsDone to targetSteps ----
+        var curGrid = sim.grid
+        var nxtGrid = sim.nextGrid
+        val isMoore = neighborhood == "moore"
+
+        for (s in sim.stepsDone until targetSteps) {
+            for (y in 0 until N) {
+                val rowOff = y * N
+                val topOff = if (y > 0) (y - 1) * N else Nm1 * N
+                val botOff = if (y < Nm1) (y + 1) * N else 0
+
+                for (x in 0 until N) {
+                    val idx = rowOff + x
+                    val nextState = (curGrid[idx] + 1) % numStates
+                    val left = if (x > 0) x - 1 else Nm1
+                    val right = if (x < Nm1) x + 1 else 0
 
                     var count = 0
-                    if (neighborhood == "vonneumann") {
-                        // Von Neumann: 4 orthogonal neighbors only
-                        val dirs = arrayOf(intArrayOf(0, -1), intArrayOf(0, 1), intArrayOf(-1, 0), intArrayOf(1, 0))
-                        for (d in dirs) {
-                            val nx = (x + d[0] + gridSize) % gridSize
-                            val ny = (y + d[1] + gridSize) % gridSize
-                            if (grid[ny * gridSize + nx] == nextState) count++
-                        }
-                    } else {
-                        // Moore: 8 neighbors
-                        for (dy in -1..1) {
-                            for (dx in -1..1) {
-                                if (dx == 0 && dy == 0) continue
-                                val nx = (x + dx + gridSize) % gridSize
-                                val ny = (y + dy + gridSize) % gridSize
-                                if (grid[ny * gridSize + nx] == nextState) count++
-                            }
-                        }
+                    // 4 orthogonal neighbors (Von Neumann)
+                    if (curGrid[topOff + x] == nextState) count++
+                    if (curGrid[botOff + x] == nextState) count++
+                    if (curGrid[rowOff + left] == nextState) count++
+                    if (curGrid[rowOff + right] == nextState) count++
+
+                    if (isMoore) {
+                        // 4 diagonal neighbors
+                        if (curGrid[topOff + left] == nextState) count++
+                        if (curGrid[topOff + right] == nextState) count++
+                        if (curGrid[botOff + left] == nextState) count++
+                        if (curGrid[botOff + right] == nextState) count++
                     }
 
-                    next[idx] = if (count >= threshold) nextState else currentState
+                    nxtGrid[idx] = if (count >= threshold) nextState else curGrid[idx]
                 }
             }
-            grid = next
+            // Swap buffers (no allocation, no copy)
+            val tmp = curGrid; curGrid = nxtGrid; nxtGrid = tmp
+        }
+        sim.grid = curGrid
+        sim.nextGrid = nxtGrid
+        sim.stepsDone = targetSteps
+
+        // ---- Phase 1: Compute color per grid cell using state LUT ----
+        val stateLut = IntArray(numStates) { state ->
+            palette.lerpColor(state.toFloat() / (numStates - 1).coerceAtLeast(1))
         }
 
-        // Render
-        val cellW = w.toFloat() / gridSize
-        val cellH = h.toFloat() / gridSize
-        val pixels = IntArray(w * h)
+        val gridColors: IntArray
+        val rgc = reuseGridColors
+        if (rgc != null && rgc.size >= totalCells) {
+            gridColors = rgc
+        } else {
+            gridColors = IntArray(totalCells)
+            reuseGridColors = gridColors
+        }
 
+        for (i in 0 until totalCells) {
+            gridColors[i] = stateLut[curGrid[i]]
+        }
+
+        // ---- Phase 2: Expand grid colors to full pixel array ----
+        val pixels: IntArray
+        val rp = reusePixels
+        val pixelCount = w * h
+        if (rp != null && rp.size >= pixelCount) {
+            pixels = rp
+        } else {
+            pixels = IntArray(pixelCount)
+            reusePixels = pixels
+        }
+
+        val xMap = IntArray(w) { (it * N / w).coerceAtMost(Nm1) }
         for (py in 0 until h) {
-            val gy = (py / cellH).toInt().coerceAtMost(gridSize - 1)
+            val gy = (py * N / h).coerceAtMost(Nm1)
+            val gridRow = gy * N
+            val pixRow = py * w
             for (px in 0 until w) {
-                val gx = (px / cellW).toInt().coerceAtMost(gridSize - 1)
-                val state = grid[gy * gridSize + gx]
-                val t = state.toFloat() / (numStates - 1).coerceAtLeast(1)
-                pixels[py * w + px] = palette.lerpColor(t)
+                pixels[pixRow + px] = gridColors[gridRow + xMap[px]]
             }
         }
 
         bitmap.setPixels(pixels, 0, w, 0, 0, w, h)
         canvas.drawBitmap(bitmap, 0f, 0f, null)
+    }
+
+    override fun estimateCost(params: Map<String, Any>, quality: Quality): Float {
+        val gridSize = (params["gridSize"] as? Number)?.toInt() ?: 128
+        val warmupSteps = (params["warmupSteps"] as? Number)?.toInt() ?: 100
+        return (gridSize * gridSize.toLong() * warmupSteps / 50_000_000f).coerceIn(0.1f, 1f)
     }
 }
