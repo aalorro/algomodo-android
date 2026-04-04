@@ -97,10 +97,10 @@ class CyclicCaGenerator : Generator {
         var curGrid = sim.grid
         var nxtGrid = sim.nextGrid
         val isMoore = neighborhood == "moore"
-        // Scale threshold for Von Neumann (4 neighbors vs Moore's 8):
-        // threshold=2 on 8 neighbors (25%) ≈ threshold=1 on 4 neighbors (25%)
-        val effectiveThreshold = if (isMoore) threshold
-        else ((threshold + 1) / 2).coerceAtLeast(1)
+        // Von Neumann only has 4 neighbors — threshold > 1 almost always freezes
+        // the grid because the probability of multiple neighbors matching is too low.
+        // Force threshold=1 for Von Neumann to ensure consistent wave/spiral dynamics.
+        val effectiveThreshold = if (isMoore) threshold else 1
 
         for (s in sim.stepsDone until targetSteps) {
             for (y in 0 until N) {
