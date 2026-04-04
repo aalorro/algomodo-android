@@ -35,7 +35,9 @@ import com.artmondo.algomodo.generators.Quality
 import com.artmondo.algomodo.rendering.PostFXProcessor
 import com.artmondo.algomodo.rendering.PostFXSettings
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.runInterruptible
 import kotlinx.coroutines.withContext
+import java.util.concurrent.CancellationException
 import java.util.concurrent.atomic.AtomicInteger
 import java.util.concurrent.atomic.AtomicLong
 
@@ -152,7 +154,9 @@ private fun StaticCanvas(
                 previewBitmap = bmp
                 val c = Canvas(bmp)
                 c.drawColor(android.graphics.Color.BLACK)
-                generator.renderCanvas(c, bmp, params, seed, palette, Quality.DRAFT, staticTime)
+                runInterruptible {
+                    generator.renderCanvas(c, bmp, params, seed, palette, Quality.DRAFT, staticTime)
+                }
             }
             if (previewBitmap != null && renderGeneration.get() == myGeneration) {
                 val old = renderedBitmap
@@ -160,6 +164,8 @@ private fun StaticCanvas(
                 previewBitmap = null
                 old?.recycle()
             }
+        } catch (e: CancellationException) {
+            throw e  // let coroutine cancellation propagate
         } catch (_: Exception) {
             // Preview failed — fall through to full render
         } finally {
@@ -186,17 +192,29 @@ private fun StaticCanvas(
                 val canvas = Canvas(bitmap)
                 canvas.drawColor(android.graphics.Color.BLACK)
                 try {
-                    generator.renderCanvas(canvas, bitmap, params, seed, palette, quality, staticTime)
+                    // runInterruptible makes this blocking call cancellable:
+                    // when the LaunchedEffect restarts (inputs changed), the
+                    // coroutine is cancelled, the thread is interrupted, and
+                    // generators' Thread.join() calls throw InterruptedException
+                    // — freeing the dispatcher in milliseconds instead of seconds.
+                    runInterruptible {
+                        generator.renderCanvas(canvas, bitmap, params, seed, palette, quality, staticTime)
+                    }
                     PostFXProcessor.apply(bitmap, postFX)
 
                     // Safety net: if output is nearly all-black, re-render at time=0
                     // to catch generators with scroll/animation offsets that push
                     // content off canvas at time=2.0
                     if (generator.supportsAnimation && isBitmapBlank(bitmap)) {
+                        if (renderGeneration.get() != myGeneration) return@withContext
                         canvas.drawColor(android.graphics.Color.BLACK)
-                        generator.renderCanvas(canvas, bitmap, params, seed, palette, quality, 0f)
+                        runInterruptible {
+                            generator.renderCanvas(canvas, bitmap, params, seed, palette, quality, 0f)
+                        }
                         PostFXProcessor.apply(bitmap, postFX)
                     }
+                } catch (e: CancellationException) {
+                    throw e  // let coroutine cancellation propagate
                 } catch (e: Exception) {
                     android.util.Log.e("AlgoCanvas", "Render failed for ${generator.id}", e)
                     canvas.drawColor(android.graphics.Color.BLACK)
