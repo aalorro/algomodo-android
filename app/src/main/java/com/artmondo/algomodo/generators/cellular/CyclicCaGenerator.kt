@@ -97,6 +97,10 @@ class CyclicCaGenerator : Generator {
         var curGrid = sim.grid
         var nxtGrid = sim.nextGrid
         val isMoore = neighborhood == "moore"
+        // Scale threshold for Von Neumann (4 neighbors vs Moore's 8):
+        // threshold=2 on 8 neighbors (25%) ≈ threshold=1 on 4 neighbors (25%)
+        val effectiveThreshold = if (isMoore) threshold
+        else ((threshold + 1) / 2).coerceAtLeast(1)
 
         for (s in sim.stepsDone until targetSteps) {
             for (y in 0 until N) {
@@ -125,7 +129,7 @@ class CyclicCaGenerator : Generator {
                         if (curGrid[botOff + right] == nextState) count++
                     }
 
-                    nxtGrid[idx] = if (count >= threshold) nextState else curGrid[idx]
+                    nxtGrid[idx] = if (count >= effectiveThreshold) nextState else curGrid[idx]
                 }
             }
             // Swap buffers (no allocation, no copy)
