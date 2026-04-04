@@ -133,22 +133,40 @@ private fun StaticCanvas(
         onDispose { renderedBitmap?.recycle() }
     }
 
-    // Instant transition: clear stale bitmap when generator changes (surprise me)
-    var prevGenId by remember { mutableStateOf(generator.id) }
-    if (generator.id != prevGenId) {
-        prevGenId = generator.id
-        renderedBitmap?.recycle()
-        renderedBitmap = null
-    }
-
     LaunchedEffect(generator.id, params, seed, palette, quality, aspectRatio, postFX, staticTime, renderTrigger) {
-        // Debounce: let rapid changes (surprise-me / random clicks) settle
-        // before starting an expensive render. The coroutine is cancelled
-        // during this delay if inputs change again, so only the final
-        // request actually renders.
-        kotlinx.coroutines.delay(180)
+        // Short debounce lets rapid changes (surprise-me / random clicks) settle.
+        kotlinx.coroutines.delay(80)
         val myGeneration = renderGeneration.incrementAndGet()
         isRendering = true
+
+        // Phase 1: Fast draft preview for instant visual feedback.
+        // Runs on Dispatchers.Default so it is NOT blocked by a stale
+        // full-quality render still occupying renderDispatcher.
+        var previewBitmap: Bitmap? = null
+        try {
+            withContext(Dispatchers.Default) {
+                if (renderGeneration.get() != myGeneration) return@withContext
+                val pw = aspectRatio.width(180)
+                val ph = aspectRatio.height(180)
+                val bmp = Bitmap.createBitmap(pw, ph, Bitmap.Config.ARGB_8888)
+                previewBitmap = bmp
+                val c = Canvas(bmp)
+                c.drawColor(android.graphics.Color.BLACK)
+                generator.renderCanvas(c, bmp, params, seed, palette, Quality.DRAFT, staticTime)
+            }
+            if (previewBitmap != null && renderGeneration.get() == myGeneration) {
+                val old = renderedBitmap
+                renderedBitmap = previewBitmap
+                previewBitmap = null
+                old?.recycle()
+            }
+        } catch (_: Exception) {
+            // Preview failed — fall through to full render
+        } finally {
+            previewBitmap?.recycle()
+        }
+
+        // Phase 2: Full quality render
         var newBitmap: Bitmap? = null
         try {
             withContext(renderDispatcher) {
