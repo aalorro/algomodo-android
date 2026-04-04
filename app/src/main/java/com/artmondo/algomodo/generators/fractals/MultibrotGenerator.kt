@@ -80,12 +80,19 @@ class MultibrotGenerator : Generator {
         val escapeR = 2.0.pow(1.0 / (power - 1)).coerceAtLeast(2.0)
         val escapeR2 = escapeR * escapeR
 
-        val pixels = IntArray(w * h)
+        // Adaptive resolution: render at reduced size during animation to avoid freezes
+        val isAnim = time > 0f
+        val renderW = if (isAnim) (w * 3 / 5).coerceAtLeast(w / 2) else w
+        val renderH = if (isAnim) (h * 3 / 5).coerceAtLeast(h / 2) else h
+
+        val pixels = IntArray(renderW * renderH)
         val lnPower = ln(power)
 
-        // Check if power is close to an integer for fast-path
+        // Check if power is close to an integer for fast-path.
+        // During animation, snap to nearest integer to avoid the extremely
+        // expensive polar-form path (sqrt + atan2 + pow + cos + sin per iteration).
         val intPower = power.roundToInt()
-        val useIntegerPath = abs(power - intPower) < 0.01 && intPower >= 2
+        val useIntegerPath = (isAnim && intPower >= 2) || (abs(power - intPower) < 0.01 && intPower >= 2)
 
         val lutSize = 256
         val paletteLut = IntArray(lutSize) { palette.lerpColor(it.toFloat() / (lutSize - 1)) }
@@ -97,17 +104,17 @@ class MultibrotGenerator : Generator {
         )
 
         val timeShift = time * speed * 0.02f
-        val invW = 1.0 / w
-        val invH = 1.0 / h
+        val invW = 1.0 / renderW
+        val invH = 1.0 / renderH
 
         val cores = Runtime.getRuntime().availableProcessors().coerceIn(2, 8)
         val threads = Array(cores) { t ->
             Thread {
-                val y0 = t * h / cores
-                val y1 = (t + 1) * h / cores
+                val y0 = t * renderH / cores
+                val y1 = (t + 1) * renderH / cores
                 for (py in y0 until y1) {
                     val ciBase = centerY + (py * invH - 0.5) * rangeY
-                    for (px in 0 until w) {
+                    for (px in 0 until renderW) {
                         val cr = centerX + (px * invW - 0.5) * rangeX
                         val ci = ciBase
 
@@ -153,14 +160,22 @@ class MultibrotGenerator : Generator {
                             paletteLut[(shifted * (lutSize - 1)).toInt().coerceIn(0, lutSize - 1)]
                         }
 
-                        pixels[py * w + px] = color
+                        pixels[py * renderW + px] = color
                     }
                 }
             }.also { it.start() }
         }
         threads.forEach { it.join() }
 
-        bitmap.setPixels(pixels, 0, w, 0, 0, w, h)
+        if (renderW == w && renderH == h) {
+            bitmap.setPixels(pixels, 0, w, 0, 0, w, h)
+        } else {
+            val small = Bitmap.createBitmap(renderW, renderH, Bitmap.Config.ARGB_8888)
+            small.setPixels(pixels, 0, renderW, 0, 0, renderW, renderH)
+            canvas.drawBitmap(small, null, android.graphics.Rect(0, 0, w, h), null)
+            small.recycle()
+            return
+        }
         canvas.drawBitmap(bitmap, 0f, 0f, null)
     }
 
