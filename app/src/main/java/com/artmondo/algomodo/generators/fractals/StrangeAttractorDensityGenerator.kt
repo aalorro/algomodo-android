@@ -178,15 +178,16 @@ class StrangeAttractorDensityGenerator : Generator {
 
         val scaledIterations = when {
             isAnim && quality == Quality.DRAFT -> iterations / 4
+            isAnim && quality == Quality.ULTRA -> iterations
             isAnim -> iterations * 3 / 5
             quality == Quality.DRAFT -> iterations / 3
-            quality == Quality.ULTRA -> iterations * 2
+            quality == Quality.ULTRA -> iterations * 3
             else -> iterations
         }
 
-        // Adaptive resolution during animation
-        val renderW = if (isAnim) (w * 3 / 5).coerceAtLeast(w / 2) else w
-        val renderH = if (isAnim) (h * 3 / 5).coerceAtLeast(h / 2) else h
+        // Adaptive resolution during animation (80% to reduce pixelation)
+        val renderW = if (isAnim) (w * 4 / 5).coerceAtLeast(w / 2) else w
+        val renderH = if (isAnim) (h * 4 / 5).coerceAtLeast(h / 2) else h
         val histSz = renderW * renderH
 
         val attIdx = when (attractor) {
@@ -435,9 +436,52 @@ class StrangeAttractorDensityGenerator : Generator {
         }
         threads.forEach { it.join() }
 
+        // ---- Phase 2.5: 3×3 box blur on histogram to fill gaps ----
+        // Standard technique from flame fractal renderers (Apophysis/Chaotica).
+        // Smooths isolated points into soft spots, eliminating the pixelated look.
+        val blurred = IntArray(histSz)
+        for (y in 1 until renderH - 1) {
+            val row = y * renderW
+            for (x in 1 until renderW - 1) {
+                val idx = row + x
+                blurred[idx] = (
+                    histogram[idx - renderW - 1] + histogram[idx - renderW] * 2 + histogram[idx - renderW + 1] +
+                    histogram[idx - 1] * 2 + histogram[idx] * 4 + histogram[idx + 1] * 2 +
+                    histogram[idx + renderW - 1] + histogram[idx + renderW] * 2 + histogram[idx + renderW + 1]
+                ) / 16
+            }
+        }
+        // Copy edges unblurred
+        for (x in 0 until renderW) {
+            blurred[x] = histogram[x]
+            blurred[(renderH - 1) * renderW + x] = histogram[(renderH - 1) * renderW + x]
+        }
+        for (y in 1 until renderH - 1) {
+            blurred[y * renderW] = histogram[y * renderW]
+            blurred[y * renderW + renderW - 1] = histogram[y * renderW + renderW - 1]
+        }
+        // Also blur colorAcc if tracking
+        val blurredColor: FloatArray?
+        if (trackExtra && colorAcc != null) {
+            blurredColor = FloatArray(histSz)
+            for (y in 1 until renderH - 1) {
+                val row = y * renderW
+                for (x in 1 until renderW - 1) {
+                    val idx = row + x
+                    blurredColor[idx] = (
+                        colorAcc[idx - renderW - 1] + colorAcc[idx - renderW] * 2f + colorAcc[idx - renderW + 1] +
+                        colorAcc[idx - 1] * 2f + colorAcc[idx] * 4f + colorAcc[idx + 1] * 2f +
+                        colorAcc[idx + renderW - 1] + colorAcc[idx + renderW] * 2f + colorAcc[idx + renderW + 1]
+                    ) / 16f
+                }
+            }
+        } else {
+            blurredColor = null
+        }
+
         // ---- Phase 3: Tone mapping with density-to-alpha LUT ----
         var maxDensity = 1
-        for (dd in histogram) if (dd > maxDensity) maxDensity = dd
+        for (dd in blurred) if (dd > maxDensity) maxDensity = dd
         val logMax = ln(maxDensity.toFloat() + 1f)
         val invGamma = 1f / gamma
 
@@ -463,15 +507,15 @@ class StrangeAttractorDensityGenerator : Generator {
         }
 
         for (i in 0 until histSz) {
-            val density = histogram[i]
+            val density = blurred[i]
             if (density > 0) {
                 // Density → alpha via LUT
                 val toneIdx = if (maxDensity >= toneLutSize) (density / toneStep).toInt().coerceIn(0, toneLutSize - 1) else density.coerceAtMost(toneLutSize - 1)
                 val alpha = toneLut[toneIdx]
 
                 val t = when (colorMode) {
-                    "velocity" -> (colorAcc!![i] / density * 2f).coerceIn(0f, 1f)
-                    "angle" -> (colorAcc!![i] / density).coerceIn(0f, 1f)
+                    "velocity" -> (blurredColor!![i] / density * 2f).coerceIn(0f, 1f)
+                    "angle" -> (blurredColor!![i] / density).coerceIn(0f, 1f)
                     else -> alpha
                 }
 
@@ -487,16 +531,45 @@ class StrangeAttractorDensityGenerator : Generator {
             }
         }
 
-        // Upscale to full bitmap if rendered at reduced resolution
+        // Upscale to full bitmap with bilinear interpolation
         if (renderW < w) {
             val pixels = IntArray(w * h)
-            val xMap = IntArray(w) { (it * renderW / w).coerceAtMost(renderW - 1) }
+            val scaleX = (renderW - 1).toFloat() / (w - 1)
+            val scaleY = (renderH - 1).toFloat() / (h - 1)
+            val rWm = renderW - 2
+            val rHm = renderH - 2
             for (py in 0 until h) {
-                val sy = (py * renderH / h).coerceAtMost(renderH - 1)
-                val srcOff = sy * renderW
+                val fy = py * scaleY
+                val sy0 = fy.toInt().coerceAtMost(rHm)
+                val sy1 = sy0 + 1
+                val fy1 = fy - sy0
+                val fy0 = 1f - fy1
+                val srcRow0 = sy0 * renderW
+                val srcRow1 = sy1 * renderW
                 val dstOff = py * w
                 for (px in 0 until w) {
-                    pixels[dstOff + px] = renderPixels[srcOff + xMap[px]]
+                    val fx = px * scaleX
+                    val sx0 = fx.toInt().coerceAtMost(rWm)
+                    val sx1 = sx0 + 1
+                    val fx1 = fx - sx0
+                    val fx0 = 1f - fx1
+
+                    val c00 = renderPixels[srcRow0 + sx0]
+                    val c10 = renderPixels[srcRow0 + sx1]
+                    val c01 = renderPixels[srcRow1 + sx0]
+                    val c11 = renderPixels[srcRow1 + sx1]
+
+                    val w00 = fx0 * fy0; val w10 = fx1 * fy0
+                    val w01 = fx0 * fy1; val w11 = fx1 * fy1
+
+                    val r = (((c00 shr 16 and 0xFF) * w00 + (c10 shr 16 and 0xFF) * w10 +
+                              (c01 shr 16 and 0xFF) * w01 + (c11 shr 16 and 0xFF) * w11)).toInt().coerceIn(0, 255)
+                    val g = (((c00 shr 8 and 0xFF) * w00 + (c10 shr 8 and 0xFF) * w10 +
+                              (c01 shr 8 and 0xFF) * w01 + (c11 shr 8 and 0xFF) * w11)).toInt().coerceIn(0, 255)
+                    val bv = (((c00 and 0xFF) * w00 + (c10 and 0xFF) * w10 +
+                               (c01 and 0xFF) * w01 + (c11 and 0xFF) * w11)).toInt().coerceIn(0, 255)
+
+                    pixels[dstOff + px] = (0xFF shl 24) or (r shl 16) or (g shl 8) or bv
                 }
             }
             bitmap.setPixels(pixels, 0, w, 0, 0, w, h)
