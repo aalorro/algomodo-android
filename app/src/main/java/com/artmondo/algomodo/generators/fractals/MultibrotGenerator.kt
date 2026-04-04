@@ -32,7 +32,7 @@ class MultibrotGenerator : Generator {
         Parameter.NumberParam("Zoom", "zoom", ParamGroup.COMPOSITION, "Zoom level into the fractal", 0.5f, 4f, 0.5f, 1f),
         Parameter.NumberParam("Max Iterations", "maxIterations", ParamGroup.COMPOSITION, "Higher = more detail in boundary regions but slower", 32f, 256f, 16f, 100f),
         Parameter.NumberParam("Color Cycles", "colorCycles", ParamGroup.COLOR, "How many times the palette repeats across the iteration range", 1f, 8f, 1f, 3f),
-        Parameter.NumberParam("Speed", "speed", ParamGroup.FLOW_MOTION, "Animation speed — power oscillates gently over time", 0.1f, 3.0f, 0.1f, 0.5f)
+        Parameter.NumberParam("Speed", "speed", ParamGroup.FLOW_MOTION, "Animation speed — zooms into fractal boundary with rotation", 0.1f, 3.0f, 0.1f, 0.5f)
     )
 
     override fun getDefaultParams(): Map<String, Any> = mapOf(
@@ -59,7 +59,7 @@ class MultibrotGenerator : Generator {
         val basePower = (params["power"] as? Number)?.toDouble() ?: 3.0
         val centerX = (params["centerX"] as? Number)?.toDouble() ?: 0.0
         val centerY = (params["centerY"] as? Number)?.toDouble() ?: 0.0
-        val zoom = (params["zoom"] as? Number)?.toFloat() ?: 1f
+        val zoom = (params["zoom"] as? Number)?.toDouble() ?: 1.0
         val maxIter = (params["maxIterations"] as? Number)?.toInt() ?: 100
         val colorCycles = (params["colorCycles"] as? Number)?.toFloat() ?: 3f
         val speed = (params["speed"] as? Number)?.toFloat() ?: 0.5f
@@ -70,25 +70,67 @@ class MultibrotGenerator : Generator {
             Quality.ULTRA -> (maxIter * 1.5f).toInt()
         }
 
-        // Animate power with a gentle oscillation
-        val power = basePower + sin(time.toDouble() * speed * 0.3) * 0.3
+        val isAnim = time > 0f
 
-        val aspect = w.toDouble() / h.toDouble()
-        val rangeY = 3.0 / zoom
-        val rangeX = rangeY * aspect
-
-        val escapeR = 2.0.pow(1.0 / (power - 1)).coerceAtLeast(2.0)
-        val escapeR2 = escapeR * escapeR
-
-        val pixels = IntArray(w * h)
-        val lnPower = ln(power)
-
-        // Check if power is close to an integer for fast-path
+        // During animation, snap power to nearest integer to use the fast
+        // multiplication path instead of the expensive polar-form path.
+        val power = if (isAnim) basePower.roundToInt().toDouble().coerceAtLeast(2.0) else basePower
         val intPower = power.roundToInt()
         val useIntegerPath = abs(power - intPower) < 0.01 && intPower >= 2
 
+        val escapeR = 2.0.pow(1.0 / (power - 1)).coerceAtLeast(2.0)
+        val escapeR2 = escapeR * escapeR
+        val lnPower = ln(power)
+
+        // ---- Animation: zoom into boundary + rotation + color cycling ----
+        val animCenterX: Double
+        val animCenterY: Double
+        val animZoom: Double
+        val cosRot: Double
+        val sinRot: Double
+
+        if (isAnim) {
+            val t = time.toDouble() * speed
+
+            // Seed-selected target on the fractal boundary.
+            // Lobes sit at angles 2πk/(d-1); pick one and offset slightly.
+            val rng = java.util.Random(seed.toLong())
+            val numLobes = (intPower - 1).coerceAtLeast(1)
+            val targetLobe = rng.nextInt(numLobes)
+            val angleOffset = (rng.nextDouble() - 0.5) * 0.4
+            val targetAngle = 2.0 * Math.PI * targetLobe / numLobes + angleOffset
+            // Aim just inside the escape radius where boundary detail is richest
+            val boundaryR = escapeR * (0.82 + rng.nextDouble() * 0.12)
+            val targetX = boundaryR * cos(targetAngle)
+            val targetY = boundaryR * sin(targetAngle)
+
+            // Exponential zoom
+            animZoom = zoom * (1.0 + t * 0.5)
+            // Smooth pan toward target (S-curve ease)
+            val lerpT = (1.0 - 1.0 / (1.0 + t * 0.15)).coerceIn(0.0, 0.95)
+            animCenterX = centerX + (targetX - centerX) * lerpT
+            animCenterY = centerY + (targetY - centerY) * lerpT
+            // Gentle rotation
+            val rotAngle = t * 0.05
+            cosRot = cos(rotAngle)
+            sinRot = sin(rotAngle)
+        } else {
+            animCenterX = centerX
+            animCenterY = centerY
+            animZoom = zoom
+            cosRot = 1.0
+            sinRot = 0.0
+        }
+
+        val aspect = w.toDouble() / h.toDouble()
+        val rangeY = 3.0 / animZoom
+        val rangeX = rangeY * aspect
+
+        val pixels = IntArray(w * h)
+
         val lutSize = 256
-        val paletteLut = IntArray(lutSize) { palette.lerpColor(it.toFloat() / (lutSize - 1)) }
+        val lutMax = lutSize - 1
+        val paletteLut = IntArray(lutSize) { palette.lerpColor(it.toFloat() / lutMax) }
         val darkBase = palette.lerpColor(0.0f)
         val insideColor = Color.rgb(
             (Color.red(darkBase) * 0.1f).toInt(),
@@ -106,18 +148,28 @@ class MultibrotGenerator : Generator {
                 val y0 = t * h / cores
                 val y1 = (t + 1) * h / cores
                 for (py in y0 until y1) {
-                    val ciBase = centerY + (py * invH - 0.5) * rangeY
+                    val rawY = (py * invH - 0.5) * rangeY
                     for (px in 0 until w) {
-                        val cr = centerX + (px * invW - 0.5) * rangeX
-                        val ci = ciBase
+                        val rawX = (px * invW - 0.5) * rangeX
+                        val cr = animCenterX + rawX * cosRot - rawY * sinRot
+                        val ci = animCenterY + rawX * sinRot + rawY * cosRot
 
                         var zr = 0.0
                         var zi = 0.0
                         var iter = 0
 
                         if (useIntegerPath) {
-                            // Fast path: repeated complex multiplication (avoids sqrt, atan2, pow, sin, cos)
+                            // Fast path with Brent's periodicity detection.
+                            // Interior pixels (inside the set) are the most expensive
+                            // because they always hit maxIter. Periodicity detection
+                            // catches cyclic orbits early, giving a large speedup.
+                            var refZr = 0.0
+                            var refZi = 0.0
+                            var period = 1
+                            var pCount = 0
+
                             while (iter < scaledMaxIter && zr * zr + zi * zi <= escapeR2) {
+                                // z = z^intPower + c via repeated complex multiplication
                                 var pr = zr
                                 var pi = zi
                                 for (k in 1 until intPower) {
@@ -129,9 +181,23 @@ class MultibrotGenerator : Generator {
                                 zr = pr + cr
                                 zi = pi + ci
                                 iter++
+
+                                // Brent's cycle detection
+                                val dr = zr - refZr
+                                val di = zi - refZi
+                                if (dr * dr + di * di < 1e-20) {
+                                    iter = scaledMaxIter
+                                    break
+                                }
+                                if (++pCount >= period) {
+                                    refZr = zr
+                                    refZi = zi
+                                    pCount = 0
+                                    period = (period shl 1).coerceAtMost(512)
+                                }
                             }
                         } else {
-                            // Polar form for fractional powers
+                            // Polar form for fractional powers (static renders only)
                             while (iter < scaledMaxIter && zr * zr + zi * zi <= escapeR2) {
                                 val r = sqrt(zr * zr + zi * zi)
                                 val theta = atan2(zi, zr)
@@ -150,7 +216,7 @@ class MultibrotGenerator : Generator {
                             val smoothIter = iter + 1 - ln(ln(mag)) / lnPower
                             val rawT = ((smoothIter / scaledMaxIter * colorCycles) % 1.0).toFloat()
                             val shifted = ((rawT + timeShift) % 1f + 1f) % 1f
-                            paletteLut[(shifted * (lutSize - 1)).toInt().coerceIn(0, lutSize - 1)]
+                            paletteLut[(shifted * lutMax).toInt().coerceIn(0, lutMax)]
                         }
 
                         pixels[py * w + px] = color
