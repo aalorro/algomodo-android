@@ -86,6 +86,14 @@ class LSystemGenerator : Generator {
             min = 0.5f, max = 8f, step = 0.5f, default = 1f
         ),
         Parameter.SelectParam(
+            name = "Fill",
+            key = "fill",
+            group = ParamGroup.COMPOSITION,
+            help = "auto: fit single pattern to canvas | half: tile to ~50% coverage | full: tile to fill the page",
+            options = listOf("auto", "half", "full"),
+            default = "auto"
+        ),
+        Parameter.SelectParam(
             name = "Color Mode",
             key = "colorMode",
             group = ParamGroup.COLOR,
@@ -110,6 +118,7 @@ class LSystemGenerator : Generator {
         "stochastic" to 0f,
         "taper" to false,
         "lineWidth" to 1f,
+        "fill" to "auto",
         "colorMode" to "depth",
         "revealSpeed" to 1.0f
     )
@@ -239,6 +248,82 @@ class LSystemGenerator : Generator {
         return segments
     }
 
+    /**
+     * Tile raw segments into a grid to achieve the target coverage fraction.
+     * Returns the original segments if already above the target or fill is "auto".
+     */
+    private fun tileSegments(
+        segments: List<Segment>,
+        canvasW: Float, canvasH: Float,
+        fill: String, mirror: Boolean
+    ): List<Segment> {
+        if (fill == "auto" || segments.isEmpty()) return segments
+
+        // Bounding box of raw segments
+        var minX = Float.MAX_VALUE; var maxX = -Float.MAX_VALUE
+        var minY = Float.MAX_VALUE; var maxY = -Float.MAX_VALUE
+        for (seg in segments) {
+            minX = min(minX, min(seg.x1, seg.x2))
+            maxX = max(maxX, max(seg.x1, seg.x2))
+            minY = min(minY, min(seg.y1, seg.y2))
+            maxY = max(maxY, max(seg.y1, seg.y2))
+        }
+
+        val rawW = (maxX - minX).coerceAtLeast(1f)
+        val rawH = (maxY - minY).coerceAtLeast(1f)
+        val spacing = max(rawW, rawH) * 0.08f
+
+        val margin = canvasW * 0.05f
+        val availW = canvasW - 2f * margin
+        val availH = canvasH - 2f * margin
+        val canvasAR = availW / availH
+
+        val targetCoverage = if (fill == "full") 0.80f else 0.45f
+
+        // Grow grid until coverage target is reached
+        var nx = 1; var ny = 1
+        for (attempt in 0 until 30) {
+            val tiledW = nx * rawW + (nx - 1) * spacing
+            val tiledH = ny * rawH + (ny - 1) * spacing
+            val fitScale = min(availW / tiledW, availH / tiledH)
+            val coverage = (tiledW * fitScale * tiledH * fitScale) / (availW * availH)
+            if (coverage >= targetCoverage) break
+            // Add column or row depending on which brings aspect ratio closer to canvas
+            val tiledAR = tiledW / tiledH
+            if (tiledAR < canvasAR) nx++ else ny++
+            // Safety cap on total segments
+            if (nx * ny * segments.size > 300_000) break
+        }
+
+        if (nx == 1 && ny == 1) return segments
+
+        val tiled = ArrayList<Segment>(nx * ny * segments.size)
+        val midX = (minX + maxX) * 0.5f
+        for (gy in 0 until ny) {
+            val oy = gy * (rawH + spacing)
+            for (gx in 0 until nx) {
+                val ox = gx * (rawW + spacing)
+                // Mirror alternating columns horizontally for visual variety
+                val mirrorX = mirror && gx % 2 == 1
+                for (seg in segments) {
+                    val sx1: Float; val sx2: Float
+                    if (mirrorX) {
+                        sx1 = 2f * midX - seg.x1
+                        sx2 = 2f * midX - seg.x2
+                    } else {
+                        sx1 = seg.x1; sx2 = seg.x2
+                    }
+                    tiled.add(Segment(
+                        sx1 - minX + ox, seg.y1 - minY + oy,
+                        sx2 - minX + ox, seg.y2 - minY + oy,
+                        seg.depth
+                    ))
+                }
+            }
+        }
+        return tiled
+    }
+
     private fun fitSegments(
         segments: List<Segment>,
         targetW: Float, targetH: Float, margin: Float
@@ -292,6 +377,7 @@ class LSystemGenerator : Generator {
         val stochastic = (params["stochastic"] as? Number)?.toFloat() ?: 0f
         val taper = (params["taper"] as? Boolean) ?: false
         val lineWidth = (params["lineWidth"] as? Number)?.toFloat() ?: 1f
+        val fill = (params["fill"] as? String) ?: "auto"
         val colorMode = (params["colorMode"] as? String) ?: "depth"
         val revealSpeed = (params["revealSpeed"] as? Number)?.toFloat() ?: 1.0f
 
@@ -303,7 +389,10 @@ class LSystemGenerator : Generator {
             instructions, stepLength, angleDeg, startAngleRad,
             def.drawChars, stochastic, seed
         )
-        val segments = fitSegments(rawSegments, w, h, w * 0.05f)
+        // Mirror columns for branching presets (Tree, Plant) for natural forest look
+        val mirrorCols = preset.lowercase().let { it == "tree" || it == "plant" }
+        val tiledSegments = tileSegments(rawSegments, w, h, fill, mirrorCols)
+        val segments = fitSegments(tiledSegments, w, h, w * 0.05f)
 
         canvas.drawColor(Color.BLACK)
 
@@ -398,6 +487,7 @@ class LSystemGenerator : Generator {
         val stochastic = (params["stochastic"] as? Number)?.toFloat() ?: 0f
         val taper = (params["taper"] as? Boolean) ?: false
         val lineWidth = (params["lineWidth"] as? Number)?.toFloat() ?: 1f
+        val fill = (params["fill"] as? String) ?: "auto"
         val colorMode = (params["colorMode"] as? String) ?: "depth"
 
         val def = getPreset(preset)
@@ -408,7 +498,9 @@ class LSystemGenerator : Generator {
             instructions, stepLength, angleDeg, startAngleRad,
             def.drawChars, stochastic, seed
         )
-        val segments = fitSegments(rawSegments, w, h, w * 0.05f)
+        val mirrorCols = preset.lowercase().let { it == "tree" || it == "plant" }
+        val tiledSegments = tileSegments(rawSegments, w, h, fill, mirrorCols)
+        val segments = fitSegments(tiledSegments, w, h, w * 0.05f)
 
         if (segments.isEmpty()) return emptyList()
 
