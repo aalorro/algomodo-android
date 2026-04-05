@@ -2,6 +2,32 @@
 
 All notable changes to Algomodo will be documented in this file.
 
+## [1.6.1] - Android
+
+### Performance
+- Optimized 10 cellular/procedural generators with simulation caching — Ising Model, Particle Advection, Sandpile, Percolation, Reaction Diffusion, Cyclic CA, Crystal Growth, CurlFluid, Strange Attractor Density, Game of Life now run at smooth framerates instead of 2-4 fps
+- Two-phase rendering pipeline: instant draft preview followed by full-quality render for responsive parameter changes
+- Mandelbrot/Multibrot: adaptive resolution during animation with exponential zoom
+- OrbitTraps: adaptive resolution for improved animation performance
+- Strange Attractor Density: Lyapunov quality check, bilinear splatting, 3×3 histogram blur for smoother rendering
+
+### Improvements
+- Palette locking: tap the lock icon to preserve your palette during randomize/surprise-me
+- Reaction Diffusion: sub-stepping for numerical stability — presets (spots, stripes, worms, maze, etc.) now produce visually distinct patterns
+- Cyclic CA: adaptive threshold capping based on state count and neighborhood — consistent animation for all configurations
+- Crystal Growth: animation now shows real-time growth from seed instead of pre-computed result
+- Game of Life: new color modes and optimized simulation caching
+- Text Matrix: adjustable font size parameter
+- Curated bright palette subset for improved visibility on dark backgrounds
+- Smarter parameter randomization: fill parameter always keeps default in randomize/surprise-me
+
+### Bug Fixes
+- Fixed Reaction Diffusion presets all producing identical patterns (numerical instability + excessive spatial variation)
+- Fixed Cyclic CA Von Neumann mode not animating (threshold too high for 4-neighbor topology)
+- Fixed Crystal Growth animation showing no growth (warmup steps were pre-computed before animation)
+- Fixed Multibrot freeze during animation
+- Total generators: 118 across 11 families
+
 ## [1.6.0] - Android
 
 ### New Features

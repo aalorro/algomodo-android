@@ -24,7 +24,7 @@ fun InstructionsDialog(onDismiss: () -> Unit) {
                 verticalArrangement = Arrangement.spacedBy(12.dp)
             ) {
                 HelpSection("What is Algomodo?") {
-                    "Algomodo generates art using pure mathematics. It has 117 generators across 11 families: noise, fractals, cellular automata, geometry, Voronoi, graphs, plotter, text, image processing, animation, and procedural. All processing runs 100% locally on your device."
+                    "Algomodo generates art using pure mathematics. It has 118 generators across 11 families: noise, fractals, cellular automata, geometry, Voronoi, graphs, plotter, text, image processing, animation, and procedural. All processing runs 100% locally on your device."
                 }
                 HelpSection("What is a Seed?") {
                     "A seed is a number that determines the randomness of your art. The same seed + same parameters = exact same output every time. Tap the lock icon to preserve your seed across random operations."
@@ -35,7 +35,7 @@ fun InstructionsDialog(onDismiss: () -> Unit) {
                     "RELOAD: Re-renders with the exact same settings. Useful after PostFX changes."
                 }
                 HelpSection("The Four Tabs") {
-                    "Generators: Browse 11 families, select from 117 generators.\n\n" +
+                    "Generators: Browse 11 families, select from 118 generators.\n\n" +
                     "Params: Adjust parameters for the current generator. Lock any parameter to preserve it during randomization.\n\n" +
                     "Export: Save as PNG, JPG, SVG, GIF, or MP4. Export/import recipes.\n\n" +
                     "Settings: Theme, quality, FPS, Post-processing effects."
