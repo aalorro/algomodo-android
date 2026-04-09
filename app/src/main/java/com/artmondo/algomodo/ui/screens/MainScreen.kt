@@ -681,15 +681,18 @@ fun MainScreen(
                         onAudioSeekStarted = {
                             isAudioSeeking = true
                         },
+                        onImageResolutionChange = { exportViewModel.setImageResolution(it) },
                         onExportPng = {
                             val gen = state.generator ?: return@ExportPanel
                             val ar = state.aspectRatio
-                            exportViewModel.exportPng(context, gen, renderParams, state.seed, state.palette, state.quality, state.postFX, ar.exportWidth(), ar.exportHeight(), state.snapshotTime)
+                            val res = exportState.imageResolution
+                            exportViewModel.exportPng(context, gen, renderParams, state.seed, state.palette, state.quality, state.postFX, ar.width(res), ar.height(res), state.snapshotTime)
                         },
                         onExportJpg = {
                             val gen = state.generator ?: return@ExportPanel
                             val ar = state.aspectRatio
-                            exportViewModel.exportJpg(context, gen, renderParams, state.seed, state.palette, state.quality, state.postFX, ar.exportWidth(), ar.exportHeight(), state.snapshotTime)
+                            val res = exportState.imageResolution
+                            exportViewModel.exportJpg(context, gen, renderParams, state.seed, state.palette, state.quality, state.postFX, ar.width(res), ar.height(res), state.snapshotTime)
                         },
                         onExportSvg = {
                             val gen = state.generator ?: return@ExportPanel
