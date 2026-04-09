@@ -92,7 +92,7 @@ fun ExportPanel(
             verticalAlignment = Alignment.CenterVertically
         ) {
             Text("Size:", style = MaterialTheme.typography.bodySmall)
-            listOf(1080 to "1080", 2560 to "2K", 3840 to "4K").forEach { (res, label) ->
+            listOf(1080 to "1080", 2560 to "2K", 3840 to "4K", 7680 to "8K").forEach { (res, label) ->
                 FilterChip(
                     selected = exportState.imageResolution == res,
                     onClick = { onImageResolutionChange(res) },
