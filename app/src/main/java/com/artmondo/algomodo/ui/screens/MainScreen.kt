@@ -118,6 +118,7 @@ fun MainScreen(
     var showUseCases by remember { mutableStateOf(false) }
     var showReportBug by remember { mutableStateOf(false) }
     var showOriginalImage by remember { mutableStateOf(false) }
+    var showCustomPaletteDialog by remember { mutableStateOf(false) }
     var isCanvasExpanded by remember { mutableStateOf(false) }
 
     // Image picker
@@ -310,6 +311,9 @@ fun MainScreen(
                             onSelectPalette = { viewModel.setPalette(it) },
                             isLocked = "palette" in state.lockedParams,
                             onToggleLock = { viewModel.toggleParamLock("palette") },
+                            customPalettes = state.customPalettes,
+                            onAddCustomPalette = { showCustomPaletteDialog = true },
+                            onDeleteCustomPalette = { viewModel.deleteCustomPalette(it) },
                             modifier = Modifier
                                 .fillMaxWidth()
                                 .padding(top = 8.dp)
@@ -420,6 +424,9 @@ fun MainScreen(
                     onSelectPalette = { viewModel.setPalette(it) },
                     isLocked = "palette" in state.lockedParams,
                     onToggleLock = { viewModel.toggleParamLock("palette") },
+                    customPalettes = state.customPalettes,
+                    onAddCustomPalette = { showCustomPaletteDialog = true },
+                    onDeleteCustomPalette = { viewModel.deleteCustomPalette(it) },
                     modifier = Modifier
                         .fillMaxHeight()
                         .weight(1f)
@@ -553,18 +560,47 @@ fun MainScreen(
 
         // Source image button (for image family)
         if (state.generator?.family == "image") {
+            val needsImage = state.sourceImage == null
             Row(
                 modifier = Modifier
                     .fillMaxWidth()
                     .padding(horizontal = 16.dp, vertical = 2.dp),
                 horizontalArrangement = Arrangement.spacedBy(8.dp)
             ) {
-                OutlinedButton(
-                    onClick = {
-                        imagePickerLauncher.launch(PickVisualMediaRequest(ActivityResultContracts.PickVisualMedia.ImageOnly))
-                    },
-                    modifier = Modifier.weight(1f)
-                ) { Text("Load", fontSize = 12.sp) }
+                if (needsImage) {
+                    val flashTransition = rememberInfiniteTransition(label = "loadFlash")
+                    val flashAlpha by flashTransition.animateFloat(
+                        initialValue = 0.4f,
+                        targetValue = 1f,
+                        animationSpec = infiniteRepeatable(
+                            animation = tween(600, easing = LinearEasing),
+                            repeatMode = RepeatMode.Reverse
+                        ),
+                        label = "flashAlpha"
+                    )
+                    val neonGreen = Color(0xFF39FF14)
+                    Button(
+                        onClick = {
+                            imagePickerLauncher.launch(PickVisualMediaRequest(ActivityResultContracts.PickVisualMedia.ImageOnly))
+                        },
+                        modifier = Modifier.weight(1f),
+                        colors = ButtonDefaults.buttonColors(containerColor = Color.Transparent)
+                    ) {
+                        Text(
+                            "LOAD IMAGE",
+                            fontSize = 13.sp,
+                            fontWeight = androidx.compose.ui.text.font.FontWeight.Bold,
+                            color = neonGreen.copy(alpha = flashAlpha)
+                        )
+                    }
+                } else {
+                    OutlinedButton(
+                        onClick = {
+                            imagePickerLauncher.launch(PickVisualMediaRequest(ActivityResultContracts.PickVisualMedia.ImageOnly))
+                        },
+                        modifier = Modifier.weight(1f)
+                    ) { Text("Load Image", fontSize = 12.sp) }
+                }
                 if (state.sourceImage != null) {
                     OutlinedButton(
                         onClick = { showOriginalImage = !showOriginalImage },
@@ -767,6 +803,17 @@ fun MainScreen(
     if (showDonation) DonationDialog { showDonation = false }
     if (showUseCases) UseCasesDialog { showUseCases = false }
     if (showReportBug) ReportBugDialog { showReportBug = false }
+    if (showCustomPaletteDialog) {
+        CustomPaletteDialog(
+            existingPalettes = state.customPalettes,
+            onDismiss = { showCustomPaletteDialog = false },
+            onSave = { palette ->
+                viewModel.addCustomPalette(palette)
+                viewModel.setPalette(palette)
+                showCustomPaletteDialog = false
+            }
+        )
+    }
 
     // Show share sheet after export
     exportState.lastExportUri?.let { uri ->

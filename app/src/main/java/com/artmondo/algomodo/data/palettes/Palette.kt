@@ -2,6 +2,8 @@ package com.artmondo.algomodo.data.palettes
 
 import android.graphics.Color
 import kotlinx.serialization.Serializable
+import kotlinx.serialization.encodeToString
+import kotlinx.serialization.json.Json
 
 @Serializable
 data class Palette(
@@ -34,6 +36,27 @@ data class Palette(
     /** Pre-compute a lookup table for fast indexed palette access in pixel loops. */
     fun buildLut(size: Int = 256): IntArray = IntArray(size) { i ->
         lerpColor(i.toFloat() / (size - 1).coerceAtLeast(1))
+    }
+}
+
+object CustomPaletteHelper {
+    private val json = Json { ignoreUnknownKeys = true }
+
+    fun parse(jsonStr: String): List<Palette> = try {
+        json.decodeFromString<List<Palette>>(jsonStr)
+    } catch (_: Exception) {
+        emptyList()
+    }
+
+    fun serialize(palettes: List<Palette>): String =
+        json.encodeToString(palettes)
+
+    fun nextDefaultName(existing: List<Palette>): String {
+        val usedNumbers = existing.mapNotNull {
+            Regex("^Custom (\\d+)$").matchEntire(it.name)?.groupValues?.get(1)?.toIntOrNull()
+        }.toSet()
+        val next = (1..5).first { it !in usedNumbers }
+        return "Custom $next"
     }
 }
 
