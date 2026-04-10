@@ -22,7 +22,8 @@ class NoiseSimplexFieldGenerator : Generator {
         "smooth fbm, ridged crests (1 - |fbm|)^2, turbulent folds |fbm|, billowing puffs, " +
         "or thin vein-like negative-space lines. Optional domain warping adds organic distortion. " +
         "Color mode supports a smooth palette gradient or hard contour bands. Three animation " +
-        "modes: drift (panning), rotate (spin), or pulse (wobble)."
+        "modes: drift (panning), rotate (spin), or pulse (wobble). Renders at half resolution " +
+        "with bilinear upscale during animation and partitions rows across CPU cores for speed."
     override val supportsVector = false
     override val supportsAnimation = true
 
@@ -67,11 +68,6 @@ class NoiseSimplexFieldGenerator : Generator {
         val animMode = (params["animMode"] as? String) ?: "drift"
         val speed = (params["speed"] as? Number)?.toFloat() ?: 0.5f
 
-        val noise = SimplexNoise(seed)
-        val invScale = scale / w.toFloat()
-        val centerX = w * 0.5f * invScale
-        val centerY = h * 0.5f * invScale
-
         val styleId = when (style) {
             "ridged" -> 1
             "turbulent" -> 2
@@ -84,6 +80,23 @@ class NoiseSimplexFieldGenerator : Generator {
             "pulse" -> 2
             else -> 0  // drift
         }
+
+        // ── Adaptive resolution ─────────────────────────────────────────
+        // Animation is the dominant cost, so render to a smaller buffer
+        // and bilinear-upscale. ULTRA always renders full-res.
+        val isAnimating = time > 0f && speed > 0f
+        val resScale = when {
+            quality == Quality.ULTRA -> 1f
+            isAnimating && quality == Quality.DRAFT -> 0.35f
+            isAnimating -> 0.5f
+            quality == Quality.DRAFT -> 0.5f
+            else -> 1f
+        }
+        val rw = max(2, (w * resScale).toInt())
+        val rh = max(2, (h * resScale).toInt())
+        val invScale = scale / rw.toFloat()
+        val centerX = rw * 0.5f * invScale
+        val centerY = rh * 0.5f * invScale
 
         // Per-frame anim transform constants
         val driftX = time * speed * 0.35f
@@ -100,82 +113,93 @@ class NoiseSimplexFieldGenerator : Generator {
         val isBands = colorMode == "bands"
         val warpActive = warpAmount > 0f
 
-        val step = if (quality == Quality.DRAFT) 2 else 1
-        val pixels = IntArray(w * h)
+        val noise = SimplexNoise(seed)  // immutable after construction → safe to share
 
-        for (py in 0 until h step step) {
-            val baseNy = py * invScale
-            for (px in 0 until w step step) {
-                val baseNx = px * invScale
+        // ── Multi-threaded row partition ────────────────────────────────
+        val pixels = IntArray(rw * rh)
+        val cores = Runtime.getRuntime().availableProcessors().coerceIn(2, 8)
+        val threads = Array(cores) { t ->
+            Thread {
+                val y0 = t * rh / cores
+                val y1 = (t + 1) * rh / cores
+                for (py in y0 until y1) {
+                    val baseNy = py * invScale
+                    val rowOff = py * rw
+                    for (px in 0 until rw) {
+                        val baseNx = px * invScale
 
-                // Animation transform
-                var nx: Float; var ny: Float
-                when (animId) {
-                    1 -> { // rotate around noise-space center
-                        val dx = baseNx - centerX
-                        val dy = baseNy - centerY
-                        nx = centerX + dx * rotCos - dy * rotSin
-                        ny = centerY + dx * rotSin + dy * rotCos
-                    }
-                    2 -> { // pulse — coordinate wobble
-                        nx = baseNx + pulseShiftX
-                        ny = baseNy + pulseShiftY
-                    }
-                    else -> { // drift
-                        nx = baseNx + driftX
-                        ny = baseNy + driftY
-                    }
-                }
+                        // Animation transform
+                        var nx: Float; var ny: Float
+                        when (animId) {
+                            1 -> { // rotate around noise-space center
+                                val dx = baseNx - centerX
+                                val dy = baseNy - centerY
+                                nx = centerX + dx * rotCos - dy * rotSin
+                                ny = centerY + dx * rotSin + dy * rotCos
+                            }
+                            2 -> { // pulse — coordinate wobble
+                                nx = baseNx + pulseShiftX
+                                ny = baseNy + pulseShiftY
+                            }
+                            else -> { // drift
+                                nx = baseNx + driftX
+                                ny = baseNy + driftY
+                            }
+                        }
 
-                // Optional domain warping
-                if (warpActive) {
-                    val wx = noise.fbm(nx + 5.2f, ny + 1.3f, 3)
-                    val wy = noise.fbm(nx + 1.7f, ny + 9.2f, 3)
-                    nx += wx * warpAmount; ny += wy * warpAmount
-                }
+                        // Optional domain warping
+                        if (warpActive) {
+                            val wx = noise.fbm(nx + 5.2f, ny + 1.3f, 3)
+                            val wy = noise.fbm(nx + 1.7f, ny + 9.2f, 3)
+                            nx += wx * warpAmount; ny += wy * warpAmount
+                        }
 
-                // Multi-octave fbm in roughly [-1, 1]
-                val raw = if (octaves <= 1) noise.noise2D(nx, ny) else noise.fbm(nx, ny, octaves)
+                        // Multi-octave fbm in roughly [-1, 1]
+                        val raw = if (octaves <= 1) noise.noise2D(nx, ny) else noise.fbm(nx, ny, octaves)
 
-                // Style transform → t in [0, 1]
-                val t: Float = when (styleId) {
-                    1 -> { // ridged: 1 - |raw|, squared for sharper crests
-                        val r = 1f - abs(raw)
-                        (r * r).coerceIn(0f, 1f)
-                    }
-                    2 -> abs(raw).coerceIn(0f, 1f)  // turbulent
-                    3 -> { // billow: |raw| pushed toward rounded puffs via dome curve
-                        val b = abs(raw)
-                        (b * (2f - b)).coerceIn(0f, 1f)
-                    }
-                    4 -> { // veins: 1 - smooth-floor(|raw|), bright thin valleys
-                        val v = abs(raw)
-                        (1f - v / (0.05f + v)).coerceIn(0f, 1f)
-                    }
-                    else -> ((raw + 1f) * 0.5f).coerceIn(0f, 1f)  // smooth fbm
-                }
+                        // Style transform → t in [0, 1]
+                        val tt: Float = when (styleId) {
+                            1 -> { // ridged: 1 - |raw|, squared for sharper crests
+                                val r = 1f - abs(raw)
+                                (r * r).coerceIn(0f, 1f)
+                            }
+                            2 -> abs(raw).coerceIn(0f, 1f)  // turbulent
+                            3 -> { // billow: |raw| pushed toward rounded puffs via dome curve
+                                val b = abs(raw)
+                                (b * (2f - b)).coerceIn(0f, 1f)
+                            }
+                            4 -> { // veins: 1 - smooth-floor(|raw|), bright thin valleys
+                                val v = abs(raw)
+                                (1f - v / (0.05f + v)).coerceIn(0f, 1f)
+                            }
+                            else -> ((raw + 1f) * 0.5f).coerceIn(0f, 1f)  // smooth fbm
+                        }
 
-                // Color mapping
-                val mt = if (isBands) {
-                    val band = floor(t * bandCount).toInt().coerceIn(0, bandCount - 1)
-                    band * invBandDenom
-                } else t
-                val color = lut[(mt * 255f + 0.5f).toInt().coerceIn(0, 255)]
-
-                if (step == 1) {
-                    pixels[py * w + px] = color
-                } else {
-                    val maxDy = min(step, h - py)
-                    val maxDx = min(step, w - px)
-                    for (dy in 0 until maxDy) {
-                        val rowBase = (py + dy) * w + px
-                        for (dx in 0 until maxDx) pixels[rowBase + dx] = color
+                        // Color mapping
+                        val mt = if (isBands) {
+                            val band = floor(tt * bandCount).toInt().coerceIn(0, bandCount - 1)
+                            band * invBandDenom
+                        } else tt
+                        pixels[rowOff + px] = lut[(mt * 255f + 0.5f).toInt().coerceIn(0, 255)]
                     }
                 }
-            }
+            }.also { it.start() }
         }
+        threads.forEach { it.join() }
 
-        bitmap.setPixels(pixels, 0, w, 0, 0, w, h)
+        // ── Composite: direct write at full res, otherwise bilinear upscale ─
+        if (rw == w && rh == h) {
+            bitmap.setPixels(pixels, 0, w, 0, 0, w, h)
+        } else {
+            val smallBmp = Bitmap.createBitmap(rw, rh, Bitmap.Config.ARGB_8888)
+            smallBmp.setPixels(pixels, 0, rw, 0, 0, rw, rh)
+            val scaled = Bitmap.createScaledBitmap(smallBmp, w, h, true)
+            val scaledPixels = IntArray(w * h)
+            scaled.getPixels(scaledPixels, 0, w, 0, 0, w, h)
+            bitmap.setPixels(scaledPixels, 0, w, 0, 0, w, h)
+            smallBmp.recycle()
+            scaled.recycle()
+        }
         canvas.drawBitmap(bitmap, 0f, 0f, null)
     }
 
