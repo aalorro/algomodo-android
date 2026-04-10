@@ -69,7 +69,16 @@ class PlotterCirclePackingGenerator : Generator {
         Parameter.SelectParam("Background", "background", ParamGroup.COLOR,
             null, listOf("white", "cream", "dark"), "cream"),
         Parameter.NumberParam("Anim Speed", "animSpeed", ParamGroup.FLOW_MOTION,
-            "Breathing/pulsing speed — 0 = static", 0f, 1f, 0.05f, 0.15f),
+            "Time multiplier for all motion — 0 = static", 0f, 2f, 0.05f, 0.4f),
+        Parameter.SelectParam("Pulse Mode", "pulseMode", ParamGroup.FLOW_MOTION,
+            "breathe: uniform pulse | wave: travelling x-wave | radial: ripple from center | swirl: angular wave",
+            listOf("breathe", "wave", "radial", "swirl"), "radial"),
+        Parameter.NumberParam("Pulse Amount", "pulseAmount", ParamGroup.FLOW_MOTION,
+            "Intensity of size oscillation", 0f, 0.6f, 0.05f, 0.25f),
+        Parameter.NumberParam("Spin Speed", "spinSpeed", ParamGroup.FLOW_MOTION,
+            "Rotation speed of squares & hexagons (rad/s)", 0f, 3f, 0.1f, 0.5f),
+        Parameter.NumberParam("Color Shift", "colorShift", ParamGroup.FLOW_MOTION,
+            "Cycles colors through the palette over time", 0f, 2f, 0.05f, 0.2f),
         Parameter.NumberParam("Reactivity", "reactivity", ParamGroup.FLOW_MOTION,
             "Audio reactivity (0 = off)", 0f, 2f, 0.1f, 0f)
     )
@@ -87,7 +96,11 @@ class PlotterCirclePackingGenerator : Generator {
         "innerDetail" to "none",
         "colorMode" to "palette-cycle",
         "background" to "cream",
-        "animSpeed" to 0.15f,
+        "animSpeed" to 0.4f,
+        "pulseMode" to "radial",
+        "pulseAmount" to 0.25f,
+        "spinSpeed" to 0.5f,
+        "colorShift" to 0.2f,
         "reactivity" to 0f
     )
 
@@ -193,7 +206,11 @@ class PlotterCirclePackingGenerator : Generator {
         val colorMode = (params["colorMode"] as? String) ?: "palette-cycle"
         val background = (params["background"] as? String) ?: "cream"
         val isDark = background == "dark"
-        val animSpeed = (params["animSpeed"] as? Number)?.toFloat() ?: 0.15f
+        val animSpeed = (params["animSpeed"] as? Number)?.toFloat() ?: 0.4f
+        val pulseMode = (params["pulseMode"] as? String) ?: "radial"
+        val pulseAmount = (params["pulseAmount"] as? Number)?.toFloat() ?: 0.25f
+        val spinSpeed = (params["spinSpeed"] as? Number)?.toFloat() ?: 0.5f
+        val colorShift = (params["colorShift"] as? Number)?.toFloat() ?: 0.2f
 
         val rx = (params["reactivity"] as? Number)?.toFloat() ?: 0f
         val audioAnalysis = params["_audioAnalysis"] as? AudioAnalysis
@@ -346,8 +363,18 @@ class PlotterCirclePackingGenerator : Generator {
         val detailAlpha = if (isDark) 0.7f else 0.6f
         val doFill = fillMode == "filled" || fillMode == "filled+outline"
         val doStroke = fillMode == "outline" || fillMode == "filled+outline"
-        val breathe = animSpeed > 0f && time > 0f
+        val animating = animSpeed > 0f && time > 0f
+        val pulseActive = animating && pulseAmount > 0.001f
+        val spinActive = animating && spinSpeed > 0.001f
+        val colorCycleActive = animating && colorShift > 0.001f
         val detailThreshold = 8f * sizeScale
+
+        // Pre-compute time-derived constants
+        val tp = time * animSpeed * 2f
+        val tSpin = time * animSpeed * spinSpeed
+        val colorOff = time * animSpeed * colorShift
+        val cxc = w * 0.5f; val cyc = h * 0.5f
+        val invDiag = 1f / sqrt(w * w + h * h).coerceAtLeast(1f)
 
         val fillPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply { style = Paint.Style.FILL }
         val strokePaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
@@ -367,21 +394,50 @@ class PlotterCirclePackingGenerator : Generator {
 
         for (i in 0 until count) {
             val cx = cxArr[i]; val cy = cyArr[i]; val r = crArr[i]
-            val density = cdArr[i]; val kind = ckArr[i]; val angle = caArr[i]
+            val density = cdArr[i]; val kind = ckArr[i]; val baseAngle = caArr[i]
 
-            // Breathing animation
+            // ── Pulse animation ──
             var drawR = r
-            if (breathe) {
-                val phase = cx * 0.01f + cy * 0.013f + i * 0.3f
-                val pulse = sin(time * animSpeed * 2f + phase) * 0.12f
-                drawR = r * (1f + pulse)
+            if (pulseActive) {
+                val pulse = when (pulseMode) {
+                    "wave" -> {
+                        // Travelling x-wave with mild y modulation
+                        sin(tp - cx * 0.012f + cy * 0.004f)
+                    }
+                    "radial" -> {
+                        // Expanding ripple from center
+                        val dx = cx - cxc; val dy = cy - cyc
+                        val dist = sqrt(dx * dx + dy * dy) * invDiag * 8f
+                        sin(tp - dist)
+                    }
+                    "swirl" -> {
+                        // Angular wave around center
+                        val ang = atan2(cy - cyc, cx - cxc)
+                        val dx = cx - cxc; val dy = cy - cyc
+                        val dist = sqrt(dx * dx + dy * dy) * invDiag * 4f
+                        sin(tp + ang * 3f - dist)
+                    }
+                    else -> {
+                        // breathe — uniform per-circle phase
+                        sin(tp + cx * 0.01f + cy * 0.013f + i * 0.3f)
+                    }
+                }
+                drawR = r * (1f + pulse * pulseAmount)
+                if (drawR < 0.5f) drawR = 0.5f
             }
 
-            // Color
+            // ── Shape rotation ──
+            val angle = if (spinActive) baseAngle + tSpin else baseAngle
+
+            // ── Color (with optional palette cycling) ──
             val cr: Int; val cg: Int; val cb: Int
             when (colorMode) {
                 "by-size" -> {
-                    val t = min(1f, (r - minR) / radiusRange)
+                    var t = min(1f, (r - minR) / radiusRange)
+                    if (colorCycleActive) {
+                        t += colorOff
+                        t -= floor(t)
+                    }
                     val ci = t * (numColors - 1)
                     val i0 = ci.toInt(); val i1 = min(numColors - 1, i0 + 1)
                     val f = ci - i0
@@ -390,7 +446,12 @@ class PlotterCirclePackingGenerator : Generator {
                     cb = (colorsB[i0] + (colorsB[i1] - colorsB[i0]) * f).toInt()
                 }
                 "palette-density" -> {
-                    val ci = density * (numColors - 1)
+                    var t = density
+                    if (colorCycleActive) {
+                        t += colorOff
+                        t -= floor(t)
+                    }
+                    val ci = t * (numColors - 1)
                     val i0 = ci.toInt(); val i1 = min(numColors - 1, i0 + 1)
                     val f = ci - i0
                     cr = (colorsR[i0] + (colorsR[i1] - colorsR[i0]) * f).toInt()
@@ -398,7 +459,8 @@ class PlotterCirclePackingGenerator : Generator {
                     cb = (colorsB[i0] + (colorsB[i1] - colorsB[i0]) * f).toInt()
                 }
                 else -> { // palette-cycle
-                    val k = i % numColors
+                    val shift = if (colorCycleActive) (colorOff * numColors).toInt() else 0
+                    val k = ((i + shift) % numColors + numColors) % numColors
                     cr = colorsR[k]; cg = colorsG[k]; cb = colorsB[k]
                 }
             }
@@ -458,9 +520,13 @@ class PlotterCirclePackingGenerator : Generator {
                 }
             }
 
-            // Inner detail
+            // Inner detail (spin with the shape)
             if (innerDetail != "none" && drawR > detailThreshold) {
                 detailPaint.color = detailColor
+
+                // Apply spin to detail too — circles look lifeless without it
+                val needsDetailRotate = spinActive && (kind == SHAPE_CIRCLE || innerDetail == "spokes" || innerDetail == "cross" || innerDetail == "spiral")
+                if (needsDetailRotate) canvas.rotate(tSpin * 180f / PI.toFloat())
 
                 when (innerDetail) {
                     "rings" -> {
