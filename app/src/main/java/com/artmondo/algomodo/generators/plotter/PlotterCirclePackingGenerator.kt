@@ -117,32 +117,55 @@ class PlotterCirclePackingGenerator : Generator {
 
         private const val MAX_CONSECUTIVE_FAILURES = 600
         private const val DENS_RES = 64
+        private const val MAX_CACHE_ENTRIES = 4
     }
 
-    // --- Cached packing across frames (per instance) ---
-    @Volatile private var cachedKey: String = ""
-    @Volatile private var cachedCount: Int = 0
-    @Volatile private var cxArr: FloatArray = FloatArray(0)
-    @Volatile private var cyArr: FloatArray = FloatArray(0)
-    @Volatile private var crArr: FloatArray = FloatArray(0)
-    @Volatile private var cdArr: FloatArray = FloatArray(0)
-    @Volatile private var ckArr: ByteArray = ByteArray(0)
-    @Volatile private var caArr: FloatArray = FloatArray(0)
+    /**
+     * Immutable snapshot of one packing result. Sharing instances of this class
+     * across threads is safe because the arrays are never mutated after build.
+     */
+    private class PackingData(
+        val count: Int,
+        val cx: FloatArray,
+        val cy: FloatArray,
+        val cr: FloatArray,
+        val cd: FloatArray,
+        val ca: FloatArray,
+        val ck: ByteArray
+    )
 
-    // Density grid (reused)
-    @Volatile private var densGrid: FloatArray = FloatArray(DENS_RES * DENS_RES)
+    // Thread-safe LRU cache: lets the live canvas thread and export thread keep
+    // their own packings (they use different bitmap dimensions) without trampling
+    // each other's state. Each entry is immutable after insert.
+    private val cacheLock = Any()
+    private val packingCache = object : LinkedHashMap<String, PackingData>(8, 0.75f, true) {
+        override fun removeEldestEntry(eldest: MutableMap.MutableEntry<String, PackingData>?): Boolean =
+            size > MAX_CACHE_ENTRIES
+    }
 
-    private fun ensureCapacity(n: Int) {
-        if (cxArr.size < n) {
-            cxArr = FloatArray(n); cyArr = FloatArray(n); crArr = FloatArray(n)
-            cdArr = FloatArray(n); ckArr = ByteArray(n); caArr = FloatArray(n)
+    private fun getOrBuildPacking(
+        key: String, target: Int, w: Float, h: Float,
+        minR: Float, maxR: Float, scaledPad: Float,
+        dScale: Float, dContrast: Float, densityStyle: String,
+        shapeType: String, seed: Int
+    ): PackingData {
+        synchronized(cacheLock) {
+            packingCache[key]?.let { return it }
         }
+        val built = buildPacking(
+            target, w, h, minR, maxR, scaledPad,
+            dScale, dContrast, densityStyle, shapeType, seed
+        )
+        synchronized(cacheLock) {
+            packingCache[key] = built
+        }
+        return built
     }
 
     private fun buildDensityGrid(
-        noise: SimplexNoise, dScale: Float, dContrast: Float, densityStyle: String
+        grid: FloatArray, noise: SimplexNoise,
+        dScale: Float, dContrast: Float, densityStyle: String
     ) {
-        val g = densGrid
         for (jj in 0 until DENS_RES) {
             val py = (jj + 0.5f) / DENS_RES
             val row = jj * DENS_RES
@@ -164,12 +187,12 @@ class PlotterCirclePackingGenerator : Generator {
                     }
                     else -> noise.fbm(nx, ny, 4, 2f, 0.5f) * 0.5f + 0.5f
                 }
-                g[row + ii] = max(0f, min(1f, n)).pow(dContrast)
+                grid[row + ii] = max(0f, min(1f, n)).pow(dContrast)
             }
         }
     }
 
-    private fun sampleDensity(x: Float, y: Float, w: Float, h: Float): Float {
+    private fun sampleDensity(grid: FloatArray, x: Float, y: Float, w: Float, h: Float): Float {
         val gx = (x / w) * DENS_RES - 0.5f
         val gy = (y / h) * DENS_RES - 0.5f
         val i0 = gx.toInt().coerceIn(0, DENS_RES - 2)
@@ -178,9 +201,127 @@ class PlotterCirclePackingGenerator : Generator {
         val fy = gy - j0
         val r0 = j0 * DENS_RES
         val r1 = (j0 + 1) * DENS_RES
-        val g = densGrid
-        return (1f - fy) * ((1f - fx) * g[r0 + i0] + fx * g[r0 + i0 + 1]) +
-                fy * ((1f - fx) * g[r1 + i0] + fx * g[r1 + i0 + 1])
+        return (1f - fy) * ((1f - fx) * grid[r0 + i0] + fx * grid[r0 + i0 + 1]) +
+                fy * ((1f - fx) * grid[r1 + i0] + fx * grid[r1 + i0 + 1])
+    }
+
+    private fun buildPacking(
+        target: Int, w: Float, h: Float,
+        minR: Float, maxR: Float, scaledPad: Float,
+        dScale: Float, dContrast: Float, densityStyle: String,
+        shapeType: String, seed: Int
+    ): PackingData {
+        val rng = SeededRNG(seed)
+        val noise = SimplexNoise(seed)
+
+        // Local density grid — must be local for thread safety
+        val densGrid = FloatArray(DENS_RES * DENS_RES)
+        buildDensityGrid(densGrid, noise, dScale, dContrast, densityStyle)
+
+        // Spatial hash grid
+        val cellSize = (maxR + scaledPad) * 2f
+        val gw = (ceil(w / cellSize).toInt() + 1).coerceAtLeast(1)
+        val gh = (ceil(h / cellSize).toInt() + 1).coerceAtLeast(1)
+        val grid = Array(gw * gh) { mutableListOf<Int>() }
+
+        // Working arrays — sized to upper bound, trimmed at the end
+        val cx = FloatArray(target)
+        val cy = FloatArray(target)
+        val cr = FloatArray(target)
+        val cd = FloatArray(target)
+        val ca = FloatArray(target)
+        val ck = ByteArray(target)
+
+        var count = 0
+        var fails = 0
+
+        while (count < target && fails < MAX_CONSECUTIVE_FAILURES) {
+            val px = rng.random() * w
+            val py = rng.random() * h
+
+            // Bilinear density lookup (fast)
+            val density = sampleDensity(densGrid, px, py, w, h)
+
+            // Density-driven rejection sampling
+            if (rng.random() > 0.15f + density * 0.85f) {
+                fails++; continue
+            }
+
+            // Edge limit, density-modulated local max radius
+            var r = min(min(px, py), min(w - px, h - py))
+            val localMaxR = minR + (maxR - minR) * (0.2f + density * 0.8f)
+            if (r > localMaxR) r = localMaxR
+            if (r < minR) { fails++; continue }
+
+            // Neighbor search via spatial hash
+            val searchCells = ceil((maxR + scaledPad) / cellSize).toInt() + 1
+            val gcx = (px / cellSize).toInt()
+            val gcy = (py / cellSize).toInt()
+
+            for (dy in -searchCells..searchCells) {
+                val ny = gcy + dy
+                if (ny < 0 || ny >= gh) continue
+                for (dx in -searchCells..searchCells) {
+                    val nx = gcx + dx
+                    if (nx < 0 || nx >= gw) continue
+                    val cell = grid[ny * gw + nx]
+                    for (ci in cell) {
+                        val ddx = px - cx[ci]
+                        val ddy = py - cy[ci]
+                        val dSq = ddx * ddx + ddy * ddy
+                        val bound = r + cr[ci] + scaledPad
+                        if (dSq < bound * bound) {
+                            val dist = sqrt(dSq)
+                            val allowed = dist - cr[ci] - scaledPad
+                            if (allowed < r) r = allowed
+                        }
+                    }
+                }
+            }
+
+            if (r < minR) { fails++; continue }
+
+            // Store
+            cx[count] = px
+            cy[count] = py
+            cr[count] = r
+            cd[count] = density
+            ca[count] = rng.random() * 2f * PI.toFloat()
+            ck[count] = when (shapeType) {
+                "squares" -> SHAPE_SQUARE
+                "hexagons" -> SHAPE_HEXAGON
+                "mixed" -> {
+                    val pick = rng.random()
+                    when {
+                        pick < 0.4f -> SHAPE_CIRCLE
+                        pick < 0.7f -> SHAPE_SQUARE
+                        else -> SHAPE_HEXAGON
+                    }
+                }
+                else -> SHAPE_CIRCLE
+            }
+
+            // Add to spatial grid
+            val gxi = min(gw - 1, (px / cellSize).toInt())
+            val gyi = min(gh - 1, (py / cellSize).toInt())
+            grid[gyi * gw + gxi].add(count)
+
+            count++
+            fails = 0
+        }
+
+        // Sort indices by radius descending — large shapes drawn first.
+        // Trim arrays to actual count so the snapshot uses no extra memory.
+        val idx = (0 until count).sortedByDescending { cr[it] }.toIntArray()
+        val ox = FloatArray(count); val oy = FloatArray(count); val orr = FloatArray(count)
+        val od = FloatArray(count); val oa = FloatArray(count); val ok = ByteArray(count)
+        for (i in 0 until count) {
+            val j = idx[i]
+            ox[i] = cx[j]; oy[i] = cy[j]; orr[i] = cr[j]
+            od[i] = cd[j]; oa[i] = ca[j]; ok[i] = ck[j]
+        }
+
+        return PackingData(count, ox, oy, orr, od, oa, ok)
     }
 
     override fun renderCanvas(
@@ -226,123 +367,22 @@ class PlotterCirclePackingGenerator : Generator {
         canvas.drawColor(BG[background] ?: BG["cream"]!!)
 
         // ============================================================
-        // PACKING — cached across frames keyed by deterministic params
+        // PACKING — cached across frames keyed by deterministic params.
+        // The cache returns an immutable snapshot, so the live canvas thread
+        // and the export thread can render concurrently without trampling
+        // each other (they normally use different bitmap dimensions).
         // ============================================================
         val packKey = "$seed|$target|$minR|$maxR|$scaledPad|$dScale|$dContrast|$densityStyle|$shapeType|$w|$h"
-
-        if (cachedKey != packKey) {
-            ensureCapacity(target)
-            val rng = SeededRNG(seed)
-            val noise = SimplexNoise(seed)
-
-            // Pre-compute density grid (4096 fbm calls instead of thousands per loop)
-            buildDensityGrid(noise, dScale, dContrast, densityStyle)
-
-            // Spatial hash grid
-            val cellSize = (maxR + scaledPad) * 2f
-            val gw = (ceil(w / cellSize).toInt() + 1).coerceAtLeast(1)
-            val gh = (ceil(h / cellSize).toInt() + 1).coerceAtLeast(1)
-            val grid = Array(gw * gh) { mutableListOf<Int>() }
-
-            var count = 0
-            var fails = 0
-
-            while (count < target && fails < MAX_CONSECUTIVE_FAILURES) {
-                val cx = rng.random() * w
-                val cy = rng.random() * h
-
-                // Bilinear density lookup (fast)
-                val density = sampleDensity(cx, cy, w, h)
-
-                // Density-driven rejection sampling
-                if (rng.random() > 0.15f + density * 0.85f) {
-                    fails++; continue
-                }
-
-                // Edge limit, density-modulated local max radius
-                var r = min(min(cx, cy), min(w - cx, h - cy))
-                val localMaxR = minR + (maxR - minR) * (0.2f + density * 0.8f)
-                if (r > localMaxR) r = localMaxR
-                if (r < minR) { fails++; continue }
-
-                // Neighbor search via spatial hash
-                val searchCells = ceil((maxR + scaledPad) / cellSize).toInt() + 1
-                val gcx = (cx / cellSize).toInt()
-                val gcy = (cy / cellSize).toInt()
-
-                for (dy in -searchCells..searchCells) {
-                    val ny = gcy + dy
-                    if (ny < 0 || ny >= gh) continue
-                    for (dx in -searchCells..searchCells) {
-                        val nx = gcx + dx
-                        if (nx < 0 || nx >= gw) continue
-                        val cell = grid[ny * gw + nx]
-                        for (ci in cell) {
-                            val ddx = cx - cxArr[ci]
-                            val ddy = cy - cyArr[ci]
-                            val dSq = ddx * ddx + ddy * ddy
-                            val bound = r + crArr[ci] + scaledPad
-                            if (dSq < bound * bound) {
-                                val dist = sqrt(dSq)
-                                val allowed = dist - crArr[ci] - scaledPad
-                                if (allowed < r) r = allowed
-                            }
-                        }
-                    }
-                }
-
-                if (r < minR) { fails++; continue }
-
-                // Store
-                cxArr[count] = cx
-                cyArr[count] = cy
-                crArr[count] = r
-                cdArr[count] = density
-                caArr[count] = rng.random() * 2f * PI.toFloat()
-                ckArr[count] = when (shapeType) {
-                    "squares" -> SHAPE_SQUARE
-                    "hexagons" -> SHAPE_HEXAGON
-                    "mixed" -> {
-                        val pick = rng.random()
-                        when {
-                            pick < 0.4f -> SHAPE_CIRCLE
-                            pick < 0.7f -> SHAPE_SQUARE
-                            else -> SHAPE_HEXAGON
-                        }
-                    }
-                    else -> SHAPE_CIRCLE
-                }
-
-                // Add to spatial grid
-                val gxi = min(gw - 1, (cx / cellSize).toInt())
-                val gyi = min(gh - 1, (cy / cellSize).toInt())
-                grid[gyi * gw + gxi].add(count)
-
-                count++
-                fails = 0
-            }
-
-            // Sort indices by radius descending — large shapes drawn first
-            // We permute the SoA arrays in place.
-            val idx = (0 until count).sortedByDescending { crArr[it] }.toIntArray()
-            val tx = FloatArray(count); val ty = FloatArray(count); val tr = FloatArray(count)
-            val td = FloatArray(count); val ta = FloatArray(count); val tk = ByteArray(count)
-            for (i in 0 until count) {
-                val j = idx[i]
-                tx[i] = cxArr[j]; ty[i] = cyArr[j]; tr[i] = crArr[j]
-                td[i] = cdArr[j]; ta[i] = caArr[j]; tk[i] = ckArr[j]
-            }
-            for (i in 0 until count) {
-                cxArr[i] = tx[i]; cyArr[i] = ty[i]; crArr[i] = tr[i]
-                cdArr[i] = td[i]; caArr[i] = ta[i]; ckArr[i] = tk[i]
-            }
-
-            cachedCount = count
-            cachedKey = packKey
-        }
-
-        val count = cachedCount
+        val data = getOrBuildPacking(
+            packKey, target, w, h, minR, maxR, scaledPad,
+            dScale, dContrast, densityStyle, shapeType, seed
+        )
+        val count = data.count
         if (count == 0) return
+
+        // Local aliases — these point at immutable arrays inside the snapshot
+        val dataCx = data.cx; val dataCy = data.cy; val dataCr = data.cr
+        val dataCd = data.cd; val dataCa = data.ca; val dataCk = data.ck
 
         // ============================================================
         // DRAW — runs every frame; packing is cached
@@ -397,8 +437,8 @@ class PlotterCirclePackingGenerator : Generator {
         val spiralPath = Path()
 
         for (i in 0 until count) {
-            val cx = cxArr[i]; val cy = cyArr[i]; val r = crArr[i]
-            val density = cdArr[i]; val kind = ckArr[i]; val baseAngle = caArr[i]
+            val cx = dataCx[i]; val cy = dataCy[i]; val r = dataCr[i]
+            val density = dataCd[i]; val kind = dataCk[i]; val baseAngle = dataCa[i]
 
             // ── Pulse animation ──
             var drawR = r
