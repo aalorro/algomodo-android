@@ -304,22 +304,6 @@ fun MainScreen(
                         )
                     }
 
-                    // Horizontal palette below canvas in expanded mode
-                    if (isCanvasExpanded) {
-                        HorizontalPaletteStrip(
-                            selectedPalette = state.palette,
-                            onSelectPalette = { viewModel.setPalette(it) },
-                            isLocked = "palette" in state.lockedParams,
-                            onToggleLock = { viewModel.toggleParamLock("palette") },
-                            customPalettes = state.customPalettes,
-                            onAddCustomPalette = { showCustomPaletteDialog = true },
-                            onDeleteCustomPalette = { viewModel.deleteCustomPalette(it) },
-                            modifier = Modifier
-                                .fillMaxWidth()
-                                .padding(top = 8.dp)
-                                .background(MaterialTheme.colorScheme.surface.copy(alpha = 0.5f))
-                        )
-                    }
                 }
 
                 // Info button — top-left on canvas
@@ -400,20 +384,37 @@ fun MainScreen(
                             .background(Color(0x88000000), RoundedCornerShape(4.dp))
                             .padding(horizontal = 10.dp, vertical = 4.dp)
                     )
-                    ActionButtonsRow(
-                        state = state,
-                        canUndo = canUndo,
-                        canRedo = canRedo,
-                        viewModel = viewModel,
-                        exportViewModel = exportViewModel,
-                        context = context,
-                        renderParams = renderParams,
-                        audioPlayer = audioPlayer,
-                        isAudioPlaying = isAudioPlaying,
-                        onAudioPlayingChange = { isAudioPlaying = it },
-                        translucent = true,
-                        modifier = Modifier.align(Alignment.BottomCenter)
-                    )
+                    Column(
+                        modifier = Modifier.align(Alignment.BottomCenter),
+                        horizontalAlignment = Alignment.CenterHorizontally
+                    ) {
+                        HorizontalPaletteStrip(
+                            selectedPalette = state.palette,
+                            onSelectPalette = { viewModel.setPalette(it) },
+                            isLocked = "palette" in state.lockedParams,
+                            onToggleLock = { viewModel.toggleParamLock("palette") },
+                            customPalettes = state.customPalettes,
+                            onAddCustomPalette = { showCustomPaletteDialog = true },
+                            onDeleteCustomPalette = { viewModel.deleteCustomPalette(it) },
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .background(MaterialTheme.colorScheme.surface.copy(alpha = 0.5f))
+                        )
+                        ActionButtonsRow(
+                            state = state,
+                            canUndo = canUndo,
+                            canRedo = canRedo,
+                            viewModel = viewModel,
+                            exportViewModel = exportViewModel,
+                            context = context,
+                            renderParams = renderParams,
+                            audioPlayer = audioPlayer,
+                            isAudioPlaying = isAudioPlaying,
+                            onAudioPlayingChange = { isAudioPlaying = it },
+                            translucent = true,
+                            modifier = Modifier.fillMaxWidth()
+                        )
+                    }
                 }
             }
 
