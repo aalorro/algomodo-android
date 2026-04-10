@@ -7,6 +7,9 @@ import androidx.activity.compose.BackHandler
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.PickVisualMediaRequest
 import androidx.activity.result.contract.ActivityResultContracts
+import androidx.compose.animation.AnimatedVisibility
+import androidx.compose.animation.fadeIn
+import androidx.compose.animation.fadeOut
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
@@ -120,6 +123,15 @@ fun MainScreen(
     var showOriginalImage by remember { mutableStateOf(false) }
     var showCustomPaletteDialog by remember { mutableStateOf(false) }
     var isCanvasExpanded by remember { mutableStateOf(false) }
+    var showPresetSavedBubble by remember { mutableStateOf(false) }
+
+    // Auto-dismiss preset saved bubble after 5 seconds
+    LaunchedEffect(showPresetSavedBubble) {
+        if (showPresetSavedBubble) {
+            delay(5000)
+            showPresetSavedBubble = false
+        }
+    }
 
     // Image picker
     val imagePickerLauncher = rememberLauncherForActivityResult(
@@ -216,6 +228,7 @@ fun MainScreen(
     // Info menu state
     var showInfoMenu by remember { mutableStateOf(false) }
 
+    Box(modifier = Modifier.fillMaxSize()) {
     Column(
         modifier = Modifier
             .fillMaxSize()
@@ -412,6 +425,7 @@ fun MainScreen(
                             isAudioPlaying = isAudioPlaying,
                             onAudioPlayingChange = { isAudioPlaying = it },
                             translucent = true,
+                            onPresetSaved = { showPresetSavedBubble = true },
                             modifier = Modifier.fillMaxWidth()
                         )
                     }
@@ -449,7 +463,8 @@ fun MainScreen(
                 audioPlayer = audioPlayer,
                 isAudioPlaying = isAudioPlaying,
                 onAudioPlayingChange = { isAudioPlaying = it },
-                translucent = false
+                translucent = false,
+                onPresetSaved = { showPresetSavedBubble = true }
             )
         }
 
@@ -816,6 +831,29 @@ fun MainScreen(
         )
     }
 
+    // Preset saved bubble overlay
+    AnimatedVisibility(
+        visible = showPresetSavedBubble,
+        enter = fadeIn(),
+        exit = fadeOut(),
+        modifier = Modifier.align(Alignment.BottomCenter).padding(bottom = 90.dp)
+    ) {
+        Surface(
+            shape = RoundedCornerShape(20.dp),
+            color = MaterialTheme.colorScheme.inverseSurface,
+            tonalElevation = 4.dp,
+            shadowElevation = 4.dp
+        ) {
+            Text(
+                text = "Preset saved! Find it in the Presets tab.",
+                color = MaterialTheme.colorScheme.inverseOnSurface,
+                fontSize = 13.sp,
+                modifier = Modifier.padding(horizontal = 20.dp, vertical = 10.dp)
+            )
+        }
+    }
+    } // end Box
+
     // Show share sheet after export
     exportState.lastExportUri?.let { uri ->
         LaunchedEffect(uri) {
@@ -902,6 +940,7 @@ private fun ActionButtonsRow(
     isAudioPlaying: Boolean,
     onAudioPlayingChange: (Boolean) -> Unit,
     translucent: Boolean,
+    onPresetSaved: () -> Unit = {},
     modifier: Modifier = Modifier
 ) {
     Row(
@@ -955,13 +994,39 @@ private fun ActionButtonsRow(
         ShinyCanvasButton { viewModel.surpriseMe() }
         CanvasButton(Icons.Filled.Refresh, "Reload") { viewModel.reload() }
         CanvasButton(Icons.Filled.Clear, "Clear") { viewModel.clearCanvas() }
-        CanvasButton(Icons.Filled.Save, "Save") {
-            state.generator?.let { gen ->
-                exportViewModel.quickSave(
-                    context, gen, renderParams, state.seed, state.palette,
-                    state.quality, state.postFX, state.isAnimating,
-                    aspectRatio = state.aspectRatio,
-                    snapshotTime = state.snapshotTime
+        Box {
+            var showSaveMenu by remember { mutableStateOf(false) }
+            CanvasButton(Icons.Filled.Save, "Save") { showSaveMenu = true }
+            DropdownMenu(
+                expanded = showSaveMenu,
+                onDismissRequest = { showSaveMenu = false }
+            ) {
+                DropdownMenuItem(
+                    text = { Text("Save as PNG") },
+                    leadingIcon = { Icon(Icons.Filled.Image, contentDescription = null, modifier = Modifier.size(20.dp)) },
+                    onClick = {
+                        showSaveMenu = false
+                        state.generator?.let { gen ->
+                            exportViewModel.quickSave(
+                                context, gen, renderParams, state.seed, state.palette,
+                                state.quality, state.postFX, state.isAnimating,
+                                aspectRatio = state.aspectRatio,
+                                snapshotTime = state.snapshotTime
+                            )
+                        }
+                    }
+                )
+                DropdownMenuItem(
+                    text = { Text("Save as Preset") },
+                    leadingIcon = { Icon(Icons.Filled.Bookmark, contentDescription = null, modifier = Modifier.size(20.dp)) },
+                    onClick = {
+                        showSaveMenu = false
+                        val gen = state.generator ?: return@DropdownMenuItem
+                        val timestamp = java.text.SimpleDateFormat("HH:mm:ss", java.util.Locale.US)
+                            .format(java.util.Date())
+                        viewModel.savePreset("${gen.styleName} $timestamp")
+                        onPresetSaved()
+                    }
                 )
             }
         }
