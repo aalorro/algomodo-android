@@ -22,6 +22,7 @@ class AppPreferences(private val dataStore: DataStore<Preferences>) {
         val ANIMATION_FPS = intPreferencesKey("animationFps")
         val INTERACTION_ENABLED = booleanPreferencesKey("interactionEnabled")
         val ASPECT_RATIO = stringPreferencesKey("aspectRatio")
+        val CUSTOM_PALETTES = stringPreferencesKey("customPalettes")
     }
 
     val theme: Flow<String> = dataStore.data.map { it[THEME] ?: "dark" }
@@ -34,6 +35,7 @@ class AppPreferences(private val dataStore: DataStore<Preferences>) {
     val animationFps: Flow<Int> = dataStore.data.map { it[ANIMATION_FPS] ?: 24 }
     val interactionEnabled: Flow<Boolean> = dataStore.data.map { it[INTERACTION_ENABLED] ?: true }
     val aspectRatio: Flow<String> = dataStore.data.map { it[ASPECT_RATIO] ?: "square" }
+    val customPalettes: Flow<String> = dataStore.data.map { it[CUSTOM_PALETTES] ?: "[]" }
 
     suspend fun setTheme(value: String) { dataStore.edit { it[THEME] = value } }
     suspend fun setPerformanceMode(value: Boolean) { dataStore.edit { it[PERFORMANCE_MODE] = value } }
@@ -45,4 +47,5 @@ class AppPreferences(private val dataStore: DataStore<Preferences>) {
     suspend fun setAnimationFps(value: Int) { dataStore.edit { it[ANIMATION_FPS] = value } }
     suspend fun setInteractionEnabled(value: Boolean) { dataStore.edit { it[INTERACTION_ENABLED] = value } }
     suspend fun setAspectRatio(value: String) { dataStore.edit { it[ASPECT_RATIO] = value } }
+    suspend fun setCustomPalettes(json: String) { dataStore.edit { it[CUSTOM_PALETTES] = json } }
 }

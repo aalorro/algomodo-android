@@ -18,6 +18,28 @@ fun ChangelogDialog(onDismiss: () -> Unit) {
         text = {
             Text(
                 text = """
+v1.6.1 (Android)
+Performance:
+- Optimized 10 generators with simulation caching (Ising, Particle Advection, Sandpile, Percolation, Reaction Diffusion, Cyclic CA, Crystal Growth, CurlFluid, Strange Attractor, Game of Life)
+- Two-phase rendering: instant draft preview + full quality
+- Mandelbrot/Multibrot: adaptive resolution with exponential zoom
+
+Improvements:
+- Palette locking (preserve palette during randomize)
+- Reaction Diffusion presets now produce distinct patterns (spots, stripes, worms, maze, etc.)
+- Crystal Growth animation shows real-time growth from seed
+- Cyclic CA: adaptive threshold for consistent animation
+- Game of Life: new color modes
+- Text Matrix: adjustable font size
+- Bright palette subset
+
+Bug Fixes:
+- Fixed Reaction Diffusion presets all looking identical
+- Fixed Cyclic CA Von Neumann mode not animating
+- Fixed Crystal Growth animation showing no growth
+- Fixed Multibrot freeze during animation
+- Total: 118 generators
+
 v1.6.0 (Android)
 New Features:
 - Aspect ratio support across all generators and UI (square, landscape, portrait)

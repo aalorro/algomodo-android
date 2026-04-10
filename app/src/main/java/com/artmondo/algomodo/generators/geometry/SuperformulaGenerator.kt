@@ -13,6 +13,7 @@ import com.artmondo.algomodo.generators.Quality
 import kotlin.math.PI
 import kotlin.math.abs
 import kotlin.math.cos
+import kotlin.math.max
 import kotlin.math.min
 import kotlin.math.pow
 import kotlin.math.sin
@@ -110,6 +111,49 @@ class SuperformulaGenerator : Generator {
             help = "Fill shape interiors with semi-transparent color",
             default = false
         ),
+        Parameter.SelectParam(
+            name = "3D",
+            key = "enable3d",
+            group = ParamGroup.GEOMETRY,
+            help = "Enable 3D perspective rotation with depth effects",
+            options = listOf("off", "on"),
+            default = "off"
+        ),
+        Parameter.NumberParam(
+            name = "3D Tilt",
+            key = "tilt3d",
+            group = ParamGroup.GEOMETRY,
+            help = "Tilts the shape plane in 3D — animates as a slow Y-axis spin",
+            min = 5f, max = 75f, step = 5f, default = 35f
+        ),
+        Parameter.NumberParam(
+            name = "Depth Spread",
+            key = "depthSpread",
+            group = ParamGroup.GEOMETRY,
+            help = "Separates layers along the Z-axis — when tilted, layers fan out like stacked plates",
+            min = 0f, max = 150f, step = 5f, default = 40f
+        ),
+        Parameter.NumberParam(
+            name = "Z Wave",
+            key = "zWave",
+            group = ParamGroup.GEOMETRY,
+            help = "Sinusoidal Z displacement — the shape undulates in and out of the screen like a ribbon",
+            min = 0f, max = 120f, step = 5f, default = 0f
+        ),
+        Parameter.NumberParam(
+            name = "Twist",
+            key = "twist",
+            group = ParamGroup.GEOMETRY,
+            help = "Progressive rotation as theta advances — the shape spirals through 3D space",
+            min = 0f, max = 360f, step = 15f, default = 0f
+        ),
+        Parameter.NumberParam(
+            name = "Depth Glow",
+            key = "depthGlow",
+            group = ParamGroup.GEOMETRY,
+            help = "Stroke width and brightness modulated by depth — closer parts brighter and thicker",
+            min = 0f, max = 1.0f, step = 0.1f, default = 0.5f
+        ),
         Parameter.NumberParam(
             name = "Resolution",
             key = "resolution",
@@ -146,6 +190,12 @@ class SuperformulaGenerator : Generator {
         "colorMode" to "layer",
         "strokeWidth" to 2f,
         "fill" to false,
+        "enable3d" to "off",
+        "tilt3d" to 35f,
+        "depthSpread" to 40f,
+        "zWave" to 0f,
+        "twist" to 0f,
+        "depthGlow" to 0.5f,
         "resolution" to 1000f,
         "animMode" to "morph",
         "speed" to 0.25f
@@ -159,6 +209,18 @@ class SuperformulaGenerator : Generator {
         val term2 = abs(sin(mTheta4) / b).toDouble().pow(n3.toDouble())
         val sum = term1 + term2
         return if (sum == 0.0) 0f else sum.pow(-1.0 / n1.toDouble()).toFloat()
+    }
+
+    @Volatile private var pxBuf: FloatArray? = null
+    @Volatile private var pyBuf: FloatArray? = null
+    @Volatile private var pzBuf: FloatArray? = null
+
+    private fun ensureBuffers(n: Int) {
+        if (pxBuf == null || pxBuf!!.size < n) {
+            pxBuf = FloatArray(n)
+            pyBuf = FloatArray(n)
+            pzBuf = FloatArray(n)
+        }
     }
 
     private fun generatePoints(
@@ -230,6 +292,27 @@ class SuperformulaGenerator : Generator {
         // Animation: compute spin rotation for copies
         val spinRotation = if (animMode == "spin") time * speed * 0.3f else 0f
 
+        // 3D parameters
+        val use3d = (params["enable3d"] as? String) == "on"
+        val tilt3d = if (use3d) (params["tilt3d"] as? Number)?.toFloat() ?: 35f else 0f
+        val depthSpread = if (use3d) (params["depthSpread"] as? Number)?.toFloat() ?: 40f else 0f
+        val zWave = if (use3d) (params["zWave"] as? Number)?.toFloat() ?: 0f else 0f
+        val twistDeg = if (use3d) (params["twist"] as? Number)?.toFloat() ?: 0f else 0f
+        val twistRad = twistDeg * PI.toFloat() / 180f
+        val depthGlow = if (use3d) (params["depthGlow"] as? Number)?.toFloat() ?: 0.5f else 0f
+
+        // 3D trig constants
+        val tiltRad = tilt3d * PI.toFloat() / 180f
+        val cosTilt = cos(tiltRad)
+        val sinTilt = sin(tiltRad)
+        val tPhase = time * speed
+        val spin3d = if (use3d) tPhase * 2.8f else 0f
+        val cosSpin = cos(spin3d)
+        val sinSpin = sin(spin3d)
+        val focalLen = 800f
+
+        val path = Path()
+
         // Draw from back to front: outermost layers first
         for (ring in layerCount - 1 downTo 0) {
             val ringFrac = (ring + 1).toFloat() / layerCount
@@ -255,7 +338,6 @@ class SuperformulaGenerator : Generator {
                     ringScale = baseScale * (0.8f + 0.2f * sin(time * speed * 0.5f + ring * PI.toFloat() / layerCount))
                 }
                 else -> {
-                    // "spin" — no parameter modulation, just rotation
                     ringN1 = baseN1
                     ringN2 = baseN2
                     ringN3 = baseN3
@@ -266,68 +348,206 @@ class SuperformulaGenerator : Generator {
             for (copy in 0 until copies) {
                 val copyAngle = 2f * PI.toFloat() * copy / copies + spinRotation
 
-                val points = generatePoints(
-                    m, ringN1, ringN2, ringN3, a, b,
-                    cx, cy, ringScale, samples, copyAngle
-                )
+                if (use3d) {
+                    // Generate raw points centered at origin
+                    val rawPoints = generatePoints(
+                        m, ringN1, ringN2, ringN3, a, b,
+                        0f, 0f, ringScale, samples, copyAngle
+                    )
+                    if (rawPoints.isEmpty()) continue
 
-                if (points.isEmpty()) continue
+                    val n = rawPoints.size
+                    ensureBuffers(n)
+                    val px = pxBuf!!
+                    val py = pyBuf!!
+                    val pz = pzBuf!!
 
-                val path = Path()
-                path.moveTo(points[0].first, points[0].second)
-                for (i in 1 until points.size) {
-                    path.lineTo(points[i].first, points[i].second)
-                }
-                path.close()
+                    // Layer Z offset — center layers around Z=0
+                    val layerZ = depthSpread * (ring.toFloat() - (layerCount - 1) * 0.5f) * 2f
 
-                // Fill
-                if (fill) {
-                    paint.style = Paint.Style.FILL
-                    val fillColor = when (colorMode) {
-                        "layer" -> paletteColors[(ring + copy) % paletteColors.size]
-                        "radial" -> palette.lerpColor(ringFrac)
-                        else -> paletteColors[(ring + copy) % paletteColors.size]
+                    for (i in 0 until n) {
+                        var sx = rawPoints[i].first
+                        var sy = rawPoints[i].second
+
+                        // Twist: progressive rotation as theta advances
+                        if (twistRad != 0f) {
+                            val tw = twistRad * (i.toFloat() / max(1, n - 1))
+                            val ct = cos(tw); val st = sin(tw)
+                            val tx = sx * ct - sy * st
+                            val ty = sx * st + sy * ct
+                            sx = tx; sy = ty
+                        }
+
+                        // Z from layer separation + wave
+                        var z0 = layerZ
+                        if (zWave > 0f) {
+                            val theta = 2f * PI.toFloat() * i / samples
+                            z0 += zWave * sin(theta * 3f + tPhase * 2f + ring * 1.5f)
+                        }
+
+                        // Tilt rotation (X-axis)
+                        val y3 = sy * cosTilt - z0 * sinTilt
+                        val z3 = sy * sinTilt + z0 * cosTilt
+
+                        // Spin rotation (Y-axis)
+                        val x3 = sx * cosSpin + z3 * sinSpin
+                        val zf = -sx * sinSpin + z3 * cosSpin
+
+                        // Perspective projection
+                        val ps = focalLen / (focalLen + zf)
+                        px[i] = cx + x3 * ps
+                        py[i] = cy + y3 * ps
+                        pz[i] = zf
                     }
-                    paint.color = fillColor
-                    paint.alpha = (60 + ring * 25).coerceAtMost(150)
-                    canvas.drawPath(path, paint)
-                }
 
-                // Stroke
-                paint.style = Paint.Style.STROKE
-                paint.strokeWidth = strokeWidth
+                    // Build path from projected points
+                    path.reset()
+                    path.moveTo(px[0], py[0])
+                    for (i in 1 until n) path.lineTo(px[i], py[i])
+                    path.close()
 
-                when (colorMode) {
-                    "layer" -> {
-                        paint.color = paletteColors[(ring + copy) % paletteColors.size]
-                        paint.alpha = 255
+                    // Fill
+                    if (fill) {
+                        paint.style = Paint.Style.FILL
+                        paint.color = when (colorMode) {
+                            "radial" -> palette.lerpColor(ringFrac)
+                            else -> paletteColors[(ring + copy) % paletteColors.size]
+                        }
+                        paint.alpha = (60 + ring * 25).coerceAtMost(150)
                         canvas.drawPath(path, paint)
                     }
-                    "gradient" -> {
-                        // Draw segments colored along the perimeter
-                        val segSize = (samples / (paletteColors.size * 4)).coerceAtLeast(8)
-                        for (i in 0 until points.size - 1 step segSize) {
-                            val end = (i + segSize + 1).coerceAtMost(points.size)
-                            val t = ((i.toFloat() / points.size + copy.toFloat() / copies) % 1f)
-                            paint.color = palette.lerpColor(t)
-                            paint.alpha = 255
-                            val seg = Path()
-                            seg.moveTo(points[i].first, points[i].second)
-                            for (j in i + 1 until end) {
-                                seg.lineTo(points[j].first, points[j].second)
+
+                    // Stroke with depth glow
+                    paint.style = Paint.Style.STROKE
+
+                    if (depthGlow > 0f) {
+                        val segCount = if (time > 0f) 40 else 60
+                        val segLen = max(1, n / segCount)
+
+                        for (s in 0 until segCount) {
+                            val iStart = s * segLen
+                            val iEnd = if (s == segCount - 1) n - 1
+                                       else min(n - 1, (s + 1) * segLen)
+                            if (iStart >= n) break
+
+                            // Average Z for depth factor
+                            var avgZ = 0f
+                            for (i in iStart..iEnd) avgZ += pz[i]
+                            avgZ /= (iEnd - iStart + 1)
+
+                            val df = (1f - depthGlow * (avgZ / focalLen) * 3f).coerceIn(0.15f, 1.8f)
+
+                            val baseColor = when (colorMode) {
+                                "gradient" -> {
+                                    val ct = ((iStart.toFloat() / n + copy.toFloat() / copies) % 1f)
+                                    palette.lerpColor(ct)
+                                }
+                                "radial" -> palette.lerpColor(ringFrac)
+                                else -> paletteColors[(ring + copy) % paletteColors.size]
                             }
+
+                            val r = (Color.red(baseColor) * df).toInt().coerceIn(0, 255)
+                            val g = (Color.green(baseColor) * df).toInt().coerceIn(0, 255)
+                            val bl = (Color.blue(baseColor) * df).toInt().coerceIn(0, 255)
+                            paint.color = Color.rgb(r, g, bl)
+                            paint.alpha = 255
+                            paint.strokeWidth = strokeWidth * df
+
+                            val seg = Path()
+                            seg.moveTo(px[iStart], py[iStart])
+                            for (i in iStart + 1..iEnd) seg.lineTo(px[i], py[i])
                             canvas.drawPath(seg, paint)
                         }
+                    } else {
+                        // 3D without depth glow — draw whole path
+                        paint.strokeWidth = strokeWidth
+                        when (colorMode) {
+                            "gradient" -> {
+                                val segSize = (samples / (paletteColors.size * 4)).coerceAtLeast(8)
+                                for (i in 0 until n - 1 step segSize) {
+                                    val end = (i + segSize + 1).coerceAtMost(n)
+                                    val ct = ((i.toFloat() / n + copy.toFloat() / copies) % 1f)
+                                    paint.color = palette.lerpColor(ct)
+                                    paint.alpha = 255
+                                    val seg = Path()
+                                    seg.moveTo(px[i], py[i])
+                                    for (j in i + 1 until end) seg.lineTo(px[j], py[j])
+                                    canvas.drawPath(seg, paint)
+                                }
+                            }
+                            "radial" -> {
+                                paint.color = palette.lerpColor(ringFrac)
+                                paint.alpha = 255
+                                canvas.drawPath(path, paint)
+                            }
+                            else -> {
+                                paint.color = paletteColors[(ring + copy) % paletteColors.size]
+                                paint.alpha = 255
+                                canvas.drawPath(path, paint)
+                            }
+                        }
                     }
-                    "radial" -> {
-                        paint.color = palette.lerpColor(ringFrac)
-                        paint.alpha = 255
+                } else {
+                    // Non-3D: original rendering
+                    val points = generatePoints(
+                        m, ringN1, ringN2, ringN3, a, b,
+                        cx, cy, ringScale, samples, copyAngle
+                    )
+                    if (points.isEmpty()) continue
+
+                    path.reset()
+                    path.moveTo(points[0].first, points[0].second)
+                    for (i in 1 until points.size) {
+                        path.lineTo(points[i].first, points[i].second)
+                    }
+                    path.close()
+
+                    // Fill
+                    if (fill) {
+                        paint.style = Paint.Style.FILL
+                        paint.color = when (colorMode) {
+                            "radial" -> palette.lerpColor(ringFrac)
+                            else -> paletteColors[(ring + copy) % paletteColors.size]
+                        }
+                        paint.alpha = (60 + ring * 25).coerceAtMost(150)
                         canvas.drawPath(path, paint)
                     }
-                    else -> {
-                        paint.color = paletteColors[(ring + copy) % paletteColors.size]
-                        paint.alpha = 255
-                        canvas.drawPath(path, paint)
+
+                    // Stroke
+                    paint.style = Paint.Style.STROKE
+                    paint.strokeWidth = strokeWidth
+
+                    when (colorMode) {
+                        "layer" -> {
+                            paint.color = paletteColors[(ring + copy) % paletteColors.size]
+                            paint.alpha = 255
+                            canvas.drawPath(path, paint)
+                        }
+                        "gradient" -> {
+                            val segSize = (samples / (paletteColors.size * 4)).coerceAtLeast(8)
+                            for (i in 0 until points.size - 1 step segSize) {
+                                val end = (i + segSize + 1).coerceAtMost(points.size)
+                                val t = ((i.toFloat() / points.size + copy.toFloat() / copies) % 1f)
+                                paint.color = palette.lerpColor(t)
+                                paint.alpha = 255
+                                val seg = Path()
+                                seg.moveTo(points[i].first, points[i].second)
+                                for (j in i + 1 until end) {
+                                    seg.lineTo(points[j].first, points[j].second)
+                                }
+                                canvas.drawPath(seg, paint)
+                            }
+                        }
+                        "radial" -> {
+                            paint.color = palette.lerpColor(ringFrac)
+                            paint.alpha = 255
+                            canvas.drawPath(path, paint)
+                        }
+                        else -> {
+                            paint.color = paletteColors[(ring + copy) % paletteColors.size]
+                            paint.alpha = 255
+                            canvas.drawPath(path, paint)
+                        }
                     }
                 }
             }

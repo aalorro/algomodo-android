@@ -62,8 +62,9 @@ class AlgoApp : Application() {
         GeneratorRegistry.register(RecursiveSubdivisionGenerator())
         GeneratorRegistry.register(StrangeAttractorDensityGenerator())
 
-        // Geometry (11)
+        // Geometry (12)
         GeneratorRegistry.register(ChladniGenerator())
+        GeneratorRegistry.register(HarmonicsGenerator())
         GeneratorRegistry.register(IslamicPatternsGenerator())
         GeneratorRegistry.register(MoireGenerator())
         GeneratorRegistry.register(RosettesGenerator())

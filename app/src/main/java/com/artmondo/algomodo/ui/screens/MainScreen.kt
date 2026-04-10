@@ -7,6 +7,9 @@ import androidx.activity.compose.BackHandler
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.PickVisualMediaRequest
 import androidx.activity.result.contract.ActivityResultContracts
+import androidx.compose.animation.AnimatedVisibility
+import androidx.compose.animation.fadeIn
+import androidx.compose.animation.fadeOut
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
@@ -118,7 +121,17 @@ fun MainScreen(
     var showUseCases by remember { mutableStateOf(false) }
     var showReportBug by remember { mutableStateOf(false) }
     var showOriginalImage by remember { mutableStateOf(false) }
+    var showCustomPaletteDialog by remember { mutableStateOf(false) }
     var isCanvasExpanded by remember { mutableStateOf(false) }
+    var showPresetSavedBubble by remember { mutableStateOf(false) }
+
+    // Auto-dismiss preset saved bubble after 5 seconds
+    LaunchedEffect(showPresetSavedBubble) {
+        if (showPresetSavedBubble) {
+            delay(5000)
+            showPresetSavedBubble = false
+        }
+    }
 
     // Image picker
     val imagePickerLauncher = rememberLauncherForActivityResult(
@@ -215,6 +228,7 @@ fun MainScreen(
     // Info menu state
     var showInfoMenu by remember { mutableStateOf(false) }
 
+    Box(modifier = Modifier.fillMaxSize()) {
     Column(
         modifier = Modifier
             .fillMaxSize()
@@ -303,19 +317,6 @@ fun MainScreen(
                         )
                     }
 
-                    // Horizontal palette below canvas in expanded mode
-                    if (isCanvasExpanded) {
-                        HorizontalPaletteStrip(
-                            selectedPalette = state.palette,
-                            onSelectPalette = { viewModel.setPalette(it) },
-                            isLocked = "palette" in state.lockedParams,
-                            onToggleLock = { viewModel.toggleParamLock("palette") },
-                            modifier = Modifier
-                                .fillMaxWidth()
-                                .padding(top = 8.dp)
-                                .background(MaterialTheme.colorScheme.surface.copy(alpha = 0.5f))
-                        )
-                    }
                 }
 
                 // Info button — top-left on canvas
@@ -396,20 +397,38 @@ fun MainScreen(
                             .background(Color(0x88000000), RoundedCornerShape(4.dp))
                             .padding(horizontal = 10.dp, vertical = 4.dp)
                     )
-                    ActionButtonsRow(
-                        state = state,
-                        canUndo = canUndo,
-                        canRedo = canRedo,
-                        viewModel = viewModel,
-                        exportViewModel = exportViewModel,
-                        context = context,
-                        renderParams = renderParams,
-                        audioPlayer = audioPlayer,
-                        isAudioPlaying = isAudioPlaying,
-                        onAudioPlayingChange = { isAudioPlaying = it },
-                        translucent = true,
-                        modifier = Modifier.align(Alignment.BottomCenter)
-                    )
+                    Column(
+                        modifier = Modifier.align(Alignment.BottomCenter),
+                        horizontalAlignment = Alignment.CenterHorizontally
+                    ) {
+                        HorizontalPaletteStrip(
+                            selectedPalette = state.palette,
+                            onSelectPalette = { viewModel.setPalette(it) },
+                            isLocked = "palette" in state.lockedParams,
+                            onToggleLock = { viewModel.toggleParamLock("palette") },
+                            customPalettes = state.customPalettes,
+                            onAddCustomPalette = { showCustomPaletteDialog = true },
+                            onDeleteCustomPalette = { viewModel.deleteCustomPalette(it) },
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .background(MaterialTheme.colorScheme.surface.copy(alpha = 0.5f))
+                        )
+                        ActionButtonsRow(
+                            state = state,
+                            canUndo = canUndo,
+                            canRedo = canRedo,
+                            viewModel = viewModel,
+                            exportViewModel = exportViewModel,
+                            context = context,
+                            renderParams = renderParams,
+                            audioPlayer = audioPlayer,
+                            isAudioPlaying = isAudioPlaying,
+                            onAudioPlayingChange = { isAudioPlaying = it },
+                            translucent = true,
+                            onPresetSaved = { showPresetSavedBubble = true },
+                            modifier = Modifier.fillMaxWidth()
+                        )
+                    }
                 }
             }
 
@@ -420,6 +439,9 @@ fun MainScreen(
                     onSelectPalette = { viewModel.setPalette(it) },
                     isLocked = "palette" in state.lockedParams,
                     onToggleLock = { viewModel.toggleParamLock("palette") },
+                    customPalettes = state.customPalettes,
+                    onAddCustomPalette = { showCustomPaletteDialog = true },
+                    onDeleteCustomPalette = { viewModel.deleteCustomPalette(it) },
                     modifier = Modifier
                         .fillMaxHeight()
                         .weight(1f)
@@ -441,7 +463,8 @@ fun MainScreen(
                 audioPlayer = audioPlayer,
                 isAudioPlaying = isAudioPlaying,
                 onAudioPlayingChange = { isAudioPlaying = it },
-                translucent = false
+                translucent = false,
+                onPresetSaved = { showPresetSavedBubble = true }
             )
         }
 
@@ -553,18 +576,47 @@ fun MainScreen(
 
         // Source image button (for image family)
         if (state.generator?.family == "image") {
+            val needsImage = state.sourceImage == null
             Row(
                 modifier = Modifier
                     .fillMaxWidth()
                     .padding(horizontal = 16.dp, vertical = 2.dp),
                 horizontalArrangement = Arrangement.spacedBy(8.dp)
             ) {
-                OutlinedButton(
-                    onClick = {
-                        imagePickerLauncher.launch(PickVisualMediaRequest(ActivityResultContracts.PickVisualMedia.ImageOnly))
-                    },
-                    modifier = Modifier.weight(1f)
-                ) { Text("Load", fontSize = 12.sp) }
+                if (needsImage) {
+                    val flashTransition = rememberInfiniteTransition(label = "loadFlash")
+                    val flashAlpha by flashTransition.animateFloat(
+                        initialValue = 0.4f,
+                        targetValue = 1f,
+                        animationSpec = infiniteRepeatable(
+                            animation = tween(600, easing = LinearEasing),
+                            repeatMode = RepeatMode.Reverse
+                        ),
+                        label = "flashAlpha"
+                    )
+                    val neonGreen = Color(0xFF39FF14)
+                    Button(
+                        onClick = {
+                            imagePickerLauncher.launch(PickVisualMediaRequest(ActivityResultContracts.PickVisualMedia.ImageOnly))
+                        },
+                        modifier = Modifier.weight(1f),
+                        colors = ButtonDefaults.buttonColors(containerColor = Color.Transparent)
+                    ) {
+                        Text(
+                            "LOAD IMAGE",
+                            fontSize = 13.sp,
+                            fontWeight = androidx.compose.ui.text.font.FontWeight.Bold,
+                            color = neonGreen.copy(alpha = flashAlpha)
+                        )
+                    }
+                } else {
+                    OutlinedButton(
+                        onClick = {
+                            imagePickerLauncher.launch(PickVisualMediaRequest(ActivityResultContracts.PickVisualMedia.ImageOnly))
+                        },
+                        modifier = Modifier.weight(1f)
+                    ) { Text("Load Image", fontSize = 12.sp) }
+                }
                 if (state.sourceImage != null) {
                     OutlinedButton(
                         onClick = { showOriginalImage = !showOriginalImage },
@@ -681,15 +733,18 @@ fun MainScreen(
                         onAudioSeekStarted = {
                             isAudioSeeking = true
                         },
+                        onImageResolutionChange = { exportViewModel.setImageResolution(it) },
                         onExportPng = {
                             val gen = state.generator ?: return@ExportPanel
                             val ar = state.aspectRatio
-                            exportViewModel.exportPng(context, gen, renderParams, state.seed, state.palette, state.quality, state.postFX, ar.exportWidth(), ar.exportHeight(), state.snapshotTime)
+                            val res = exportState.imageResolution
+                            exportViewModel.exportPng(context, gen, renderParams, state.seed, state.palette, state.quality, state.postFX, ar.width(res), ar.height(res), state.snapshotTime)
                         },
                         onExportJpg = {
                             val gen = state.generator ?: return@ExportPanel
                             val ar = state.aspectRatio
-                            exportViewModel.exportJpg(context, gen, renderParams, state.seed, state.palette, state.quality, state.postFX, ar.exportWidth(), ar.exportHeight(), state.snapshotTime)
+                            val res = exportState.imageResolution
+                            exportViewModel.exportJpg(context, gen, renderParams, state.seed, state.palette, state.quality, state.postFX, ar.width(res), ar.height(res), state.snapshotTime)
                         },
                         onExportSvg = {
                             val gen = state.generator ?: return@ExportPanel
@@ -764,6 +819,40 @@ fun MainScreen(
     if (showDonation) DonationDialog { showDonation = false }
     if (showUseCases) UseCasesDialog { showUseCases = false }
     if (showReportBug) ReportBugDialog { showReportBug = false }
+    if (showCustomPaletteDialog) {
+        CustomPaletteDialog(
+            existingPalettes = state.customPalettes,
+            onDismiss = { showCustomPaletteDialog = false },
+            onSave = { palette ->
+                viewModel.addCustomPalette(palette)
+                viewModel.setPalette(palette)
+                showCustomPaletteDialog = false
+            }
+        )
+    }
+
+    // Preset saved bubble overlay
+    AnimatedVisibility(
+        visible = showPresetSavedBubble,
+        enter = fadeIn(),
+        exit = fadeOut(),
+        modifier = Modifier.align(Alignment.BottomCenter).padding(bottom = 90.dp)
+    ) {
+        Surface(
+            shape = RoundedCornerShape(20.dp),
+            color = MaterialTheme.colorScheme.inverseSurface,
+            tonalElevation = 4.dp,
+            shadowElevation = 4.dp
+        ) {
+            Text(
+                text = "Preset saved! Find it in the Params tab.",
+                color = MaterialTheme.colorScheme.inverseOnSurface,
+                fontSize = 13.sp,
+                modifier = Modifier.padding(horizontal = 20.dp, vertical = 10.dp)
+            )
+        }
+    }
+    } // end Box
 
     // Show share sheet after export
     exportState.lastExportUri?.let { uri ->
@@ -851,6 +940,7 @@ private fun ActionButtonsRow(
     isAudioPlaying: Boolean,
     onAudioPlayingChange: (Boolean) -> Unit,
     translucent: Boolean,
+    onPresetSaved: () -> Unit = {},
     modifier: Modifier = Modifier
 ) {
     Row(
@@ -904,13 +994,39 @@ private fun ActionButtonsRow(
         ShinyCanvasButton { viewModel.surpriseMe() }
         CanvasButton(Icons.Filled.Refresh, "Reload") { viewModel.reload() }
         CanvasButton(Icons.Filled.Clear, "Clear") { viewModel.clearCanvas() }
-        CanvasButton(Icons.Filled.Save, "Save") {
-            state.generator?.let { gen ->
-                exportViewModel.quickSave(
-                    context, gen, renderParams, state.seed, state.palette,
-                    state.quality, state.postFX, state.isAnimating,
-                    aspectRatio = state.aspectRatio,
-                    snapshotTime = state.snapshotTime
+        Box {
+            var showSaveMenu by remember { mutableStateOf(false) }
+            CanvasButton(Icons.Filled.Save, "Save") { showSaveMenu = true }
+            DropdownMenu(
+                expanded = showSaveMenu,
+                onDismissRequest = { showSaveMenu = false }
+            ) {
+                DropdownMenuItem(
+                    text = { Text("Save as PNG") },
+                    leadingIcon = { Icon(Icons.Filled.Image, contentDescription = null, modifier = Modifier.size(20.dp)) },
+                    onClick = {
+                        showSaveMenu = false
+                        state.generator?.let { gen ->
+                            exportViewModel.quickSave(
+                                context, gen, renderParams, state.seed, state.palette,
+                                state.quality, state.postFX, state.isAnimating,
+                                aspectRatio = state.aspectRatio,
+                                snapshotTime = state.snapshotTime
+                            )
+                        }
+                    }
+                )
+                DropdownMenuItem(
+                    text = { Text("Save as Preset") },
+                    leadingIcon = { Icon(Icons.Filled.Bookmark, contentDescription = null, modifier = Modifier.size(20.dp)) },
+                    onClick = {
+                        showSaveMenu = false
+                        val gen = state.generator ?: return@DropdownMenuItem
+                        val timestamp = java.text.SimpleDateFormat("HH:mm:ss", java.util.Locale.US)
+                            .format(java.util.Date())
+                        viewModel.savePreset("${gen.styleName} $timestamp")
+                        onPresetSaved()
+                    }
                 )
             }
         }
@@ -942,16 +1058,7 @@ private fun loadBitmapFromUri(context: Context, uri: Uri, onLoaded: (android.gra
         var bitmap = android.graphics.BitmapFactory.decodeStream(inputStream)
         inputStream.close()
         if (bitmap != null) {
-            // Center-crop to square
-            if (bitmap.width != bitmap.height) {
-                val side = minOf(bitmap.width, bitmap.height)
-                val xOff = (bitmap.width - side) / 2
-                val yOff = (bitmap.height - side) / 2
-                val cropped = android.graphics.Bitmap.createBitmap(bitmap, xOff, yOff, side, side)
-                bitmap.recycle()
-                bitmap = cropped
-            }
-            // Scale down if too large
+            // Scale down if too large (cropping is handled by ViewModel)
             val maxSize = 2048
             if (bitmap.width > maxSize || bitmap.height > maxSize) {
                 val scale = maxSize.toFloat() / maxOf(bitmap.width, bitmap.height)

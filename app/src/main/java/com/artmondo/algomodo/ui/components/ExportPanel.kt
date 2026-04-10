@@ -39,6 +39,7 @@ fun ExportPanel(
     onAudioSeek: (Float) -> Unit = {},
     onAudioSeekFinished: () -> Unit = {},
     onAudioSeekStarted: () -> Unit = {},
+    onImageResolutionChange: (Int) -> Unit,
     onExportPng: () -> Unit,
     onExportJpg: () -> Unit,
     onExportSvg: () -> Unit,
@@ -86,6 +87,19 @@ fun ExportPanel(
             style = MaterialTheme.typography.labelMedium,
             color = MaterialTheme.colorScheme.primary
         )
+        Row(
+            horizontalArrangement = Arrangement.spacedBy(4.dp),
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            Text("Size:", style = MaterialTheme.typography.bodySmall)
+            listOf(1080 to "1080", 2560 to "2K", 3840 to "4K", 7680 to "8K").forEach { (res, label) ->
+                FilterChip(
+                    selected = exportState.imageResolution == res,
+                    onClick = { onImageResolutionChange(res) },
+                    label = { Text(label) }
+                )
+            }
+        }
         Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
             Button(onClick = onExportPng, modifier = Modifier.weight(1f)) {
                 Text("PNG")

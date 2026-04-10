@@ -28,6 +28,7 @@ data class ExportUiState(
     val isExporting: Boolean = false,
     val exportProgress: Float = 0f,
     val exportFormat: String = "png",
+    val imageResolution: Int = 1080,
     val gifDuration: Int = 5,
     val gifResolution: Int = 600,
     val gifBoomerang: Boolean = false,
@@ -46,6 +47,10 @@ class ExportViewModel @Inject constructor() : ViewModel() {
 
     fun setExportFormat(format: String) {
         _state.update { it.copy(exportFormat = format) }
+    }
+
+    fun setImageResolution(resolution: Int) {
+        _state.update { it.copy(imageResolution = resolution) }
     }
 
     fun setGifDuration(duration: Int) {
@@ -87,8 +92,9 @@ class ExportViewModel @Inject constructor() : ViewModel() {
         viewModelScope.launch(Dispatchers.IO) {
             _state.update { it.copy(isExporting = true, error = null) }
             try {
-                val w = aspectRatio.exportWidth()
-                val h = aspectRatio.exportHeight()
+                val res = _state.value.imageResolution
+                val w = aspectRatio.width(res)
+                val h = aspectRatio.height(res)
                 val bitmap = Bitmap.createBitmap(w, h, Bitmap.Config.ARGB_8888)
                 val canvas = Canvas(bitmap)
                 generator.renderCanvas(canvas, bitmap, params, seed, palette, quality, snapshotTime)

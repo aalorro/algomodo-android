@@ -84,6 +84,21 @@ class SpirographGenerator : Generator {
             options = listOf("solid", "gradient"),
             default = "solid"
         ),
+        Parameter.SelectParam(
+            name = "3D",
+            key = "enable3d",
+            group = ParamGroup.GEOMETRY,
+            help = "Enable 3D perspective tilt — the spirograph plane tilts and slowly rotates in 3D space",
+            options = listOf("off", "on"),
+            default = "off"
+        ),
+        Parameter.NumberParam(
+            name = "3D Tilt",
+            key = "tilt3d",
+            group = ParamGroup.GEOMETRY,
+            help = "Tilt angle of the spirograph plane in degrees (only used when 3D is on)",
+            min = 5f, max = 75f, step = 5f, default = 35f
+        ),
         Parameter.NumberParam(
             name = "Stroke Width",
             key = "strokeWidth",
@@ -108,6 +123,8 @@ class SpirographGenerator : Generator {
         "turns" to 10f,
         "layering" to 1f,
         "colorMode" to "solid",
+        "enable3d" to "off",
+        "tilt3d" to 35f,
         "strokeWidth" to 2f,
         "speed" to 0.3f
     )
@@ -165,6 +182,8 @@ class SpirographGenerator : Generator {
         val speed = (params["speed"] as? Number)?.toFloat() ?: 0.3f
 
         val isEpitrochoid = mode == "epitrochoid"
+        val use3d = (params["enable3d"] as? String) == "on"
+        val tilt3d = if (use3d) (params["tilt3d"] as? Number)?.toFloat() ?: 35f else 0f
 
         // Animate: slow rotation + subtle pen oscillation
         val animRotation = time * speed * 0.15f
@@ -189,6 +208,15 @@ class SpirographGenerator : Generator {
             Quality.ULTRA -> 25000
         }
 
+        // 3D perspective precomputation
+        val tiltRad = tilt3d * PI.toFloat() / 180f
+        val cosTilt = cos(tiltRad)
+        val sinTilt = sin(tiltRad)
+        val spin3d = if (use3d) animRotation * 0.7f else 0f
+        val cosSpin = cos(spin3d)
+        val sinSpin = sin(spin3d)
+        val focalLen = 800f
+
         val paint = Paint().apply {
             style = Paint.Style.STROKE
             this.strokeWidth = strokeWidth
@@ -202,11 +230,34 @@ class SpirographGenerator : Generator {
             // Each layer rotated evenly + animation rotation
             val layerAngle = (2f * PI.toFloat() * layer / layers) + animRotation
 
-            val points = generatePoints(
-                bigR, smallR, pen, rotations,
-                cx, cy, scale, samples,
-                isEpitrochoid, layerAngle
-            )
+            // Generate points centered at origin for 3D, or at canvas center otherwise
+            val rawPoints = if (use3d) {
+                generatePoints(
+                    bigR, smallR, pen, rotations,
+                    0f, 0f, scale, samples,
+                    isEpitrochoid, layerAngle
+                )
+            } else {
+                generatePoints(
+                    bigR, smallR, pen, rotations,
+                    cx, cy, scale, samples,
+                    isEpitrochoid, layerAngle
+                )
+            }
+
+            // Apply 3D perspective projection
+            val points = if (use3d) {
+                rawPoints.map { (sx, sy) ->
+                    val y3 = sy * cosTilt
+                    val z3 = sy * sinTilt
+                    val x3 = sx * cosSpin + z3 * sinSpin
+                    val zf = -sx * sinSpin + z3 * cosSpin
+                    val ps = focalLen / (focalLen + zf)
+                    (cx + x3 * ps) to (cy + y3 * ps)
+                }
+            } else {
+                rawPoints
+            }
 
             when (colorMode) {
                 "solid" -> {
