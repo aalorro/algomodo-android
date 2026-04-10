@@ -125,7 +125,7 @@ fun MainScreen(
     val imagePickerLauncher = rememberLauncherForActivityResult(
         contract = ActivityResultContracts.PickVisualMedia()
     ) { uri ->
-        uri?.let { loadBitmapFromUri(context, it) { bitmap -> viewModel.setSourceImage(bitmap) } }
+        uri?.let { loadBitmapFromUri(context, it, state.aspectRatio.asFloat()) { bitmap -> viewModel.setSourceImage(bitmap) } }
     }
 
     // Audio player — lives at MainScreen level so it persists across tab switches
@@ -986,18 +986,29 @@ private fun CanvasButton(
     }
 }
 
-private fun loadBitmapFromUri(context: Context, uri: Uri, onLoaded: (android.graphics.Bitmap) -> Unit) {
+private fun loadBitmapFromUri(context: Context, uri: Uri, targetAspect: Float = 1f, onLoaded: (android.graphics.Bitmap) -> Unit) {
     try {
         val inputStream = context.contentResolver.openInputStream(uri) ?: return
         var bitmap = android.graphics.BitmapFactory.decodeStream(inputStream)
         inputStream.close()
         if (bitmap != null) {
-            // Center-crop to square
-            if (bitmap.width != bitmap.height) {
-                val side = minOf(bitmap.width, bitmap.height)
-                val xOff = (bitmap.width - side) / 2
-                val yOff = (bitmap.height - side) / 2
-                val cropped = android.graphics.Bitmap.createBitmap(bitmap, xOff, yOff, side, side)
+            // Center-crop to target aspect ratio
+            val srcAspect = bitmap.width.toFloat() / bitmap.height.toFloat()
+            if (kotlin.math.abs(srcAspect - targetAspect) > 0.01f) {
+                val cropW: Int
+                val cropH: Int
+                if (srcAspect > targetAspect) {
+                    // Source is wider — crop sides
+                    cropH = bitmap.height
+                    cropW = (cropH * targetAspect).toInt()
+                } else {
+                    // Source is taller — crop top/bottom
+                    cropW = bitmap.width
+                    cropH = (cropW / targetAspect).toInt()
+                }
+                val xOff = (bitmap.width - cropW) / 2
+                val yOff = (bitmap.height - cropH) / 2
+                val cropped = android.graphics.Bitmap.createBitmap(bitmap, xOff, yOff, cropW, cropH)
                 bitmap.recycle()
                 bitmap = cropped
             }

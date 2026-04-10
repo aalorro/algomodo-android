@@ -1,5 +1,6 @@
 package com.artmondo.algomodo.ui.components
 
+import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
@@ -8,8 +9,10 @@ import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.LazyRow
 import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Add
 import androidx.compose.material.icons.filled.Close
@@ -20,6 +23,7 @@ import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
@@ -28,6 +32,8 @@ import com.artmondo.algomodo.data.palettes.CuratedPalettes
 import com.artmondo.algomodo.data.palettes.CustomPaletteHelper
 import com.artmondo.algomodo.data.palettes.Palette
 import com.artmondo.algomodo.ui.theme.AccentAmber
+
+private val AddButtonColor = Color(0xFF39FF14)
 
 @Composable
 fun PaletteSelector(
@@ -63,6 +69,19 @@ fun PaletteSelector(
                     )
                 }
             }
+            if (onAddCustomPalette != null && customPalettes.size < 5) {
+                IconButton(
+                    onClick = onAddCustomPalette,
+                    modifier = Modifier.size(32.dp)
+                ) {
+                    Icon(
+                        Icons.Filled.Add,
+                        contentDescription = "Add custom palette",
+                        tint = AddButtonColor,
+                        modifier = Modifier.size(20.dp)
+                    )
+                }
+            }
         }
 
         LazyRow(
@@ -86,11 +105,6 @@ fun PaletteSelector(
                         { onDeleteCustomPalette(palette.name) }
                     } else null
                 )
-            }
-            if (onAddCustomPalette != null && customPalettes.size < 5) {
-                item {
-                    AddPaletteChip(onClick = onAddCustomPalette)
-                }
             }
             item {
                 val displayPalette = if (selectedPalette.name == "Random") selectedPalette else CuratedPalettes.randomPlaceholder
@@ -132,6 +146,19 @@ fun HorizontalPaletteStrip(
                 )
             }
         }
+        if (onAddCustomPalette != null && customPalettes.size < 5) {
+            IconButton(
+                onClick = onAddCustomPalette,
+                modifier = Modifier.size(32.dp)
+            ) {
+                Icon(
+                    Icons.Filled.Add,
+                    contentDescription = "Add custom palette",
+                    tint = AddButtonColor,
+                    modifier = Modifier.size(20.dp)
+                )
+            }
+        }
         LazyRow(
             modifier = Modifier.weight(1f),
             horizontalArrangement = Arrangement.spacedBy(6.dp),
@@ -154,11 +181,6 @@ fun HorizontalPaletteStrip(
                         { onDeleteCustomPalette(palette.name) }
                     } else null
                 )
-            }
-            if (onAddCustomPalette != null && customPalettes.size < 5) {
-                item {
-                    AddPaletteChip(onClick = onAddCustomPalette)
-                }
             }
             item {
                 val displayPalette = if (selectedPalette.name == "Random") selectedPalette else CuratedPalettes.randomPlaceholder
@@ -200,6 +222,19 @@ fun VerticalPaletteSelector(
                 )
             }
         }
+        if (onAddCustomPalette != null && customPalettes.size < 5) {
+            IconButton(
+                onClick = onAddCustomPalette,
+                modifier = Modifier.size(28.dp)
+            ) {
+                Icon(
+                    Icons.Filled.Add,
+                    contentDescription = "Add custom palette",
+                    tint = AddButtonColor,
+                    modifier = Modifier.size(18.dp)
+                )
+            }
+        }
         LazyColumn(
             verticalArrangement = Arrangement.spacedBy(4.dp),
             contentPadding = PaddingValues(vertical = 4.dp, horizontal = 4.dp),
@@ -221,11 +256,6 @@ fun VerticalPaletteSelector(
                         { onDeleteCustomPalette(palette.name) }
                     } else null
                 )
-            }
-            if (onAddCustomPalette != null && customPalettes.size < 5) {
-                item {
-                    VerticalAddPaletteChip(onClick = onAddCustomPalette)
-                }
             }
             item {
                 val displayPalette = if (selectedPalette.name == "Random") selectedPalette else CuratedPalettes.randomPlaceholder
@@ -338,27 +368,6 @@ private fun VerticalPaletteChipWithDelete(
 }
 
 @Composable
-private fun VerticalAddPaletteChip(onClick: () -> Unit) {
-    Row(
-        modifier = Modifier
-            .fillMaxWidth()
-            .border(1.dp, MaterialTheme.colorScheme.surfaceVariant, RoundedCornerShape(6.dp))
-            .clip(RoundedCornerShape(6.dp))
-            .clickable(onClick = onClick)
-            .padding(horizontal = 6.dp, vertical = 6.dp),
-        horizontalArrangement = Arrangement.Center,
-        verticalAlignment = Alignment.CenterVertically
-    ) {
-        Icon(
-            Icons.Filled.Add,
-            contentDescription = "Add custom palette",
-            tint = MaterialTheme.colorScheme.primary,
-            modifier = Modifier.size(16.dp)
-        )
-    }
-}
-
-@Composable
 private fun PaletteChip(
     palette: Palette,
     isSelected: Boolean,
@@ -466,34 +475,25 @@ private fun PaletteChipWithDelete(
     }
 }
 
-@Composable
-private fun AddPaletteChip(onClick: () -> Unit) {
-    Column(
-        modifier = Modifier
-            .border(1.dp, MaterialTheme.colorScheme.surfaceVariant, RoundedCornerShape(8.dp))
-            .clip(RoundedCornerShape(8.dp))
-            .clickable(onClick = onClick)
-            .padding(8.dp),
-        horizontalAlignment = Alignment.CenterHorizontally
-    ) {
-        Box(
-            modifier = Modifier.size(16.dp),
-            contentAlignment = Alignment.Center
-        ) {
-            Icon(
-                Icons.Filled.Add,
-                contentDescription = "Add custom palette",
-                tint = MaterialTheme.colorScheme.primary,
-                modifier = Modifier.size(16.dp)
-            )
-        }
-        Spacer(modifier = Modifier.height(4.dp))
-        Text(
-            text = "New",
-            fontSize = 10.sp,
-            color = MaterialTheme.colorScheme.primary
-        )
+// ── HSV helpers ──
+
+private fun hexToHsv(hex: String): FloatArray {
+    val hsv = FloatArray(3)
+    try {
+        android.graphics.Color.colorToHSV(android.graphics.Color.parseColor(hex), hsv)
+    } catch (_: Exception) {
+        hsv[0] = 0f; hsv[1] = 0f; hsv[2] = 0.5f
     }
+    return hsv
+}
+
+private fun hsvToHex(h: Float, s: Float, v: Float): String {
+    val color = android.graphics.Color.HSVToColor(floatArrayOf(h, s, v))
+    return "#%02X%02X%02X".format(
+        android.graphics.Color.red(color),
+        android.graphics.Color.green(color),
+        android.graphics.Color.blue(color)
+    )
 }
 
 // ── Custom Palette Dialog ──
@@ -510,12 +510,19 @@ fun CustomPaletteDialog(
     var name by remember { mutableStateOf(defaultName) }
     var colors by remember { mutableStateOf(initialColors.toMutableList()) }
     var error by remember { mutableStateOf<String?>(null) }
+    var selectedColorIndex by remember { mutableStateOf(0) }
+
+    val currentHex = colors[selectedColorIndex]
+    val hsv = remember(currentHex) { hexToHsv(currentHex) }
 
     AlertDialog(
         onDismissRequest = onDismiss,
         title = { Text("New Custom Palette") },
         text = {
-            Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
+            Column(
+                verticalArrangement = Arrangement.spacedBy(10.dp),
+                modifier = Modifier.verticalScroll(rememberScrollState())
+            ) {
                 OutlinedTextField(
                     value = name,
                     onValueChange = { name = it.take(20) },
@@ -524,44 +531,181 @@ fun CustomPaletteDialog(
                     modifier = Modifier.fillMaxWidth()
                 )
 
-                // Color preview row
+                // Tappable color circles — tap to select which color to edit
                 Row(
-                    horizontalArrangement = Arrangement.spacedBy(6.dp),
+                    horizontalArrangement = Arrangement.spacedBy(8.dp),
                     modifier = Modifier.fillMaxWidth()
                 ) {
-                    colors.forEach { colorHex ->
+                    colors.forEachIndexed { index, colorHex ->
                         val parsed = try {
                             Color(android.graphics.Color.parseColor(colorHex))
                         } catch (_: Exception) {
                             Color.Gray
                         }
+                        val isSelected = index == selectedColorIndex
                         Box(
                             modifier = Modifier
                                 .weight(1f)
                                 .aspectRatio(1f)
                                 .clip(CircleShape)
                                 .background(parsed)
-                                .border(1.dp, MaterialTheme.colorScheme.outline, CircleShape)
-                        )
+                                .border(
+                                    if (isSelected) 3.dp else 1.dp,
+                                    if (isSelected) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.outline,
+                                    CircleShape
+                                )
+                                .clickable { selectedColorIndex = index },
+                            contentAlignment = Alignment.Center
+                        ) {
+                            if (isSelected) {
+                                Text(
+                                    "${index + 1}",
+                                    fontSize = 10.sp,
+                                    fontWeight = FontWeight.Bold,
+                                    color = Color.White
+                                )
+                            }
+                        }
                     }
                 }
 
-                // Color hex inputs
-                colors.forEachIndexed { index, colorHex ->
-                    OutlinedTextField(
-                        value = colorHex,
-                        onValueChange = { newVal ->
-                            val filtered = if (newVal.startsWith("#")) newVal else "#$newVal"
-                            if (filtered.matches(Regex("^#[0-9A-Fa-f]{0,6}$"))) {
-                                colors = colors.toMutableList().also { it[index] = filtered }
+                // Hue slider with rainbow gradient
+                Text(
+                    "Hue",
+                    style = MaterialTheme.typography.labelSmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                )
+                Box(modifier = Modifier.fillMaxWidth().height(36.dp)) {
+                    Canvas(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .height(20.dp)
+                            .align(Alignment.Center)
+                            .clip(RoundedCornerShape(4.dp))
+                    ) {
+                        drawRect(
+                            brush = Brush.linearGradient(
+                                listOf(
+                                    Color.Red, Color.Yellow, Color.Green,
+                                    Color.Cyan, Color.Blue, Color.Magenta, Color.Red
+                                )
+                            )
+                        )
+                    }
+                    Slider(
+                        value = hsv[0] / 360f,
+                        onValueChange = { h ->
+                            colors = colors.toMutableList().also {
+                                it[selectedColorIndex] = hsvToHex(h * 360f, hsv[1], hsv[2])
                             }
                         },
-                        label = { Text("Color ${index + 1}") },
-                        singleLine = true,
-                        modifier = Modifier.fillMaxWidth(),
-                        textStyle = MaterialTheme.typography.bodySmall
+                        colors = SliderDefaults.colors(
+                            thumbColor = Color.White,
+                            activeTrackColor = Color.Transparent,
+                            inactiveTrackColor = Color.Transparent,
+                            activeTickColor = Color.Transparent,
+                            inactiveTickColor = Color.Transparent
+                        ),
+                        modifier = Modifier.fillMaxWidth()
                     )
                 }
+
+                // Saturation slider
+                Text(
+                    "Saturation",
+                    style = MaterialTheme.typography.labelSmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                )
+                Box(modifier = Modifier.fillMaxWidth().height(36.dp)) {
+                    Canvas(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .height(20.dp)
+                            .align(Alignment.Center)
+                            .clip(RoundedCornerShape(4.dp))
+                    ) {
+                        drawRect(
+                            brush = Brush.linearGradient(
+                                listOf(
+                                    Color.hsv(hsv[0], 0f, hsv[2]),
+                                    Color.hsv(hsv[0], 1f, hsv[2])
+                                )
+                            )
+                        )
+                    }
+                    Slider(
+                        value = hsv[1],
+                        onValueChange = { s ->
+                            colors = colors.toMutableList().also {
+                                it[selectedColorIndex] = hsvToHex(hsv[0], s, hsv[2])
+                            }
+                        },
+                        colors = SliderDefaults.colors(
+                            thumbColor = Color.White,
+                            activeTrackColor = Color.Transparent,
+                            inactiveTrackColor = Color.Transparent,
+                            activeTickColor = Color.Transparent,
+                            inactiveTickColor = Color.Transparent
+                        ),
+                        modifier = Modifier.fillMaxWidth()
+                    )
+                }
+
+                // Brightness slider
+                Text(
+                    "Brightness",
+                    style = MaterialTheme.typography.labelSmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                )
+                Box(modifier = Modifier.fillMaxWidth().height(36.dp)) {
+                    Canvas(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .height(20.dp)
+                            .align(Alignment.Center)
+                            .clip(RoundedCornerShape(4.dp))
+                    ) {
+                        drawRect(
+                            brush = Brush.linearGradient(
+                                listOf(
+                                    Color.hsv(hsv[0], hsv[1], 0f),
+                                    Color.hsv(hsv[0], hsv[1], 1f)
+                                )
+                            )
+                        )
+                    }
+                    Slider(
+                        value = hsv[2],
+                        onValueChange = { v ->
+                            colors = colors.toMutableList().also {
+                                it[selectedColorIndex] = hsvToHex(hsv[0], hsv[1], v)
+                            }
+                        },
+                        colors = SliderDefaults.colors(
+                            thumbColor = Color.White,
+                            activeTrackColor = Color.Transparent,
+                            inactiveTrackColor = Color.Transparent,
+                            activeTickColor = Color.Transparent,
+                            inactiveTickColor = Color.Transparent
+                        ),
+                        modifier = Modifier.fillMaxWidth()
+                    )
+                }
+
+                // Hex input for the selected color
+                OutlinedTextField(
+                    value = currentHex,
+                    onValueChange = { newVal ->
+                        val filtered = if (newVal.startsWith("#")) newVal else "#$newVal"
+                        if (filtered.matches(Regex("^#[0-9A-Fa-f]{0,6}$"))) {
+                            colors = colors.toMutableList().also { it[selectedColorIndex] = filtered }
+                        }
+                    },
+                    label = { Text("Color ${selectedColorIndex + 1} Hex") },
+                    singleLine = true,
+                    modifier = Modifier.fillMaxWidth(),
+                    textStyle = MaterialTheme.typography.bodySmall
+                )
 
                 error?.let {
                     Text(it, color = MaterialTheme.colorScheme.error, style = MaterialTheme.typography.bodySmall)
