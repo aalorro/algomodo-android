@@ -2,6 +2,33 @@
 
 All notable changes to Algomodo will be documented in this file.
 
+## [1.7.0] - Android
+
+### New Generators (1)
+- Added Harmonics generator (geometry family)
+- Total generators: 118 across 11 families
+
+### New Features
+- Custom color palettes: create up to 5 named palettes with custom hex colors, persisted across sessions
+- 8K resolution export option
+- 3D perspective mode for Spirograph generator (with adjustable tilt)
+- 3D perspective mode for Superformula generator
+- Preset saved confirmation bubble with auto-dismiss
+- Aspect ratio cropping when loading source images (matches current canvas orientation)
+
+### Improvements
+- Orbital: full redesign — comets with multi-layer ion tails pointing away from nearest star, pulsing star coronas with rotating radial rays, twinkling background star field, new trinary star configuration, speed-reactive body glow at perihelion, smoother quadratic-alpha trails, SoA acceleration buffers
+- Simplex Noise Field: refactored Style parameter into 5 noise transforms (smooth, ridged, turbulent, billow, veins) — all pixel-rendered for consistent quality. ~10× performance via combined 1024-entry style/band/palette LUT, multi-threaded row partitioning, adaptive resolution rendering, and per-anim-mode specialized inner loops. New pulse animation mode
+- Circle Packing: thread-safe LRU cache for packing data eliminates export turbulence; new pulse mode, pulse amount, spin speed, color shift parameters; audio reactivity; improved outline contrast in filled+outline mode
+- Phyllotaxis: new canvas fill, divergence angle, glow, and depth fade parameters; improved color contrast handling
+- Edge Glow: refactored edge detection with adaptive pixel step for gradient and ridge modes
+- MainScreen layout: palette strip and action buttons grouped together for cleaner UI
+
+### Bug Fixes
+- Fixed Circle Packing export turbulence/choppiness caused by thread race condition on shared cache arrays
+- Fixed Simplex Noise Field parameters (Anim Mode, Color Mode, Band Count, Octaves) being effectively non-functional due to legacy line/circle render styles
+- Fixed README generator count (was stale at 117)
+
 ## [1.6.1] - Android
 
 ### Performance

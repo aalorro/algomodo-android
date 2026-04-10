@@ -12,7 +12,8 @@
       "Bash(./gradlew compileDebugKotlin:*)",
       "Bash(./gradlew clean:*)",
       "Bash(rm:*)",
-      "Bash(./gradlew:*)"
+      "Bash(./gradlew:*)",
+      "Bash(python3:*)"
     ]
   }
 }
