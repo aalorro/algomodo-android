@@ -845,7 +845,7 @@ fun MainScreen(
             shadowElevation = 4.dp
         ) {
             Text(
-                text = "Preset saved! Find it in the Presets tab.",
+                text = "Preset saved! Find it in the Params tab.",
                 color = MaterialTheme.colorScheme.inverseOnSurface,
                 fontSize = 13.sp,
                 modifier = Modifier.padding(horizontal = 20.dp, vertical = 10.dp)
