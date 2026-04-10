@@ -374,15 +374,19 @@ class PlotterCirclePackingGenerator : Generator {
         val tSpin = time * animSpeed * spinSpeed
         val colorOff = time * animSpeed * colorShift
         val cxc = w * 0.5f; val cyc = h * 0.5f
-        val invDiag = 1f / sqrt(w * w + h * h).coerceAtLeast(1f)
+        // Spatial-frequency constant: scale with canvas so waves look the same at any resolution
+        val sFreq = 8f / min(w, h)
 
         val fillPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply { style = Paint.Style.FILL }
+        // In filled+outline mode the outline must be thicker to be visible against the fill
+        val outlineThickness = if (fillMode == "filled+outline") max(1.8f, sizeScale * 1.8f) else max(1f, sizeScale)
         val strokePaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
             style = Paint.Style.STROKE
-            strokeWidth = max(1f, sizeScale)
+            strokeWidth = outlineThickness
             strokeCap = Paint.Cap.ROUND
             strokeJoin = Paint.Join.ROUND
         }
+        val outlineNeedsContrast = fillMode == "filled+outline"
         val detailPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
             style = Paint.Style.STROKE
             strokeWidth = max(0.8f, 0.8f * sizeScale)
@@ -401,25 +405,25 @@ class PlotterCirclePackingGenerator : Generator {
             if (pulseActive) {
                 val pulse = when (pulseMode) {
                     "wave" -> {
-                        // Travelling x-wave with mild y modulation
-                        sin(tp - cx * 0.012f + cy * 0.004f)
+                        // Strong travelling X-wave (~3 vertical bands across canvas)
+                        sin(tp * 1.5f - cx * sFreq * 3f)
                     }
                     "radial" -> {
-                        // Expanding ripple from center
+                        // Expanding concentric rings (~4 visible rings)
                         val dx = cx - cxc; val dy = cy - cyc
-                        val dist = sqrt(dx * dx + dy * dy) * invDiag * 8f
-                        sin(tp - dist)
+                        val dist = sqrt(dx * dx + dy * dy)
+                        sin(tp * 1.5f - dist * sFreq * 4f)
                     }
                     "swirl" -> {
-                        // Angular wave around center
+                        // 4 rotating spiral arms
                         val ang = atan2(cy - cyc, cx - cxc)
                         val dx = cx - cxc; val dy = cy - cyc
-                        val dist = sqrt(dx * dx + dy * dy) * invDiag * 4f
-                        sin(tp + ang * 3f - dist)
+                        val dist = sqrt(dx * dx + dy * dy)
+                        sin(tp + ang * 4f - dist * sFreq * 2f)
                     }
                     else -> {
-                        // breathe — uniform per-circle phase
-                        sin(tp + cx * 0.01f + cy * 0.013f + i * 0.3f)
+                        // breathe — chaotic per-circle independent shimmer
+                        sin(tp + i * 0.7f)
                     }
                 }
                 drawR = r * (1f + pulse * pulseAmount)
@@ -466,7 +470,16 @@ class PlotterCirclePackingGenerator : Generator {
             }
 
             val fillColor = Color.argb((fillAlpha * 255f).toInt(), cr, cg, cb)
-            val strokeColor = Color.argb((strokeAlpha * 255f).toInt(), cr, cg, cb)
+            // In filled+outline mode the outline needs contrast against the fill,
+            // otherwise it's invisible. In pure outline mode, use the original color.
+            val strokeColor = if (outlineNeedsContrast) {
+                val sr = if (isDark) min(255, cr + 110) else max(0, (cr * 0.25f).toInt())
+                val sg = if (isDark) min(255, cg + 110) else max(0, (cg * 0.25f).toInt())
+                val sb = if (isDark) min(255, cb + 110) else max(0, (cb * 0.25f).toInt())
+                Color.argb(255, sr, sg, sb)
+            } else {
+                Color.argb((strokeAlpha * 255f).toInt(), cr, cg, cb)
+            }
 
             // Detail color: contrast against fill — darken on light bg, lighten on dark bg
             val dr = if (isDark) min(255, cr + 100) else max(0, (cr * 0.35f).toInt())
