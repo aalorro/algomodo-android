@@ -56,6 +56,7 @@ data class MainUiState(
     val seedLocked: Boolean = false,
     val lockedParams: Set<String> = emptySet(),
     val sourceImage: Bitmap? = null,
+    val sourceImageOriginal: Bitmap? = null,
     val audioUri: Uri? = null,
     val audioFileName: String? = null,
     val audioAnalysis: AudioAnalysis? = null,
@@ -422,7 +423,30 @@ class MainViewModel @Inject constructor(
     }
 
     fun setSourceImage(bitmap: Bitmap?) {
-        _state.update { it.copy(sourceImage = bitmap, renderTrigger = it.renderTrigger + 1) }
+        if (bitmap == null) {
+            _state.update { it.copy(sourceImage = null, sourceImageOriginal = null, renderTrigger = it.renderTrigger + 1) }
+        } else {
+            val cropped = centerCropBitmap(bitmap, _state.value.aspectRatio)
+            _state.update { it.copy(sourceImage = cropped, sourceImageOriginal = bitmap, renderTrigger = it.renderTrigger + 1) }
+        }
+    }
+
+    private fun centerCropBitmap(bitmap: Bitmap, aspectRatio: AspectRatio): Bitmap {
+        val targetAspect = aspectRatio.asFloat()
+        val srcAspect = bitmap.width.toFloat() / bitmap.height.toFloat()
+        if (kotlin.math.abs(srcAspect - targetAspect) <= 0.01f) return bitmap
+        val cropW: Int
+        val cropH: Int
+        if (srcAspect > targetAspect) {
+            cropH = bitmap.height
+            cropW = (cropH * targetAspect).toInt()
+        } else {
+            cropW = bitmap.width
+            cropH = (cropW / targetAspect).toInt()
+        }
+        val xOff = (bitmap.width - cropW) / 2
+        val yOff = (bitmap.height - cropH) / 2
+        return Bitmap.createBitmap(bitmap, xOff, yOff, cropW, cropH)
     }
 
     fun loadAudio(context: Context, uri: Uri) {
@@ -510,7 +534,14 @@ class MainViewModel @Inject constructor(
                 AspectRatio.LANDSCAPE -> "landscape"
             })
         }
-        _state.update { it.copy(aspectRatio = aspectRatio, renderTrigger = it.renderTrigger + 1) }
+        _state.update { s ->
+            val reCropped = s.sourceImageOriginal?.let { centerCropBitmap(it, aspectRatio) }
+            s.copy(
+                aspectRatio = aspectRatio,
+                sourceImage = reCropped ?: s.sourceImage,
+                renderTrigger = s.renderTrigger + 1
+            )
+        }
     }
 
     fun setPerformanceMode(enabled: Boolean) {
