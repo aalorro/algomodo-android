@@ -119,6 +119,8 @@ class CurlFluidGenerator : Generator {
         val noiseScale: Float,
         val speed: Float,
         val evolution: Float,
+        val w: Float,
+        val h: Float,
         var stepCount: Int,
         val px: FloatArray,
         val py: FloatArray,
@@ -200,6 +202,8 @@ class CurlFluidGenerator : Generator {
             cached.noiseScale == noiseScale &&
             cached.speed == speed &&
             cached.evolution == evolution &&
+            cached.w == w &&
+            cached.h == h &&
             totalSteps >= cached.stepCount &&
             totalSteps - cached.stepCount < 120
         ) {
@@ -221,6 +225,8 @@ class CurlFluidGenerator : Generator {
                 noiseScale = noiseScale,
                 speed = speed,
                 evolution = evolution,
+                w = w,
+                h = h,
                 stepCount = 0,
                 px = FloatArray(particleCount),
                 py = FloatArray(particleCount),
