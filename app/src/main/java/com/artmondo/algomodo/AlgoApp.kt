@@ -23,7 +23,7 @@ class AlgoApp : Application() {
     }
 
     private fun registerAllGenerators() {
-        // Animation (8)
+        // Animation (9)
         GeneratorRegistry.register(AttractorTrailsGenerator())
         GeneratorRegistry.register(CurlFluidGenerator())
         GeneratorRegistry.register(FlowFieldInkGenerator())
@@ -31,6 +31,7 @@ class AlgoApp : Application() {
         GeneratorRegistry.register(KaleidoscopeGenerator())
         GeneratorRegistry.register(OrbitalGenerator())
         GeneratorRegistry.register(PlasmaFeedbackGenerator())
+        GeneratorRegistry.register(SprottQuadraticGenerator())
         GeneratorRegistry.register(WaveInterferenceGenerator())
 
         // Cellular (14)
