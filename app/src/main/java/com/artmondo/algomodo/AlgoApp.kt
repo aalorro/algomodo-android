@@ -64,6 +64,7 @@ class AlgoApp : Application() {
 
         // Geometry (12)
         GeneratorRegistry.register(ChladniGenerator())
+        GeneratorRegistry.register(GravityPackingGenerator())
         GeneratorRegistry.register(HarmonicsGenerator())
         GeneratorRegistry.register(IslamicPatternsGenerator())
         GeneratorRegistry.register(MoireGenerator())
