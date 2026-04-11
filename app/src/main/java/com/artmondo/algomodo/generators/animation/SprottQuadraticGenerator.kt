@@ -208,7 +208,8 @@ class SprottQuadraticGenerator : Generator {
             val yn = a6 + a7 * x + a8 * x * x + a9 * x * y + a10 * y + a11 * y * y
             // Magnitude check catches both overflow and NaN propagation
             // (NaN comparisons are false so it escapes, but the next iter propagates).
-            if (xn * xn + yn * yn > 1e8 || xn.isNaN() || yn.isNaN()) return null
+            // `!(a < b)` catches NaN (NaN-compares are false) and overflow.
+            if (!(xn * xn + yn * yn < 1e8)) return null
             x = xn; y = yn
             if (i > warmup) {
                 if (x < minX) minX = x; if (x > maxX) maxX = x
@@ -240,7 +241,7 @@ class SprottQuadraticGenerator : Generator {
         for (i in 0 until 200) {
             val xn = a0 + a1 * x + a2 * x * x + a3 * x * y + a4 * y + a5 * y * y
             val yn = a6 + a7 * x + a8 * x * x + a9 * x * y + a10 * y + a11 * y * y
-            if (xn * xn + yn * yn > 1e8 || xn.isNaN() || yn.isNaN()) return Double.NEGATIVE_INFINITY
+            if (!(xn * xn + yn * yn < 1e8)) return Double.NEGATIVE_INFINITY
             x = xn; y = yn
         }
         var dx = 1e-8; var dy = 0.0
@@ -256,7 +257,7 @@ class SprottQuadraticGenerator : Generator {
             val ndy = j10 * dx + j11 * dy
             val xn = a0 + a1 * x + a2 * x * x + a3 * x * y + a4 * y + a5 * y * y
             val yn = a6 + a7 * x + a8 * x * x + a9 * x * y + a10 * y + a11 * y * y
-            if (xn * xn + yn * yn > 1e8 || xn.isNaN() || yn.isNaN()) return Double.NEGATIVE_INFINITY
+            if (!(xn * xn + yn * yn < 1e8)) return Double.NEGATIVE_INFINITY
             x = xn; y = yn
             val mag = kotlin.math.sqrt(ndx * ndx + ndy * ndy)
             if (mag < 1e-300 || mag.isNaN()) return Double.NEGATIVE_INFINITY
@@ -415,26 +416,22 @@ class SprottQuadraticGenerator : Generator {
         val halfW = w * 0.5
         val halfH = h * 0.5
 
-        // Palette LUT cache — rebuild only on palette identity change.
-        val palLut: IntArray? = when (colorMode) {
-            CM_PALETTE, CM_VELOCITY -> {
-                if (s.cachedPalette !== palette) {
-                    s.cachedLut = palette.buildLut(LUT_SIZE)
-                    s.cachedPalette = palette
-                }
-                s.cachedLut
-            }
-            else -> null
-        }
+        // Empty palette is unusable by any palette-dependent color mode.
+        // Guard once here so downstream LUT build + lerpColor are always safe.
+        if (colorMode != CM_MONO && palette.colorInts().isEmpty()) return
 
-        // Precompute per-particle colors once per frame (constant across steps).
-        if (colorMode == CM_PARTICLE) {
-            val pLen = palette.colorInts().size
-            if (pLen == 0) return
+        // Palette-dependent caches. Rebuild both palLut and particleColors on
+        // palette identity change — kept in sync so switching color modes
+        // mid-animation doesn't trigger an extra rebuild.
+        if (s.cachedPalette !== palette && colorMode != CM_MONO) {
+            s.cachedLut = palette.buildLut(LUT_SIZE)
             for (p in 0 until count) {
                 s.particleColors[p] = palette.lerpColor(s.pColor[p])
             }
+            s.cachedPalette = palette
         }
+        // Non-null for palette/velocity modes after the empty-palette guard above.
+        val palLut: IntArray? = s.cachedLut
 
         // Color phase rotates palette over time; bass nudges it.
         val colorPhase = (((tDrift * 22.0) + bass * 40.0).toInt()) and 255
@@ -453,10 +450,12 @@ class SprottQuadraticGenerator : Generator {
             // Prime the trail buffer with 2 frames. Original web used 4 but
             // each frame already runs count × stepsPerFrame iterations; 2 is
             // plenty to avoid a black first frame while keeping init cheap.
+            // Uses base boost (256) with no bass modulation — brightness
+            // scales up once real audio-driven boost kicks in next frame.
             for (f in 0 until 2) {
                 fadePixels(s.pixels, trailLen)
                 renderDispatch(s, a, stepsPerFrame, w, h, cx, cy, scale, halfW, halfH,
-                    palLut, colorMode, 0, 256 /* unity boost during init */)
+                    palLut, colorMode, 0, 256)
             }
         }
 
@@ -518,9 +517,9 @@ class SprottQuadraticGenerator : Generator {
                 val xx = x * x; val xy = x * y; val yy = y * y
                 val xn = a0 + a1 * x + a2 * xx + a3 * xy + a4 * y + a5 * yy
                 val yn = a6 + a7 * x + a8 * xx + a9 * xy + a10 * y + a11 * yy
-                if (xn * xn + yn * yn > 1e8 || xn.isNaN() || yn.isNaN()) {
-                    x = (rng.randomDouble() - 0.5) * 0.1
-                    y = (rng.randomDouble() - 0.5) * 0.1
+                if (!(xn * xn + yn * yn < 1e8)) {
+                    x = (rng.randomDouble() - 0.5) * 0.2
+                    y = (rng.randomDouble() - 0.5) * 0.2
                     continue
                 }
                 x = xn; y = yn
@@ -573,7 +572,7 @@ class SprottQuadraticGenerator : Generator {
                 val xx = x * x; val xy = x * y; val yy = y * y
                 val xn = a0 + a1 * x + a2 * xx + a3 * xy + a4 * y + a5 * yy
                 val yn = a6 + a7 * x + a8 * xx + a9 * xy + a10 * y + a11 * yy
-                if (xn * xn + yn * yn > 1e8 || xn.isNaN() || yn.isNaN()) { diverged = true; break }
+                if (!(xn * xn + yn * yn < 1e8)) { diverged = true; break }
 
                 val li = (angleIndex256(yn - cy, xn - cx) + colorPhase) and 255
                 val c = palLut[li]
@@ -616,7 +615,7 @@ class SprottQuadraticGenerator : Generator {
                 val xx = x * x; val xy = x * y; val yy = y * y
                 val xn = a0 + a1 * x + a2 * xx + a3 * xy + a4 * y + a5 * yy
                 val yn = a6 + a7 * x + a8 * xx + a9 * xy + a10 * y + a11 * yy
-                if (xn * xn + yn * yn > 1e8 || xn.isNaN() || yn.isNaN()) { diverged = true; break }
+                if (!(xn * xn + yn * yn < 1e8)) { diverged = true; break }
 
                 // Use squared-speed directly — immediately quantized to 256 bins,
                 // so we can skip sqrt and rescale the coefficient.
@@ -662,21 +661,31 @@ class SprottQuadraticGenerator : Generator {
         for (p in 0 until count) {
             var x = pxArr[p]; var y = pyArr[p]
             val c = pCols[p]
-            val cr = (c ushr 16) and 0xFF
-            val cg = (c ushr 8) and 0xFF
-            val cb = c and 0xFF
+            // Hoist additive deltas out of the per-step loop — particle color
+            // and boost are invariant across all of this particle's steps.
+            val addR = (((c ushr 16) and 0xFF) * boost256) ushr 9
+            val addG = (((c ushr 8) and 0xFF) * boost256) ushr 9
+            val addB = ((c and 0xFF) * boost256) ushr 9
             var diverged = false
             for (j in 0 until steps) {
                 val xx = x * x; val xy = x * y; val yy = y * y
                 val xn = a0 + a1 * x + a2 * xx + a3 * xy + a4 * y + a5 * yy
                 val yn = a6 + a7 * x + a8 * xx + a9 * xy + a10 * y + a11 * yy
-                if (xn * xn + yn * yn > 1e8 || xn.isNaN() || yn.isNaN()) { diverged = true; break }
+                if (!(xn * xn + yn * yn < 1e8)) { diverged = true; break }
 
                 x = xn; y = yn
                 val sx = ((x - cx) * scale + halfW).toInt()
                 val sy = ((y - cy) * scale + halfH).toInt()
                 if (sx in 0 until w && sy in 0 until h) {
-                    blendPixel(pix, sy * w + sx, cr, cg, cb, boost256)
+                    val idx = sy * w + sx
+                    val old = pix[idx]
+                    var nr = ((old ushr 16) and 0xFF) + addR
+                    var ng = ((old ushr 8) and 0xFF) + addG
+                    var nb = (old and 0xFF) + addB
+                    if (nr > 255) nr = 255
+                    if (ng > 255) ng = 255
+                    if (nb > 255) nb = 255
+                    pix[idx] = BG_COLOR or (nr shl 16) or (ng shl 8) or nb
                 }
             }
             if (diverged) {
@@ -702,6 +711,10 @@ class SprottQuadraticGenerator : Generator {
         val a6 = a[6]; val a7 = a[7]; val a8 = a[8]; val a9 = a[9]; val a10 = a[10]; val a11 = a[11]
         val rng = s.recoveryRng
 
+        // Fixed color (220,220,220) → all three channels share one add-delta.
+        // Hoisted once per frame since boost256 is constant.
+        val add = (220 * boost256) ushr 9
+
         for (p in 0 until count) {
             var x = pxArr[p]; var y = pyArr[p]
             var diverged = false
@@ -709,13 +722,21 @@ class SprottQuadraticGenerator : Generator {
                 val xx = x * x; val xy = x * y; val yy = y * y
                 val xn = a0 + a1 * x + a2 * xx + a3 * xy + a4 * y + a5 * yy
                 val yn = a6 + a7 * x + a8 * xx + a9 * xy + a10 * y + a11 * yy
-                if (xn * xn + yn * yn > 1e8 || xn.isNaN() || yn.isNaN()) { diverged = true; break }
+                if (!(xn * xn + yn * yn < 1e8)) { diverged = true; break }
 
                 x = xn; y = yn
                 val sx = ((x - cx) * scale + halfW).toInt()
                 val sy = ((y - cy) * scale + halfH).toInt()
                 if (sx in 0 until w && sy in 0 until h) {
-                    blendPixel(pix, sy * w + sx, 220, 220, 220, boost256)
+                    val idx = sy * w + sx
+                    val old = pix[idx]
+                    var nr = ((old ushr 16) and 0xFF) + add
+                    var ng = ((old ushr 8) and 0xFF) + add
+                    var nb = (old and 0xFF) + add
+                    if (nr > 255) nr = 255
+                    if (ng > 255) ng = 255
+                    if (nb > 255) nb = 255
+                    pix[idx] = BG_COLOR or (nr shl 16) or (ng shl 8) or nb
                 }
             }
             if (diverged) {
@@ -728,8 +749,8 @@ class SprottQuadraticGenerator : Generator {
     }
 
     override fun estimateCost(params: Map<String, Any>, quality: Quality): Float {
-        val count = (params["particles"] as? Number)?.toFloat() ?: 150f
-        val steps = (params["stepsPerFrame"] as? Number)?.toFloat() ?: 200f
+        val count = (params["particles"] as? Number)?.toFloat() ?: 220f
+        val steps = (params["stepsPerFrame"] as? Number)?.toFloat() ?: 300f
         val qMul = when (quality) {
             Quality.DRAFT -> 0.25f
             Quality.BALANCED -> 1f

@@ -132,7 +132,8 @@ class AlgoApp : Application() {
         GeneratorRegistry.register(PlotterStreamlinesGenerator())
         GeneratorRegistry.register(PlotterTspGenerator())
 
-        // Text (8)
+        // Text (9)
+        GeneratorRegistry.register(TextCodeGenerator())
         GeneratorRegistry.register(TextConcreteGenerator())
         GeneratorRegistry.register(TextGlyphsGenerator())
         GeneratorRegistry.register(TextGridGenerator())
