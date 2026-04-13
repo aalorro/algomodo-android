@@ -140,6 +140,7 @@ class FluxFeedbackLoopGenerator : Generator {
         val seed: Int,
         val w: Int,
         val h: Int,
+        val emitterCount: Int,
         val bufferA: Bitmap,
         val bufferB: Bitmap,
         var useA: Boolean,             // which buffer is "current" (latest result)
@@ -238,7 +239,7 @@ class FluxFeedbackLoopGenerator : Generator {
 
         // ── Ensure buffers (state cache) ────────────────────────────────────
         var st = state
-        if (st == null || st.seed != seed || st.w != w || st.h != h) {
+        if (st == null || st.seed != seed || st.w != w || st.h != h || st.emitterCount != emitterCount) {
             // Recycle old bitmaps
             st?.bufferA?.recycle()
             st?.bufferB?.recycle()
@@ -259,7 +260,7 @@ class FluxFeedbackLoopGenerator : Generator {
             val bufB = Bitmap.createBitmap(w, h, Bitmap.Config.ARGB_8888)
 
             st = FeedbackState(
-                seed = seed, w = w, h = h,
+                seed = seed, w = w, h = h, emitterCount = emitterCount,
                 bufferA = bufA, bufferB = bufB,
                 useA = true,
                 emitterFreqA = freqA, emitterFreqB = freqB,
@@ -431,12 +432,17 @@ class FluxFeedbackLoopGenerator : Generator {
         // Track which buffer is current
         st.useA = (srcBmp === st.bufferA)
 
-        // ── Bloom pass -- additive self-composite for glow ──────────────────
+        // ── Bloom pass -- additive composite for glow ──────────────────────
+        // Use dstBmp (unused after loop) as temp to avoid undefined self-draw
         val bloom = (0.08f + audioEnergy * 0.15f).coerceIn(0f, 1f)
+        val tmpCanvas = Canvas(dstBmp)
+        tmpCanvas.drawColor(Color.TRANSPARENT, PorterDuff.Mode.CLEAR)
+        tmpCanvas.drawBitmap(srcBmp, 0f, 0f, null)
+
         val srcCanvas = Canvas(srcBmp)
         bloomPaint.alpha = (bloom * 255f).roundToInt().coerceIn(0, 255)
         bloomPaint.xfermode = PorterDuffXfermode(PorterDuff.Mode.ADD)
-        srcCanvas.drawBitmap(srcBmp, 0f, 0f, bloomPaint)
+        srcCanvas.drawBitmap(dstBmp, 0f, 0f, bloomPaint)
         bloomPaint.xfermode = null
         bloomPaint.alpha = 255
 
