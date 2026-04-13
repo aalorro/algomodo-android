@@ -18,6 +18,29 @@ fun ChangelogDialog(onDismiss: () -> Unit) {
         text = {
             Text(
                 text = """
+v1.7.0 (Android)
+New Generator:
+- Harmonics (geometry) — total: 118 generators
+
+New Features:
+- Custom color palettes: create up to 5 named palettes
+- 8K resolution export
+- 3D perspective for Spirograph and Superformula
+- Preset saved notification bubble
+- Aspect ratio cropping when loading images
+
+Improvements:
+- Orbital: redesigned with comets, ion tails, pulsing star coronas, twinkling star field, trinary mode, speed-reactive glow
+- Simplex Noise Field: 5 noise transforms (smooth, ridged, turbulent, billow, veins), ~10× faster via combined LUT + multi-threading, new pulse anim mode, fixed broken parameters
+- Circle Packing: thread-safe cache fixes export turbulence; pulse mode, spin speed, color shift, audio reactivity
+- Phyllotaxis: new canvas fill, divergence, glow, depth fade params
+- Edge Glow: improved edge detection with adaptive pixel step
+- Cleaner MainScreen layout
+
+Bug Fixes:
+- Fixed Circle Packing export turbulence (thread race condition)
+- Fixed Simplex Noise Field broken parameters (Anim Mode, Color Mode, Band Count, Octaves)
+
 v1.6.1 (Android)
 Performance:
 - Optimized 10 generators with simulation caching (Ising, Particle Advection, Sandpile, Percolation, Reaction Diffusion, Cyclic CA, Crystal Growth, CurlFluid, Strange Attractor, Game of Life)

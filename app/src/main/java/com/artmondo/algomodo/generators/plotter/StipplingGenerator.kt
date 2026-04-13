@@ -254,10 +254,42 @@ class StipplingGenerator : Generator {
         val paletteColors = palette.colorInts()
 
         // ── Background ───────────────────────────────────────────────────
-        canvas.drawColor(bgColor(background))
+        val bgInt = bgColor(background)
+        canvas.drawColor(bgInt)
 
         val paint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
             style = Paint.Style.FILL
+        }
+
+        // ── Contrast safety: ensure dot colors are visible over background ──
+        // Uses the same Rec. 601 weighted luminance formula as Palette.bright.
+        // Without this, ~30% of seed/palette/background combinations produce
+        // dark-on-dark or light-on-light output where stipples vanish.
+        val bgLumI = (Color.red(bgInt) * 299 + Color.green(bgInt) * 587 + Color.blue(bgInt) * 114) / 1000
+        var palLumI = 128
+        if (paletteColors.isNotEmpty()) {
+            var sum = 0
+            for (c in paletteColors) {
+                sum += Color.red(c) * 299 + Color.green(c) * 587 + Color.blue(c) * 114
+            }
+            palLumI = sum / (paletteColors.size * 1000)
+        }
+        // Below 50 luminance units the gap is too narrow for dots to read.
+        // contrastAmount scales from 0 (gap ≥ 50) to 0.7 (gap == 0).
+        val lumGap = abs(bgLumI - palLumI)
+        val contrastAmount: Float = if (lumGap < 50) (1f - lumGap / 50f) * 0.7f else 0f
+        val contrastTarget = if (bgLumI < 128) 255 else 0
+        val bgIsDark = bgLumI < 128
+
+        // Shift a color toward contrastTarget by contrastAmount. No-op when
+        // contrastAmount is 0 (palette already reads against the background).
+        fun shiftContrast(c: Int): Int {
+            if (contrastAmount == 0f) return c
+            val r = Color.red(c); val g = Color.green(c); val b = Color.blue(c)
+            val nr = (r + (contrastTarget - r) * contrastAmount).toInt().coerceIn(0, 255)
+            val ng = (g + (contrastTarget - g) * contrastAmount).toInt().coerceIn(0, 255)
+            val nb = (b + (contrastTarget - b) * contrastAmount).toInt().coerceIn(0, 255)
+            return Color.rgb(nr, ng, nb)
         }
 
         // ── Density function (matches web densityFn) ─────────────────────
@@ -308,7 +340,7 @@ class StipplingGenerator : Generator {
                 }
 
                 val pts = weightedPoissonDisc(w, h, minDistance * 1.4f, perLayer, layerRng, layerDensity)
-                val baseColor = paletteColors[li]
+                val baseColor = shiftContrast(paletteColors[li])
                 val cr = Color.red(baseColor)
                 val cg = Color.green(baseColor)
                 val cb = Color.blue(baseColor)
@@ -340,19 +372,25 @@ class StipplingGenerator : Generator {
 
             when (colorMode) {
                 "monochrome" -> {
-                    val v = (pt.density * 200f).toInt().coerceIn(0, 255)
+                    // Flip tone direction based on background so dots always
+                    // read against it: bright stipples on dark, dark on light.
+                    val v = if (bgIsDark) {
+                        (55 + pt.density * 200f).toInt().coerceIn(0, 255)
+                    } else {
+                        ((1f - pt.density) * 200f).toInt().coerceIn(0, 255)
+                    }
                     paint.color = Color.argb(alphaInt, v, v, v)
                 }
                 "palette-position" -> {
                     val t = pt.x / w * 0.6f + pt.y / h * 0.4f
                     val ci = min(floor(t * paletteColors.size).toInt(), paletteColors.size - 1)
                         .coerceIn(0, paletteColors.size - 1)
-                    val c = paletteColors[ci]
+                    val c = shiftContrast(paletteColors[ci])
                     paint.color = Color.argb(alphaInt, Color.red(c), Color.green(c), Color.blue(c))
                 }
                 else -> { // "palette-density"
                     // Lerp through palette using density, with density-modulated alpha
-                    val c = palette.lerpColor(pt.density)
+                    val c = shiftContrast(palette.lerpColor(pt.density))
                     val densityAlpha = (opacity * (0.5f + pt.density * 0.5f) * 255f)
                         .toInt().coerceIn(0, 255)
                     paint.color = Color.argb(densityAlpha, Color.red(c), Color.green(c), Color.blue(c))

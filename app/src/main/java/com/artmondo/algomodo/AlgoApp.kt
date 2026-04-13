@@ -23,7 +23,7 @@ class AlgoApp : Application() {
     }
 
     private fun registerAllGenerators() {
-        // Animation (8)
+        // Animation (9)
         GeneratorRegistry.register(AttractorTrailsGenerator())
         GeneratorRegistry.register(CurlFluidGenerator())
         GeneratorRegistry.register(FlowFieldInkGenerator())
@@ -31,6 +31,7 @@ class AlgoApp : Application() {
         GeneratorRegistry.register(KaleidoscopeGenerator())
         GeneratorRegistry.register(OrbitalGenerator())
         GeneratorRegistry.register(PlasmaFeedbackGenerator())
+        GeneratorRegistry.register(SprottQuadraticGenerator())
         GeneratorRegistry.register(WaveInterferenceGenerator())
 
         // Cellular (14)
@@ -62,12 +63,14 @@ class AlgoApp : Application() {
         GeneratorRegistry.register(RecursiveSubdivisionGenerator())
         GeneratorRegistry.register(StrangeAttractorDensityGenerator())
 
-        // Geometry (12)
+        // Geometry (13)
         GeneratorRegistry.register(ChladniGenerator())
+        GeneratorRegistry.register(GravityPackingGenerator())
         GeneratorRegistry.register(HarmonicsGenerator())
         GeneratorRegistry.register(IslamicPatternsGenerator())
         GeneratorRegistry.register(MoireGenerator())
         GeneratorRegistry.register(RosettesGenerator())
+        GeneratorRegistry.register(RubiksPermutationGenerator())
         GeneratorRegistry.register(SuperformulaGenerator())
         GeneratorRegistry.register(TruchetGenerator())
         GeneratorRegistry.register(LissajousGenerator())
@@ -129,7 +132,8 @@ class AlgoApp : Application() {
         GeneratorRegistry.register(PlotterStreamlinesGenerator())
         GeneratorRegistry.register(PlotterTspGenerator())
 
-        // Text (8)
+        // Text (9)
+        GeneratorRegistry.register(TextCodeGenerator())
         GeneratorRegistry.register(TextConcreteGenerator())
         GeneratorRegistry.register(TextGlyphsGenerator())
         GeneratorRegistry.register(TextGridGenerator())
