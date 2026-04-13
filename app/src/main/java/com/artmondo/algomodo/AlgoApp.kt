@@ -13,6 +13,7 @@ import com.artmondo.algomodo.generators.plotter.*
 import com.artmondo.algomodo.generators.text.*
 import com.artmondo.algomodo.generators.voronoi.*
 import com.artmondo.algomodo.generators.procedural.*
+import com.artmondo.algomodo.generators.flux.*
 import dagger.hilt.android.HiltAndroidApp
 
 @HiltAndroidApp
@@ -166,5 +167,19 @@ class AlgoApp : Application() {
         GeneratorRegistry.register(ParticleAdvectionGenerator())
         GeneratorRegistry.register(SdfRaymarchGenerator())
         GeneratorRegistry.register(WarpGenerator())
+
+        // Flux (12)
+        GeneratorRegistry.register(FluxMetaballs2dGenerator())
+        GeneratorRegistry.register(FluxDisplacementMapGenerator())
+        GeneratorRegistry.register(FluxDomainRepetitionGenerator())
+        GeneratorRegistry.register(FluxSignalRingsGenerator())
+        GeneratorRegistry.register(FluxWaveformStackerGenerator())
+        GeneratorRegistry.register(FluxWireframeTerrainGenerator())
+        GeneratorRegistry.register(FluxSimplexWarpGenerator())
+        GeneratorRegistry.register(FluxInstancedScatterGenerator())
+        GeneratorRegistry.register(FluxPerlinFlowGenerator())
+        GeneratorRegistry.register(FluxTrailSystemGenerator())
+        GeneratorRegistry.register(FluxFeedbackLoopGenerator())
+        GeneratorRegistry.register(FluxPixelSortFeedbackGenerator())
     }
 }
