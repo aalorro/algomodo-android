@@ -31,7 +31,8 @@ class VoronoiCrackleGenerator : Generator {
         "For each pixel the two nearest seed point distances F1 and F2 are found. " +
         "The crackle value is (F2 - F1) raised to an intensity power, emphasising narrow edges. " +
         "Low values (near cell boundaries) are mapped to bright palette colours; high values to dark tones. " +
-        "lineWidth controls the visual thickness by scaling the crackle field. Animation drifts seeds via noise."
+        "lineWidth controls the visual thickness by scaling the crackle field. " +
+        "Concave uses Minkowski p=0.5 distance creating star-shaped cells. Animation drifts seeds via noise."
     override val supportsVector = false
     override val supportsAnimation = true
 
@@ -40,7 +41,7 @@ class VoronoiCrackleGenerator : Generator {
         Parameter.NumberParam("Crack Width", "crackWidth", ParamGroup.GEOMETRY, "Thickness of crack lines", 0.5f, 8f, 0.5f, 2f),
         Parameter.SelectParam("Crack Color", "crackColor", ParamGroup.COLOR, "", listOf("black", "white", "palette-first", "palette-last"), "black"),
         Parameter.SelectParam("Fill Mode", "fillMode", ParamGroup.COLOR, "How cell interiors are colored", listOf("flat-dark", "flat-light", "gradient", "palette"), "gradient"),
-        Parameter.SelectParam("Distance Metric", "distanceMetric", ParamGroup.GEOMETRY, "", listOf("Euclidean", "Manhattan", "Chebyshev"), "Euclidean"),
+        Parameter.SelectParam("Distance Metric", "distanceMetric", ParamGroup.GEOMETRY, "", listOf("Euclidean", "Manhattan", "Concave"), "Euclidean"),
         Parameter.NumberParam("Anim Speed", "animSpeed", ParamGroup.FLOW_MOTION, "", 0f, 2f, 0.05f, 0.4f),
         Parameter.NumberParam("Anim Amplitude", "animAmp", ParamGroup.FLOW_MOTION, "Drift distance as a fraction of average cell size", 0f, 1f, 0.05f, 0.2f)
     )
@@ -76,7 +77,7 @@ class VoronoiCrackleGenerator : Generator {
         val animAmp = (params["animAmp"] as? Number)?.toFloat() ?: 0.2f
 
         val metricId = when (distanceMetric.lowercase()) {
-            "manhattan" -> 1; "chebyshev" -> 2; else -> 0
+            "manhattan" -> 1; "concave" -> 2; else -> 0
         }
         val isEuclidean = metricId == 0
         val fillModeId = when (fillMode) { "flat-dark" -> 1; "flat-light" -> 2; "palette" -> 3; else -> 0 }
@@ -125,7 +126,7 @@ class VoronoiCrackleGenerator : Generator {
                 val dx = sx - px[i]; val dy = sy - py[i]
                 val d = if (isEuclidean) dx * dx + dy * dy
                         else if (metricId == 1) abs(dx) + abs(dy)
-                        else maxOf(abs(dx), abs(dy))
+                        else { val s = sqrt(abs(dx)) + sqrt(abs(dy)); s * s }
                 if (d < sf1) { sf2 = sf1; sf1 = d }
                 else if (d < sf2) { sf2 = d }
             }
@@ -231,7 +232,7 @@ class VoronoiCrackleGenerator : Generator {
                             while (idx >= 0) {
                                 val dx = x - px[idx]; val dy = y - py[idx]
                                 val d = if (metricId == 1) abs(dx) + abs(dy)
-                                        else maxOf(abs(dx), abs(dy))
+                                        else { val s = sqrt(abs(dx)) + sqrt(abs(dy)); s * s }
                                 if (d < f1) { f2 = f1; f1 = d; nearestIdx = idx }
                                 else if (d < f2) { f2 = d }
                                 idx = gridNext[idx]
