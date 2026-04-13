@@ -81,7 +81,8 @@ class EdgeGlowGenerator : Generator {
         val modeId = when (mode) { "contour" -> 0; "gradient" -> 1; "ridge" -> 2; else -> 3 }
         val vn = ValueNoise(seed)
 
-        val maxOct = nOct.coerceAtMost(when (quality) { Quality.DRAFT -> 1; Quality.ULTRA -> nOct; else -> 2 })
+        // Respect user octave setting; only cap DRAFT to avoid wasted work on downsampled output
+        val maxOct = if (quality == Quality.DRAFT) nOct.coerceAtMost(2) else nOct
 
         // Palette ramp
         val lut = palette.buildLut(256)
@@ -94,159 +95,98 @@ class EdgeGlowGenerator : Generator {
         val invDim2 = 2f / min(w, h)
         val circuitEps = 0.06f
 
-        // Adaptive eps based on pixel step (matches web version)
         val pixelStep = scl * invDim2
         val gradEps = pixelStep * 0.6f
         val ridgeEps = pixelStep * 2.5f
         val ridgeScale = 1f / max(0.0001f, ridgeEps * ridgeEps)
         val inv2GradEps = 1f / (gradEps * 2f)
 
-        // Brightness LUT (matches web version formula)
-        val glowPow = max(1.2f, 2f / max(0.3f, effEdgeW))
+        // Brightness LUT: edgeWidth scales raw edge, glowRadius controls soft spread
+        val edgeScale = effEdgeW / 1.5f              // 1.0 at default edgeWidth=1.5
         val hasGlowR = glowR > 0.01f
-        val glowFalloff = if (hasGlowR) 4f / glowR else 100f
-        val ambientGlow = if (hasGlowR) exp(-glowFalloff) * effGlow * 0.08f else 0f
+        val softPow = max(0.3f, 1.5f * (1f - glowR)) // lower power = wider glow spread
 
         val brightnessLUT = FloatArray(256)
         for (i in 0 until 256) {
-            val edge = i / 255f
-            if (edge > 0.004f) {
-                val sharp = edge.pow(glowPow)
-                val soft = if (hasGlowR) exp(-((1f - edge) * glowFalloff)) * 0.25f else 0f
-                brightnessLUT[i] = ((sharp + soft) * effGlow).coerceAtMost(1f)
-            } else {
-                brightnessLUT[i] = ambientGlow.coerceAtMost(1f)
-            }
+            val rawEdge = i / 255f
+            val e = (rawEdge * edgeScale).coerceAtMost(1f)
+            val sharp = e * e * e
+            val soft = if (hasGlowR) e.pow(softPow) * glowR else 0f
+            brightnessLUT[i] = (max(sharp, soft) * effGlow).coerceAtMost(1f)
         }
 
         val tOff = t * 0.15f
-
-        // Bilinear upscale path for gradient/ridge at step > 1
-        val useUpscale = (modeId == 1 || modeId == 2) && step > 1
         val cols = ceil(w.toFloat() / step).toInt()
         val rows = ceil(h.toFloat() / step).toInt()
+        val smallPixels = IntArray(cols * rows)
 
-        if (useUpscale) {
-            // Render to small buffer, then bilinear upscale
-            val smallPixels = IntArray(cols * rows)
+        // Unified render loop (all modes rendered to small buffer)
+        for (gy in 0 until rows) {
+            val py = gy * step
+            val v = (py - halfH) * invDim2
+            for (gx in 0 until cols) {
+                val px = gx * step
+                val u = (px - halfW) * invDim2
+                val nx = u * scl; val ny = v * scl + tOff
+                val n = vn.fbm(nx, ny, maxOct)
 
-            for (gy in 0 until rows) {
-                val py = gy * step
-                val v = (py - halfH) * invDim2
-                for (gx in 0 until cols) {
-                    val px = gx * step
-                    val u = (px - halfW) * invDim2
-                    val nx = u * scl; val ny = v * scl + tOff
-                    val n = vn.fbm(nx, ny, maxOct)
-
-                    var edge: Float
-                    if (modeId == 1) { // gradient — FBM derivatives + double smoothstep
+                val edge: Float = when (modeId) {
+                    0 -> { // contour — peak at iso-line boundaries
+                        val band = n * Q
+                        val frac = band - floor(band)
+                        val e = abs(frac * 2f - 1f)
+                        e * e * e
+                    }
+                    1 -> { // gradient
                         val gxd = (vn.fbm(nx + gradEps, ny, maxOct) - vn.fbm(nx - gradEps, ny, maxOct)) * inv2GradEps
                         val gyd = (vn.fbm(nx, ny + gradEps, maxOct) - vn.fbm(nx, ny - gradEps, maxOct)) * inv2GradEps
-                        edge = sqrt(gxd * gxd + gyd * gyd).coerceAtMost(1f)
-                        edge = edge * edge * (3f - 2f * edge) // smoothstep 1
-                        edge = edge * edge * (3f - 2f * edge) // smoothstep 2
-                    } else { // ridge — FBM Laplacian + double smoothstep
+                        var e = sqrt(gxd * gxd + gyd * gyd).coerceAtMost(1f)
+                        e = e * e * (3f - 2f * e)
+                        e * e * (3f - 2f * e)
+                    }
+                    2 -> { // ridge
                         val nPx = vn.fbm(nx + ridgeEps, ny, maxOct)
                         val nMx = vn.fbm(nx - ridgeEps, ny, maxOct)
                         val nPy = vn.fbm(nx, ny + ridgeEps, maxOct)
                         val nMy = vn.fbm(nx, ny - ridgeEps, maxOct)
                         val laplacian = nPx + nMx + nPy + nMy - 4f * n
-                        edge = (abs(laplacian) * ridgeScale).coerceAtMost(1f)
-                        edge = edge * edge * (3f - 2f * edge)
-                        edge = edge * edge * (3f - 2f * edge)
+                        var e = (abs(laplacian) * ridgeScale).coerceAtMost(1f)
+                        e = e * e * (3f - 2f * e)
+                        e * e * (3f - 2f * e)
                     }
-
-                    val edgeIdx = (edge * 255f).toInt().coerceIn(0, 255)
-                    val brightness = brightnessLUT[edgeIdx]
-                    var colorVal = (n * 0.5f + 0.5f).coerceIn(0f, 1f)
-                    val idx = (colorVal * 255f).toInt()
-                    val rr = (rampR[idx] * brightness).toInt().coerceIn(0, 255)
-                    val gg = (rampG[idx] * brightness).toInt().coerceIn(0, 255)
-                    val bb = (rampB[idx] * brightness).toInt().coerceIn(0, 255)
-                    smallPixels[gy * cols + gx] = Color.rgb(rr, gg, bb)
+                    else -> { // circuit
+                        val nRight = vn.noise(nx + circuitEps, ny)
+                        val nDown = vn.noise(nx, ny + circuitEps)
+                        val q1 = ((n * 0.5f + 0.5f) * Q).toInt()
+                        val q2 = ((nRight * 0.5f + 0.5f) * Q).toInt()
+                        val q3 = ((nDown * 0.5f + 0.5f) * Q).toInt()
+                        if (q1 != q2 || q1 != q3) 1f else 0f
+                    }
                 }
-            }
 
-            // Bilinear upscale: render to small bitmap, scale up with filtering
+                val edgeIdx = (edge * 255f).toInt().coerceIn(0, 255)
+                val brightness = brightnessLUT[edgeIdx]
+                val colorVal = (n * 0.5f + 0.5f).coerceIn(0f, 1f)
+                val idx = (colorVal * 255f).toInt()
+                val rr = (rampR[idx] * brightness).toInt().coerceIn(0, 255)
+                val gg = (rampG[idx] * brightness).toInt().coerceIn(0, 255)
+                val bb = (rampB[idx] * brightness).toInt().coerceIn(0, 255)
+                smallPixels[gy * cols + gx] = Color.rgb(rr, gg, bb)
+            }
+        }
+
+        // Bilinear upscale for all modes when step > 1
+        if (step > 1) {
             val smallBmp = Bitmap.createBitmap(cols, rows, Bitmap.Config.ARGB_8888)
             smallBmp.setPixels(smallPixels, 0, cols, 0, 0, cols, rows)
             val scaled = Bitmap.createScaledBitmap(smallBmp, w, h, true)
-            scaled.copyPixelsToBuffer(java.nio.IntBuffer.wrap(IntArray(w * h).also { scaled.getPixels(it, 0, w, 0, 0, w, h) }))
-            val scaledPixels = IntArray(w * h)
-            scaled.getPixels(scaledPixels, 0, w, 0, 0, w, h)
-            bitmap.setPixels(scaledPixels, 0, w, 0, 0, w, h)
+            val pixels = IntArray(w * h)
+            scaled.getPixels(pixels, 0, w, 0, 0, w, h)
+            bitmap.setPixels(pixels, 0, w, 0, 0, w, h)
             smallBmp.recycle()
             scaled.recycle()
         } else {
-            // Direct pixel-loop for contour, circuit, or step=1
-            val pixels = IntArray(w * h)
-
-            for (py in 0 until h step step) {
-                val v = (py - halfH) * invDim2
-                for (px in 0 until w step step) {
-                    val u = (px - halfW) * invDim2
-                    val nx = u * scl; val ny = v * scl + tOff
-                    val n = vn.fbm(nx, ny, maxOct)
-
-                    var edge: Float
-                    when (modeId) {
-                        0 -> { // contour
-                            val band = n * Q
-                            val frac = band - floor(band)
-                            edge = 1f - abs(frac * 2f - 1f)
-                            edge = edge * edge * edge
-                        }
-                        1 -> { // gradient (step=1 path)
-                            val gxd = (vn.fbm(nx + gradEps, ny, maxOct) - vn.fbm(nx - gradEps, ny, maxOct)) * inv2GradEps
-                            val gyd = (vn.fbm(nx, ny + gradEps, maxOct) - vn.fbm(nx, ny - gradEps, maxOct)) * inv2GradEps
-                            edge = sqrt(gxd * gxd + gyd * gyd).coerceAtMost(1f)
-                            edge = edge * edge * (3f - 2f * edge)
-                            edge = edge * edge * (3f - 2f * edge)
-                        }
-                        2 -> { // ridge (step=1 path)
-                            val nPx = vn.fbm(nx + ridgeEps, ny, maxOct)
-                            val nMx = vn.fbm(nx - ridgeEps, ny, maxOct)
-                            val nPy = vn.fbm(nx, ny + ridgeEps, maxOct)
-                            val nMy = vn.fbm(nx, ny - ridgeEps, maxOct)
-                            val laplacian = nPx + nMx + nPy + nMy - 4f * n
-                            edge = (abs(laplacian) * ridgeScale).coerceAtMost(1f)
-                            edge = edge * edge * (3f - 2f * edge)
-                            edge = edge * edge * (3f - 2f * edge)
-                        }
-                        else -> { // circuit
-                            val nRight = vn.noise(nx + circuitEps, ny)
-                            val nDown = vn.noise(nx, ny + circuitEps)
-                            val q1 = ((n * 0.5f + 0.5f) * Q).toInt()
-                            val q2 = ((nRight * 0.5f + 0.5f) * Q).toInt()
-                            val q3 = ((nDown * 0.5f + 0.5f) * Q).toInt()
-                            edge = if (q1 != q2 || q1 != q3) 1f else 0f
-                        }
-                    }
-
-                    val edgeIdx = (edge * 255f).toInt().coerceIn(0, 255)
-                    val brightness = brightnessLUT[edgeIdx]
-                    var colorVal = (n * 0.5f + 0.5f).coerceIn(0f, 1f)
-                    val idx = (colorVal * 255f).toInt()
-                    val rr = (rampR[idx] * brightness).toInt().coerceIn(0, 255)
-                    val gg = (rampG[idx] * brightness).toInt().coerceIn(0, 255)
-                    val bb = (rampB[idx] * brightness).toInt().coerceIn(0, 255)
-                    val pixel = Color.rgb(rr, gg, bb)
-
-                    if (step == 1) {
-                        pixels[py * w + px] = pixel
-                    } else {
-                        val maxDy = min(step, h - py)
-                        val maxDx = min(step, w - px)
-                        for (dy in 0 until maxDy) {
-                            val rowBase = (py + dy) * w + px
-                            for (dx in 0 until maxDx) pixels[rowBase + dx] = pixel
-                        }
-                    }
-                }
-            }
-
-            bitmap.setPixels(pixels, 0, w, 0, 0, w, h)
+            bitmap.setPixels(smallPixels, 0, w, 0, 0, w, h)
         }
 
         canvas.drawBitmap(bitmap, 0f, 0f, null)
