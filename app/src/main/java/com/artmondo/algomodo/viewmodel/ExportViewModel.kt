@@ -250,7 +250,12 @@ class ExportViewModel @Inject constructor() : ViewModel() {
         viewModelScope.launch(Dispatchers.IO) {
             _state.update { it.copy(isExporting = true, error = null) }
             try {
-                val resolution = s.gifResolution
+                val baseResolution = s.gifResolution
+                val resolution = when (quality) {
+                    Quality.DRAFT -> baseResolution
+                    Quality.BALANCED -> baseResolution
+                    Quality.ULTRA -> (baseResolution * 2).coerceAtMost(1920)
+                }
                 val uri = VideoExporter.export(
                     context = context,
                     generator = generator,

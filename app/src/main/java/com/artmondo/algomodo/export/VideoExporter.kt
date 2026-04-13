@@ -61,9 +61,14 @@ object VideoExporter {
 
         try {
             // ── Pass 1: Encode video ──
+            val bitrate = when (quality) {
+                Quality.DRAFT -> 4_000_000
+                Quality.BALANCED -> 8_000_000
+                Quality.ULTRA -> 16_000_000
+            }
             val format = MediaFormat.createVideoFormat(MediaFormat.MIMETYPE_VIDEO_AVC, width, height).apply {
                 setInteger(MediaFormat.KEY_COLOR_FORMAT, MediaCodecInfo.CodecCapabilities.COLOR_FormatSurface)
-                setInteger(MediaFormat.KEY_BIT_RATE, 8_000_000)
+                setInteger(MediaFormat.KEY_BIT_RATE, bitrate)
                 setInteger(MediaFormat.KEY_FRAME_RATE, fps)
                 setInteger(MediaFormat.KEY_I_FRAME_INTERVAL, 1)
             }
