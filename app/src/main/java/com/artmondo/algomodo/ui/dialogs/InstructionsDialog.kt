@@ -39,7 +39,7 @@ fun InstructionsDialog(onDismiss: () -> Unit) {
                     "RELOAD: Re-renders the artwork from scratch with the exact same settings. Use this to replay an animation that has reached a stop state or to force a fresh redraw after PostFX changes."
                 }
                 HelpSection("The Four Tabs") {
-                    "Generators: Browse 12 families, select from 134 generators. Use the search bar to quickly filter by name or family.\n\n" +
+                    "Generators: Browse 12 families, select from 134 generators. Swipe left and right through the family tabs to reveal the generators in each family. Use the search bar to quickly filter by name or family.\n\n" +
                     "Params: The main control panel. Every generator has its own set of parameters — sliders for numbers, chips for modes, toggles for booleans, and text fields for custom input. Lock individual parameters with the lock icon to keep them fixed during randomization.\n\n" +
                     "Export: Download your artwork as PNG, JPG, SVG, GIF, or MP4. Export/import recipes that save every setting so the artwork can be recreated exactly. Export/import presets to share between devices or with the web app.\n\n" +
                     "Settings: Theme (light/dark), quality (Draft/Balanced/High), animation FPS, touch interaction, and PostFX (Grain, Vignette, Dither, Posterize)."
