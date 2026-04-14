@@ -2,6 +2,18 @@
 
 All notable changes to Algomodo will be documented in this file.
 
+## [1.8.1] - Android
+
+### Improvements
+- Kaleidoscope: new pattern modes (marble, fractal, geometric), detail and sharpness parameters, multi-threaded rendering with improved LUTs
+- GIF export: delta frame encoding with sub-rect support for smaller file sizes
+- Floating presets button: horizontal dragging and tap gesture support
+- Improved thumbnail rendering logic
+- Updated help text for MP4 export and generator navigation
+
+### Bug Fixes
+- Fixed Feedback Loop generator not rendering (bloom self-draw undefined behavior on Android, state cache not invalidated on emitter count change)
+
 ## [1.8.0] - Android
 
 ### New Generators (17)

@@ -18,6 +18,17 @@ fun ChangelogDialog(onDismiss: () -> Unit) {
         text = {
             Text(
                 text = """
+v1.8.1 (Android)
+Improvements:
+- Kaleidoscope: new pattern modes (marble, fractal, geometric), detail/sharpness params, multi-threaded rendering
+- GIF export: delta frame encoding with sub-rect support for smaller files
+- Floating presets button: horizontal dragging and tap gesture
+- Improved thumbnail rendering
+- Updated help text for MP4 export and generator navigation
+
+Bug Fixes:
+- Fixed Feedback Loop generator not rendering (bloom self-draw fix, state cache invalidation)
+
 v1.8.0 (Android)
 New Generators (17):
 - New Flux family: 12 audio-reactive generators (Perlin Flow, Simplex Warp, Feedback Loop, Pixel Sort Feedback, Metaballs 2D, Wireframe Terrain, Waveform Stacker, Signal Rings, Displacement Map, Domain Repetition, Instanced Scatter, Trail System)
