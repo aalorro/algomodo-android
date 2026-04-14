@@ -13,6 +13,7 @@ import androidx.compose.animation.fadeOut
 import androidx.compose.animation.slideInVertically
 import androidx.compose.animation.slideOutVertically
 import androidx.compose.foundation.gestures.detectDragGestures
+import androidx.compose.foundation.gestures.detectTapGestures
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
@@ -846,45 +847,66 @@ fun MainScreen(
             // Floating presets button — horizontally draggable, visible on all tabs
             if (!presetsExpanded) {
                 var dragOffsetX by remember { mutableFloatStateOf(0f) }
+                var isDragging by remember { mutableStateOf(false) }
 
-                Row(
+                BoxWithConstraints(
                     modifier = Modifier
                         .align(Alignment.BottomStart)
-                        .offset(x = with(androidx.compose.ui.platform.LocalDensity.current) { dragOffsetX.toDp() })
+                        .fillMaxWidth()
                         .padding(12.dp)
-                        .pointerInput(Unit) {
-                            detectDragGestures { change, dragAmount ->
-                                change.consume()
-                                dragOffsetX = (dragOffsetX + dragAmount.x)
-                                    .coerceIn(0f, (size.width - 160.dp.toPx()).coerceAtLeast(0f))
-                            }
-                        }
-                        .background(
-                            Color(0xFFDAA520).copy(alpha = 0.9f),
-                            RoundedCornerShape(50)
-                        )
-                        .clickable { presetsExpanded = true }
-                        .padding(horizontal = 12.dp, vertical = 8.dp),
-                    verticalAlignment = Alignment.CenterVertically,
-                    horizontalArrangement = Arrangement.spacedBy(6.dp)
                 ) {
-                    Icon(
-                        Icons.Filled.Star,
-                        contentDescription = "Presets",
-                        modifier = Modifier.size(23.dp),
-                        tint = Color.White
-                    )
-                    Text(
-                        "Presets",
-                        fontSize = 12.sp,
-                        color = Color.White
-                    )
-                    if (presets.isNotEmpty()) {
-                        Badge(
-                            containerColor = Color.White,
-                            contentColor = Color(0xFFDAA520)
-                        ) {
-                            Text("${presets.size}", fontSize = 9.sp)
+                    val maxDragPx = with(androidx.compose.ui.platform.LocalDensity.current) {
+                        (maxWidth - 130.dp).toPx().coerceAtLeast(0f)
+                    }
+
+                    Row(
+                        modifier = Modifier
+                            .offset(x = with(androidx.compose.ui.platform.LocalDensity.current) { dragOffsetX.toDp() })
+                            .pointerInput(Unit) {
+                                detectDragGestures(
+                                    onDragStart = { isDragging = false },
+                                    onDrag = { change, dragAmount ->
+                                        change.consume()
+                                        isDragging = true
+                                        dragOffsetX = (dragOffsetX + dragAmount.x)
+                                            .coerceIn(0f, maxDragPx)
+                                    }
+                                )
+                            }
+                            .pointerInput(Unit) {
+                                detectTapGestures {
+                                    if (!isDragging) {
+                                        presetsExpanded = true
+                                    }
+                                    isDragging = false
+                                }
+                            }
+                            .background(
+                                Color(0xFFDAA520).copy(alpha = 0.9f),
+                                RoundedCornerShape(50)
+                            )
+                            .padding(horizontal = 12.dp, vertical = 8.dp),
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.spacedBy(6.dp)
+                    ) {
+                        Icon(
+                            Icons.Filled.Star,
+                            contentDescription = "Presets",
+                            modifier = Modifier.size(23.dp),
+                            tint = Color.White
+                        )
+                        Text(
+                            "Presets",
+                            fontSize = 12.sp,
+                            color = Color.White
+                        )
+                        if (presets.isNotEmpty()) {
+                            Badge(
+                                containerColor = Color.White,
+                                contentColor = Color(0xFFDAA520)
+                            ) {
+                                Text("${presets.size}", fontSize = 9.sp)
+                            }
                         }
                     }
                 }
