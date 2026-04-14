@@ -803,33 +803,16 @@ fun MainScreen(
             }
             }
 
-            // Floating presets button — bottom-left, visible on all tabs
-            SmallFloatingActionButton(
-                onClick = { presetsExpanded = !presetsExpanded },
-                modifier = Modifier
-                    .align(Alignment.BottomStart)
-                    .padding(12.dp),
-                containerColor = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.85f),
-                contentColor = MaterialTheme.colorScheme.onSurfaceVariant
-            ) {
-                BadgedBox(
-                    badge = {
-                        if (presets.isNotEmpty()) {
-                            Badge(
-                                containerColor = MaterialTheme.colorScheme.primary,
-                                contentColor = MaterialTheme.colorScheme.onPrimary
-                            ) {
-                                Text("${presets.size}", fontSize = 9.sp)
-                            }
-                        }
-                    }
-                ) {
-                    Icon(
-                        if (presetsExpanded) Icons.Filled.KeyboardArrowDown else Icons.Filled.Star,
-                        contentDescription = "Toggle presets",
-                        modifier = Modifier.size(20.dp)
-                    )
-                }
+            // Scrim — tapping outside collapses the presets panel
+            if (presetsExpanded) {
+                Box(
+                    modifier = Modifier
+                        .fillMaxSize()
+                        .clickable(
+                            indication = null,
+                            interactionSource = remember { androidx.compose.foundation.interaction.MutableInteractionSource() }
+                        ) { presetsExpanded = false }
+                )
             }
 
             // Collapsible presets overlay — slides up from bottom
@@ -849,10 +832,50 @@ fun MainScreen(
                     PresetsPanel(
                         presets = presets,
                         onSavePreset = { viewModel.savePreset(it) },
-                        onLoadPreset = { viewModel.loadPreset(it) },
+                        onLoadPreset = {
+                            viewModel.loadPreset(it)
+                            presetsExpanded = false
+                        },
                         onDeletePreset = { viewModel.deletePreset(it) },
                         generatorStyleName = state.generator?.styleName ?: ""
                     )
+                }
+            }
+
+            // Floating presets button — bottom-left, visible on all tabs
+            if (!presetsExpanded) {
+                Row(
+                    modifier = Modifier
+                        .align(Alignment.BottomStart)
+                        .padding(12.dp)
+                        .background(
+                            MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.85f),
+                            RoundedCornerShape(50)
+                        )
+                        .clickable { presetsExpanded = true }
+                        .padding(horizontal = 12.dp, vertical = 8.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(6.dp)
+                ) {
+                    Icon(
+                        Icons.Filled.Star,
+                        contentDescription = "Presets",
+                        modifier = Modifier.size(23.dp),
+                        tint = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+                    Text(
+                        "Presets",
+                        fontSize = 12.sp,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+                    if (presets.isNotEmpty()) {
+                        Badge(
+                            containerColor = MaterialTheme.colorScheme.primary,
+                            contentColor = MaterialTheme.colorScheme.onPrimary
+                        ) {
+                            Text("${presets.size}", fontSize = 9.sp)
+                        }
+                    }
                 }
             }
         } // end Box
