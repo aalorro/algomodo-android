@@ -69,7 +69,7 @@ fun InstructionsDialog(onDismiss: () -> Unit) {
                 HelpSection("GIF & Video Export") {
                     "Enable animation first, then go to the Export tab.\n\n" +
                     "GIF: Duration up to 8 seconds (3s/5s/8s). Resolution options: 600px (fastest), 800px, or 1000px. Supports boomerang (ping-pong) and endless loop modes.\n\n" +
-                    "MP4: Duration up to 60 seconds (5s/15s/30s or custom). Renders offscreen at full speed. When an audio file is loaded, the MP4 includes the audio track — set start and stop times to choose which portion to include. Audio-reactive generators will respond to the audio during export."
+                    "MP4: Set start and end times (in seconds) to control the duration. Renders offscreen at full speed. When an audio file is loaded, the MP4 includes the audio track synced to the chosen time range. Audio-reactive generators will respond to the audio during export."
                 }
                 HelpSection("Undo & Redo") {
                     "Up to 50 steps. Undo/redo buttons on the canvas bar. Each parameter change, seed change, generator change, and randomization creates a history entry."
