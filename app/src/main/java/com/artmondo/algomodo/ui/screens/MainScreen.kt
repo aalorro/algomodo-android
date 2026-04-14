@@ -10,6 +10,8 @@ import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.animation.fadeIn
 import androidx.compose.animation.fadeOut
+import androidx.compose.animation.slideInVertically
+import androidx.compose.animation.slideOutVertically
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
@@ -654,42 +656,33 @@ fun MainScreen(
             }
         }
 
-        // Tab content (takes remaining space)
-        HorizontalPager(
-            state = pagerState,
-            beyondViewportPageCount = 0,
-            userScrollEnabled = false,
-            modifier = Modifier
-                .fillMaxWidth()
-                .weight(1f)
-        ) { page ->
-            when (page) {
-                0 -> GeneratorPicker(
-                    selectedGeneratorId = state.generator?.id,
-                    selectedFamilyId = state.familyId,
-                    onSelectGenerator = { viewModel.selectGenerator(it) },
-                    onSelectFamily = { viewModel.selectFamily(it) }
-                )
-                1 -> {
-                    // No verticalScroll wrapper — ParameterControls has its own LazyColumn
-                    Column(modifier = Modifier.fillMaxSize()) {
+        // Tab content (takes remaining space) + floating presets overlay
+        var presetsExpanded by remember { mutableStateOf(false) }
+
+        Box(modifier = Modifier.fillMaxWidth().weight(1f)) {
+            HorizontalPager(
+                state = pagerState,
+                beyondViewportPageCount = 0,
+                userScrollEnabled = false,
+                modifier = Modifier.fillMaxSize()
+            ) { page ->
+                when (page) {
+                    0 -> GeneratorPicker(
+                        selectedGeneratorId = state.generator?.id,
+                        selectedFamilyId = state.familyId,
+                        onSelectGenerator = { viewModel.selectGenerator(it) },
+                        onSelectFamily = { viewModel.selectFamily(it) }
+                    )
+                    1 -> {
                         ParameterControls(
                             generator = state.generator,
                             params = state.params,
                             lockedParams = state.lockedParams,
                             onParamChange = { key, value -> viewModel.updateParam(key, value) },
                             onToggleLock = { viewModel.toggleParamLock(it) },
-                            modifier = Modifier.weight(1f)
-                        )
-                        PresetsPanel(
-                            presets = presets,
-                            onSavePreset = { viewModel.savePreset(it) },
-                            onLoadPreset = { viewModel.loadPreset(it) },
-                            onDeletePreset = { viewModel.deletePreset(it) },
-                            generatorStyleName = state.generator?.styleName ?: ""
+                            modifier = Modifier.fillMaxSize()
                         )
                     }
-                }
                 2 -> Column(
                     modifier = Modifier
                         .fillMaxSize()
@@ -808,7 +801,61 @@ fun MainScreen(
                     )
                 }
             }
-        }
+            }
+
+            // Floating presets button — bottom-left, visible on all tabs
+            SmallFloatingActionButton(
+                onClick = { presetsExpanded = !presetsExpanded },
+                modifier = Modifier
+                    .align(Alignment.BottomStart)
+                    .padding(12.dp),
+                containerColor = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.85f),
+                contentColor = MaterialTheme.colorScheme.onSurfaceVariant
+            ) {
+                BadgedBox(
+                    badge = {
+                        if (presets.isNotEmpty()) {
+                            Badge(
+                                containerColor = MaterialTheme.colorScheme.primary,
+                                contentColor = MaterialTheme.colorScheme.onPrimary
+                            ) {
+                                Text("${presets.size}", fontSize = 9.sp)
+                            }
+                        }
+                    }
+                ) {
+                    Icon(
+                        if (presetsExpanded) Icons.Filled.KeyboardArrowDown else Icons.Filled.Star,
+                        contentDescription = "Toggle presets",
+                        modifier = Modifier.size(20.dp)
+                    )
+                }
+            }
+
+            // Collapsible presets overlay — slides up from bottom
+            androidx.compose.animation.AnimatedVisibility(
+                visible = presetsExpanded,
+                enter = slideInVertically(initialOffsetY = { it }) + fadeIn(),
+                exit = slideOutVertically(targetOffsetY = { it }) + fadeOut(),
+                modifier = Modifier.align(Alignment.BottomCenter)
+            ) {
+                Surface(
+                    modifier = Modifier.fillMaxWidth(),
+                    shape = RoundedCornerShape(topStart = 16.dp, topEnd = 16.dp),
+                    color = MaterialTheme.colorScheme.surface.copy(alpha = 0.95f),
+                    tonalElevation = 6.dp,
+                    shadowElevation = 8.dp
+                ) {
+                    PresetsPanel(
+                        presets = presets,
+                        onSavePreset = { viewModel.savePreset(it) },
+                        onLoadPreset = { viewModel.loadPreset(it) },
+                        onDeletePreset = { viewModel.deletePreset(it) },
+                        generatorStyleName = state.generator?.styleName ?: ""
+                    )
+                }
+            }
+        } // end Box
     } // end Column
 
     // Dialogs
