@@ -849,7 +849,7 @@ fun MainScreen(
                         .align(Alignment.BottomStart)
                         .padding(12.dp)
                         .background(
-                            MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.85f),
+                            Color(0xFFDAA520).copy(alpha = 0.9f),
                             RoundedCornerShape(50)
                         )
                         .clickable { presetsExpanded = true }
@@ -861,17 +861,17 @@ fun MainScreen(
                         Icons.Filled.Star,
                         contentDescription = "Presets",
                         modifier = Modifier.size(23.dp),
-                        tint = MaterialTheme.colorScheme.onSurfaceVariant
+                        tint = Color.White
                     )
                     Text(
                         "Presets",
                         fontSize = 12.sp,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                        color = Color.White
                     )
                     if (presets.isNotEmpty()) {
                         Badge(
-                            containerColor = MaterialTheme.colorScheme.primary,
-                            contentColor = MaterialTheme.colorScheme.onPrimary
+                            containerColor = Color.White,
+                            contentColor = Color(0xFFDAA520)
                         ) {
                             Text("${presets.size}", fontSize = 9.sp)
                         }

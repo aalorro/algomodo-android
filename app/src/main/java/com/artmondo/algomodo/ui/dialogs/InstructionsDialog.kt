@@ -25,7 +25,7 @@ fun InstructionsDialog(onDismiss: () -> Unit) {
             ) {
                 HelpSection("What is Algomodo?") {
                     "Algomodo is an algorithmic art generator that runs entirely on your device. Nothing is uploaded — all processing happens locally.\n\n" +
-                    "Choose a family from the Generators tab, then pick a style to generate art. There are 122 generators across 11 families: Animation, Cellular, Fractals, Geometry, Graphs, Image, Noise, Plotter, Procedural, Text, and Voronoi."
+                    "Choose a family from the Generators tab, then pick a style to generate art. There are 134 generators across 12 families: Animation, Cellular, Flux, Fractals, Geometry, Graphs, Image, Noise, Plotter, Procedural, Text, and Voronoi."
                 }
                 HelpSection("What is a Seed?") {
                     "A seed is a number that controls the randomness in your artwork. The same seed with the same parameters and palette will always produce the exact same result, every time. This means you can share a seed number with someone else and they will see the identical artwork.\n\n" +
@@ -39,7 +39,7 @@ fun InstructionsDialog(onDismiss: () -> Unit) {
                     "RELOAD: Re-renders the artwork from scratch with the exact same settings. Use this to replay an animation that has reached a stop state or to force a fresh redraw after PostFX changes."
                 }
                 HelpSection("The Four Tabs") {
-                    "Generators: Browse 11 families, select from 122 generators. Use the search bar to quickly filter by name or family.\n\n" +
+                    "Generators: Browse 12 families, select from 134 generators. Use the search bar to quickly filter by name or family.\n\n" +
                     "Params: The main control panel. Every generator has its own set of parameters — sliders for numbers, chips for modes, toggles for booleans, and text fields for custom input. Lock individual parameters with the lock icon to keep them fixed during randomization.\n\n" +
                     "Export: Download your artwork as PNG, JPG, SVG, GIF, or MP4. Export/import recipes that save every setting so the artwork can be recreated exactly. Export/import presets to share between devices or with the web app.\n\n" +
                     "Settings: Theme (light/dark), quality (Draft/Balanced/High), animation FPS, touch interaction, and PostFX (Grain, Vignette, Dither, Posterize)."
@@ -52,7 +52,7 @@ fun InstructionsDialog(onDismiss: () -> Unit) {
                     "The Text family creates typographic art from characters and words. Each generator has an optional custom text field — type your own characters, words, or sentences. Leave it empty to use the default random content. In the Poem Layout generator, separate lines with the | character."
                 }
                 HelpSection("Audio Reactivity") {
-                    "The Procedural family contains audio-reactive generators that respond to music in real time: Feedback Systems, Warp, Field + Particle Motion, Instanced Geometry, Audio-Reactive, SDF Raymarch, Displacement, Edge + Glow, and Particle Advection. Some generators in the Plotter, Graphs, and Geometry families also support audio reactivity to a certain extent.\n\n" +
+                    "The Flux and Procedural families are fully audio-reactive. The Flux family contains 12 TouchDesigner-inspired generators: Perlin Flow, Simplex Warp, Feedback Loop, Pixel Sort Feedback, Metaballs 2D, Wireframe Terrain, Waveform Stacker, Signal Rings, Displacement Map, Domain Repetition, Instanced Scatter, and Trail System. The Procedural family contains 9 audio-reactive generators: Feedback Systems, Warp, Field + Particle Motion, Instanced Geometry, Audio-Reactive, SDF Raymarch, Displacement, Edge + Glow, and Particle Advection. Some generators in the Plotter, Graphs, and Geometry families also support audio reactivity to a certain extent.\n\n" +
                     "To use audio reactivity, load an audio file (MP3, WAV, OGG) via the audio section. When animation is playing, the audio plays in sync and the generators react to bass, mid, and high frequency energy in real time.\n\n" +
                     "• Use the Audio Reactivity slider (in Flow/Motion) to control how strongly the generator responds to the audio.\n" +
                     "• The seek slider lets you scrub to any point in the track.\n" +
@@ -80,10 +80,9 @@ fun InstructionsDialog(onDismiss: () -> Unit) {
                     "Custom palettes: Create up to 5 custom palettes with your own hex colors. Custom palettes appear alongside the curated list and persist across sessions."
                 }
                 HelpSection("Presets") {
-                    "Save your favorite generator + parameter + palette combos as presets. Each preset captures a circular thumbnail snapshot.\n\n" +
+                    "Save your favorite generator + parameter + palette combos as presets. Tap the floating Presets button at the bottom-left corner (available on all tabs) to open the presets panel. Tap the + button to save the current state, or tap any preset thumbnail to load it. Long-press a preset thumbnail to delete it. Tap outside the panel to dismiss it.\n\n" +
                     "Export Presets: Go to Export tab > 'Export Presets' to save all presets as a plain text (.txt) file. The format is compatible with the Algomodo web app — presets can be shared between platforms.\n\n" +
-                    "Import Presets: Go to Export tab > 'Import Presets' to load a presets .txt file. Both the web app format and legacy JSON format are supported. Imported presets are added alongside existing ones.\n\n" +
-                    "Long-press a preset thumbnail to delete it."
+                    "Import Presets: Go to Export tab > 'Import Presets' to load a presets .txt file. Both the web app format and legacy JSON format are supported. Imported presets are added alongside existing ones."
                 }
                 HelpSection("Generator Parameters") {
                     "Every parameter in the Params tab actively controls the output. Lock any parameter to preserve it during randomization. Parameters are grouped by category: Geometry, Composition, Color, Texture, and Flow/Motion."
