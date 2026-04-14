@@ -80,7 +80,7 @@ fun InstructionsDialog(onDismiss: () -> Unit) {
                     "Custom palettes: Create up to 5 custom palettes with your own hex colors. Custom palettes appear alongside the curated list and persist across sessions."
                 }
                 HelpSection("Presets") {
-                    "Save your favorite generator + parameter + palette combos as presets. Tap the floating Presets button at the bottom-left corner (available on all tabs) to open the presets panel. Tap the + button to save the current state, or tap any preset thumbnail to load it. Long-press a preset thumbnail to delete it. Tap outside the panel to dismiss it.\n\n" +
+                    "Save your favorite generator + parameter + palette combos as presets. Tap the floating Presets button at the bottom of the screen (available on all tabs) to open the presets panel. You can drag the button horizontally to reposition it so it doesn't block parameter controls. Tap the + button to save the current state, or tap any preset thumbnail to load it. Long-press a preset thumbnail to delete it. Tap outside the panel to dismiss it.\n\n" +
                     "Export Presets: Go to Export tab > 'Export Presets' to save all presets as a plain text (.txt) file. The format is compatible with the Algomodo web app — presets can be shared between platforms.\n\n" +
                     "Import Presets: Go to Export tab > 'Import Presets' to load a presets .txt file. Both the web app format and legacy JSON format are supported. Imported presets are added alongside existing ones."
                 }

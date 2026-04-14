@@ -110,7 +110,26 @@ fun SettingsPanel(
         }
 
         // PostFX
-        SectionHeader("Post FX")
+        Row(
+            modifier = Modifier.fillMaxWidth().padding(top = 4.dp),
+            horizontalArrangement = Arrangement.SpaceBetween,
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            Text(
+                text = "Post FX",
+                style = MaterialTheme.typography.labelMedium,
+                color = MaterialTheme.colorScheme.primary
+            )
+            if (postFX != PostFXSettings()) {
+                TextButton(
+                    onClick = { onPostFXChange(PostFXSettings()) },
+                    contentPadding = PaddingValues(horizontal = 8.dp, vertical = 0.dp),
+                    modifier = Modifier.height(28.dp)
+                ) {
+                    Text("Reset", fontSize = 11.sp)
+                }
+            }
+        }
         PostFXSlider("Grain", postFX.grain, 0f, 0.5f, 0.01f) {
             onPostFXChange(postFX.copy(grain = it))
         }

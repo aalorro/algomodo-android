@@ -427,7 +427,7 @@ class FluxPerlinFlowGenerator : Generator {
 
         val trailPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
             style = Paint.Style.STROKE
-            strokeWidth = trailWidth * scl
+            strokeWidth = (trailWidth * scl).coerceAtLeast(1f)
             strokeCap = Paint.Cap.ROUND
             strokeJoin = Paint.Join.ROUND
         }

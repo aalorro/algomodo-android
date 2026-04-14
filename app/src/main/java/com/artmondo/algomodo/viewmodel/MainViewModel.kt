@@ -586,15 +586,24 @@ class MainViewModel @Inject constructor(
             s.palette.colors
         )
         viewModelScope.launch(Dispatchers.Default) {
-            // Render a small thumbnail
+            // Render at the same resolution the main canvas uses so stateful
+            // generators (flux trails, feedback) reuse their warm cached state
+            // instead of creating a cold 120×120 state with sub-pixel strokes.
             val thumbBytes = try {
-                val thumbSize = 120
-                val thumbBitmap = Bitmap.createBitmap(thumbSize, thumbSize, Bitmap.Config.ARGB_8888)
-                val thumbCanvas = Canvas(thumbBitmap)
-                thumbCanvas.drawColor(android.graphics.Color.BLACK)
+                val renderSize = 360 // matches DRAFT quality canvas size
+                val renderW = s.aspectRatio.width(renderSize)
+                val renderH = s.aspectRatio.height(renderSize)
+                val renderBitmap = Bitmap.createBitmap(renderW, renderH, Bitmap.Config.ARGB_8888)
+                val renderCanvas = Canvas(renderBitmap)
+                renderCanvas.drawColor(android.graphics.Color.BLACK)
                 val renderParams = if (s.sourceImage != null)
                     s.params + ("_sourceImage" to s.sourceImage) else s.params
-                gen.renderCanvas(thumbCanvas, thumbBitmap, renderParams, s.seed, s.palette, Quality.DRAFT, 0f)
+                val staticTime = if (gen.supportsAnimation) 2.0f else 0f
+                gen.renderCanvas(renderCanvas, renderBitmap, renderParams, s.seed, s.palette, Quality.DRAFT, staticTime)
+                // Scale down to 120×120 thumbnail
+                val thumbSize = 120
+                val thumbBitmap = Bitmap.createScaledBitmap(renderBitmap, thumbSize, thumbSize, true)
+                renderBitmap.recycle()
                 val stream = java.io.ByteArrayOutputStream()
                 thumbBitmap.compress(Bitmap.CompressFormat.PNG, 80, stream)
                 thumbBitmap.recycle()
