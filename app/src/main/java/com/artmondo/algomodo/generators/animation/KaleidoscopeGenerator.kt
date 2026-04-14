@@ -18,7 +18,7 @@ import kotlin.math.*
  * Kaleidoscopic animation built from noise with multiple pattern modes.
  *
  * Optimised with trig LUTs, combined value→colour LUT, segment symmetry
- * exploitation, and multi-threaded polar buffer + screen fill.
+ * exploitation, cached screen-to-polar mapping, and multi-threaded rendering.
  */
 class KaleidoscopeGenerator : Generator {
 
@@ -47,6 +47,97 @@ class KaleidoscopeGenerator : Generator {
 
         private fun sinLut(x: Float): Float = SIN_LUT[(x * INV_2PI_LUT).toInt() and LUT_MASK]
         private fun cosLut(x: Float): Float = COS_LUT[(x * INV_2PI_LUT).toInt() and LUT_MASK]
+
+        /** Fast atan2 approximation (~5× faster than Math.atan2, max error ~0.01 rad). */
+        private fun fastAtan2(y: Float, x: Float): Float {
+            if (x == 0f && y == 0f) return 0f
+            val ax = abs(x); val ay = abs(y)
+            val mn = min(ax, ay); val mx = max(ax, ay)
+            val a = mn / mx
+            // Polynomial minimax approximation for atan(a) on [0,1]
+            val s = a * a
+            var r = ((-0.0464964749f * s + 0.15931422f) * s - 0.327622764f) * s * a + a
+            if (ay > ax) r = PI.toFloat() / 2f - r
+            if (x < 0f) r = PI.toFloat() - r
+            if (y < 0f) r = -r
+            return r
+        }
+    }
+
+    /**
+     * Cached screen-to-polar mapping. Eliminates sqrt + atan2 for all frames
+     * after the first render at a given bitmap size. Thread-safe via immutable snapshot.
+     */
+    private data class ScreenMapping(
+        val w: Int, val h: Int, val radSteps: Int, val angSteps: Int,
+        val ri0: ShortArray, val ai0: ShortArray,
+        val fr: ByteArray, val fa: ByteArray,
+        val outOfBounds: BooleanArray
+    )
+
+    @Volatile private var cachedMapping: ScreenMapping? = null
+
+    private fun getOrBuildMapping(
+        w: Int, h: Int, radSteps: Int, angSteps: Int
+    ): ScreenMapping {
+        val cached = cachedMapping
+        if (cached != null && cached.w == w && cached.h == h &&
+            cached.radSteps == radSteps && cached.angSteps == angSteps) {
+            return cached
+        }
+
+        val size = w * h
+        val ri0 = ShortArray(size)
+        val ai0 = ShortArray(size)
+        val fr = ByteArray(size)
+        val fa = ByteArray(size)
+        val outOfBounds = BooleanArray(size)
+
+        val cx = w / 2f
+        val cy = h / 2f
+        val dim = min(w, h).toFloat()
+        val invDim2 = 2f / dim
+        val maxR = sqrt(2f)
+        val rScale = (radSteps - 1) / maxR
+        val aScale = angSteps / (2f * PI.toFloat())
+        val radLimit = radSteps - 1
+        val piF = PI.toFloat()
+
+        val latch = CountDownLatch(THREAD_COUNT)
+        for (t in 0 until THREAD_COUNT) {
+            executor.execute {
+                val pyStart = t * h / THREAD_COUNT
+                val pyEnd = (t + 1) * h / THREAD_COUNT
+                for (py in pyStart until pyEnd) {
+                    val rawDy = (py - cy) * invDim2
+                    val rawDy2 = rawDy * rawDy
+                    val rowOff = py * w
+                    for (px in 0 until w) {
+                        val idx = rowOff + px
+                        val rawDx = (px - cx) * invDim2
+                        val rf = sqrt(rawDx * rawDx + rawDy2) * rScale
+                        val ri = rf.toInt()
+                        if (ri >= radLimit) {
+                            outOfBounds[idx] = true
+                            continue
+                        }
+                        val theta = fastAtan2(rawDy, rawDx)
+                        val af = (theta + piF) * aScale
+
+                        ri0[idx] = ri.toShort()
+                        ai0[idx] = (af.toInt() % angSteps).toShort()
+                        fr[idx] = ((rf - ri) * 255f).toInt().coerceIn(0, 255).toByte()
+                        fa[idx] = ((af - af.toInt()) * 255f).toInt().coerceIn(0, 255).toByte()
+                    }
+                }
+                latch.countDown()
+            }
+        }
+        latch.await()
+
+        val mapping = ScreenMapping(w, h, radSteps, angSteps, ri0, ai0, fr, fa, outOfBounds)
+        cachedMapping = mapping
+        return mapping
     }
 
     override val parameterSchema = listOf(
@@ -140,9 +231,6 @@ class KaleidoscopeGenerator : Generator {
     ) {
         val w = bitmap.width
         val h = bitmap.height
-        val cx = w / 2f
-        val cy = h / 2f
-        val dim = min(w, h).toFloat()
 
         val segments = (params["segments"] as? Number)?.toInt() ?: 8
         val pattern = (params["pattern"] as? String) ?: "geometric"
@@ -165,25 +253,33 @@ class KaleidoscopeGenerator : Generator {
         val twoPi = 2f * PI.toFloat()
 
         // --- Pre-compute combined value→color LUT ---
-        // Collapses: tanh steepening → contrast sharpen → palette lookup into one 1024-entry LUT
         val paletteLut = palette.buildLut(256)
         val invContrast = 1f / contrast
         val tanhSharp = tanh(sharpness)
         val combinedLut = IntArray(1024) { i ->
-            // Map LUT index to raw value [-1, 1]
             val raw = i / 1023f * 2f - 1f
-            // Tanh steepening
             val steep = tanh(raw * sharpness) / tanhSharp
-            // Contrast sharpen
             val sign = if (steep >= 0f) 1f else -1f
             val sharpened = if (contrast > 1f) sign * abs(steep).pow(invContrast)
             else steep * contrast
-            val norm = (sharpened * 0.5f + 0.5f).coerceIn(0f, 1f)
-            // Pack norm as 0..1023 for later color mode shifting
-            (norm * 1023f).toInt()
+            (((sharpened * 0.5f + 0.5f).coerceIn(0f, 1f)) * 1023f).toInt()
         }
 
-        // Iridescent time shift (constant for this frame)
+        // Pre-compute pow LUT for patterns using pow(x, sharpness*k)
+        // Maps [0..255] (input 0..1) to output 0..1 for pow(x, sharpness*2)
+        val powLut2 = FloatArray(256) { i ->
+            val x = i / 255f
+            x.pow(sharpness * 2f)
+        }
+        val powLut3 = FloatArray(256) { i ->
+            val x = i / 255f
+            x.pow(sharpness * 3f)
+        }
+        val powLutS = FloatArray(256) { i ->
+            val x = i / 255f
+            x.pow(sharpness)
+        }
+
         val iriTimeShift = sinLut(time * rotationSpeed * 0.5f) * 0.1f
 
         // --- Polar buffer dimensions ---
@@ -199,12 +295,10 @@ class KaleidoscopeGenerator : Generator {
         }
         val maxR = sqrt(2f)
 
-        // For palette/depth modes, exploit segment symmetry: compute one segment, replicate
         val isIridescent = colorMode == "iridescent"
         val segAngSteps = if (isIridescent) angSteps else (angSteps / segments).coerceAtLeast(1)
         val computeAngSteps = if (isIridescent) angSteps else segAngSteps
 
-        // Polar buffer: store as packed int (color with vignette baked in)
         val polarBuffer = IntArray(radSteps * angSteps)
 
         // Pre-compute vignette per radius
@@ -213,22 +307,24 @@ class KaleidoscopeGenerator : Generator {
             (1f - (r * 0.4f).coerceAtMost(0.7f)).coerceAtLeast(0.3f)
         }
 
+        // Pre-compute r values
+        val rLut = FloatArray(radSteps) { ri -> ri.toFloat() / (radSteps - 1) * maxR }
+
         // --- Multi-threaded polar buffer computation ---
         val latch1 = CountDownLatch(THREAD_COUNT)
         for (t in 0 until THREAD_COUNT) {
             executor.execute {
-                val noise = SimplexNoise(seed)  // thread-local noise
+                val noise = SimplexNoise(seed)
                 val riStart = t * radSteps / THREAD_COUNT
                 val riEnd = (t + 1) * radSteps / THREAD_COUNT
 
                 for (ri in riStart until riEnd) {
-                    val r = ri.toFloat() / (radSteps - 1) * maxR
+                    val r = rLut[ri]
                     val vignette = vignetteLut[ri]
 
                     for (ai in 0 until computeAngSteps) {
                         val theta = ai.toFloat() / angSteps * twoPi
 
-                        // Fold into one segment with mirror symmetry
                         val thetaFolded = ((theta + rotation) % twoPi + twoPi) % twoPi
                         var segTheta = thetaFolded % segAngle
                         if (segTheta > halfSeg) segTheta = segAngle - segTheta
@@ -301,7 +397,7 @@ class KaleidoscopeGenerator : Generator {
                             "starburst" -> {
                                 val spokeCount = segments.toFloat() * complexity
                                 val spoke = abs(cosLut(segTheta * spokeCount * 0.5f))
-                                val sharpSpoke = spoke.pow(sharpness * 2f)
+                                val sharpSpoke = powLut2[(spoke * 255f).toInt().coerceIn(0, 255)]
                                 val radialPulse = sinLut(r * zoom * 10f - time * rotationSpeed * 4f)
                                 val radialEnvelope = (1f - r * 0.5f).coerceAtLeast(0f)
                                 val burst = sharpSpoke * (0.6f + radialPulse * 0.4f) * radialEnvelope
@@ -347,7 +443,8 @@ class KaleidoscopeGenerator : Generator {
                                 }
                                 val ridged = 1f - v * 0.7f
                                 val arc = abs(sinLut(segTheta * segments * 2f + r * zoom * 5f + time * rotationSpeed * 2f))
-                                ridged * 0.6f + arc.pow(sharpness) * 0.4f
+                                val arcIdx = (arc * 255f).toInt().coerceIn(0, 255)
+                                ridged * 0.6f + powLutS[arcIdx] * 0.4f
                             }
                             "lace" -> {
                                 val thetaN = segTheta * segments
@@ -356,7 +453,9 @@ class KaleidoscopeGenerator : Generator {
                                     val rWave = sinLut(r * zoom * layer * 4f + time * rotationSpeed * 0.3f * layer)
                                     val aWave = cosLut(thetaN * layer * 0.5f + time * 0.15f * layer)
                                     val thread = abs(rWave * aWave)
-                                    v += (1f - thread).pow(sharpness * 3f) / layer
+                                    val invThread = (1f - thread).coerceIn(0f, 1f)
+                                    val invIdx = (invThread * 255f).toInt()
+                                    v += powLut3[invIdx] / layer
                                 }
                                 v * 0.6f
                             }
@@ -381,9 +480,9 @@ class KaleidoscopeGenerator : Generator {
                             ) * detailAmp
                         }
 
-                        // Combined LUT: raw value → normalised [0..1023]
+                        // Combined LUT: raw value → normalised 0..1023
                         val lutIdx = ((value * 0.5f + 0.5f).coerceIn(0f, 1f) * 1023f).toInt()
-                        val normInt = combinedLut[lutIdx]  // 0..1023
+                        val normInt = combinedLut[lutIdx]
                         val norm = normInt / 1023f
 
                         // Color mode
@@ -396,7 +495,6 @@ class KaleidoscopeGenerator : Generator {
                             else -> norm
                         }
 
-                        // Palette LUT + vignette (inline bit shifts)
                         val baseColor = paletteLut[(palVal * 255f).toInt().coerceIn(0, 255)]
                         val red = ((baseColor shr 16 and 0xFF) * vignette).toInt()
                         val green = ((baseColor shr 8 and 0xFF) * vignette).toInt()
@@ -405,22 +503,19 @@ class KaleidoscopeGenerator : Generator {
                         polarBuffer[ri * angSteps + ai] = (0xFF shl 24) or (red shl 16) or (green shl 8) or blue
                     }
 
-                    // Segment symmetry replication (skip for iridescent — it varies per segment)
+                    // Segment symmetry replication
                     if (!isIridescent && segAngSteps < angSteps) {
                         val rowOff = ri * angSteps
                         for (seg in 1 until segments) {
                             val dstOffset = seg * segAngSteps
-                            for (ai in 0 until segAngSteps) {
-                                val dstAi = (dstOffset + ai)
-                                if (dstAi < angSteps) {
-                                    polarBuffer[rowOff + dstAi] = polarBuffer[rowOff + ai]
-                                }
-                            }
+                            System.arraycopy(polarBuffer, rowOff, polarBuffer, rowOff + dstOffset,
+                                minOf(segAngSteps, angSteps - dstOffset))
                         }
-                        // Fill any remainder from rounding
                         val filled = segments * segAngSteps
-                        for (ai in filled until angSteps) {
-                            polarBuffer[rowOff + ai] = polarBuffer[rowOff + ai % segAngSteps]
+                        if (filled < angSteps) {
+                            for (ai in filled until angSteps) {
+                                polarBuffer[rowOff + ai] = polarBuffer[rowOff + ai % segAngSteps]
+                            }
                         }
                     }
                 }
@@ -429,65 +524,58 @@ class KaleidoscopeGenerator : Generator {
         }
         latch1.await()
 
-        // --- Multi-threaded screen fill with bilinear interpolation ---
+        // --- Screen fill using cached mapping ---
+        val mapping = getOrBuildMapping(w, h, radSteps, angSteps)
         val pixels = IntArray(w * h)
-        val invDim2 = 2f / dim
-        val rScale = (radSteps - 1) / maxR
-        val aScale = angSteps / twoPi
-        val radLimit = radSteps - 1
+
+        val mRi0 = mapping.ri0
+        val mAi0 = mapping.ai0
+        val mFr = mapping.fr
+        val mFa = mapping.fa
+        val mOob = mapping.outOfBounds
 
         val latch2 = CountDownLatch(THREAD_COUNT)
         for (t in 0 until THREAD_COUNT) {
             executor.execute {
-                val pyStart = t * h / THREAD_COUNT
-                val pyEnd = (t + 1) * h / THREAD_COUNT
+                val pxStart = t * pixels.size / THREAD_COUNT
+                val pxEnd = (t + 1) * pixels.size / THREAD_COUNT
 
-                for (py in pyStart until pyEnd) {
-                    val rawDy = (py - cy) * invDim2
-                    val rawDy2 = rawDy * rawDy
-                    val rowOff = py * w
-                    for (px in 0 until w) {
-                        val rawDx = (px - cx) * invDim2
-                        val rf = sqrt(rawDx * rawDx + rawDy2) * rScale
-                        val ri0 = rf.toInt()
-                        if (ri0 >= radLimit) {
-                            pixels[rowOff + px] = 0xFF000000.toInt()
-                            continue
-                        }
-                        val theta = atan2(rawDy, rawDx)
-                        val af = (theta + PI.toFloat()) * aScale
-                        val ai0 = af.toInt() % angSteps
-                        val ai1 = (ai0 + 1) % angSteps
-                        val ri1 = ri0 + 1
-
-                        val fr = rf - ri0
-                        val fa = af - af.toInt()
-                        val invFr = 1f - fr
-                        val invFa = 1f - fa
-                        val w00 = invFr * invFa
-                        val w10 = fr * invFa
-                        val w01 = invFr * fa
-                        val w11 = fr * fa
-
-                        // Bilinear interpolation with inline bit-shift extraction
-                        val off00 = ri0 * angSteps + ai0
-                        val off10 = ri1 * angSteps + ai0
-                        val off01 = ri0 * angSteps + ai1
-                        val off11 = ri1 * angSteps + ai1
-                        val c00 = polarBuffer[off00]
-                        val c10 = polarBuffer[off10]
-                        val c01 = polarBuffer[off01]
-                        val c11 = polarBuffer[off11]
-
-                        val red = ((c00 shr 16 and 0xFF) * w00 + (c10 shr 16 and 0xFF) * w10 +
-                                (c01 shr 16 and 0xFF) * w01 + (c11 shr 16 and 0xFF) * w11).toInt()
-                        val green = ((c00 shr 8 and 0xFF) * w00 + (c10 shr 8 and 0xFF) * w10 +
-                                (c01 shr 8 and 0xFF) * w01 + (c11 shr 8 and 0xFF) * w11).toInt()
-                        val blue = ((c00 and 0xFF) * w00 + (c10 and 0xFF) * w10 +
-                                (c01 and 0xFF) * w01 + (c11 and 0xFF) * w11).toInt()
-
-                        pixels[rowOff + px] = (0xFF shl 24) or (red shl 16) or (green shl 8) or blue
+                for (idx in pxStart until pxEnd) {
+                    if (mOob[idx]) {
+                        pixels[idx] = 0xFF000000.toInt()
+                        continue
                     }
+
+                    val ri0 = mRi0[idx].toInt() and 0xFFFF
+                    val ai0 = mAi0[idx].toInt() and 0xFFFF
+                    val ai1 = if (ai0 + 1 >= angSteps) 0 else ai0 + 1
+                    val ri1 = ri0 + 1
+
+                    // Unpack fractional parts (0..255 → 0..1)
+                    val frI = mFr[idx].toInt() and 0xFF
+                    val faI = mFa[idx].toInt() and 0xFF
+                    val invFrI = 255 - frI
+                    val invFaI = 255 - faI
+
+                    // Weights as integers (0..65025), divide by 65025 at the end
+                    val w00 = invFrI * invFaI
+                    val w10 = frI * invFaI
+                    val w01 = invFrI * faI
+                    val w11 = frI * faI
+
+                    val c00 = polarBuffer[ri0 * angSteps + ai0]
+                    val c10 = polarBuffer[ri1 * angSteps + ai0]
+                    val c01 = polarBuffer[ri0 * angSteps + ai1]
+                    val c11 = polarBuffer[ri1 * angSteps + ai1]
+
+                    val red = ((c00 shr 16 and 0xFF) * w00 + (c10 shr 16 and 0xFF) * w10 +
+                            (c01 shr 16 and 0xFF) * w01 + (c11 shr 16 and 0xFF) * w11) / 65025
+                    val green = ((c00 shr 8 and 0xFF) * w00 + (c10 shr 8 and 0xFF) * w10 +
+                            (c01 shr 8 and 0xFF) * w01 + (c11 shr 8 and 0xFF) * w11) / 65025
+                    val blue = ((c00 and 0xFF) * w00 + (c10 and 0xFF) * w10 +
+                            (c01 and 0xFF) * w01 + (c11 and 0xFF) * w11) / 65025
+
+                    pixels[idx] = (0xFF shl 24) or (red shl 16) or (green shl 8) or blue
                 }
                 latch2.countDown()
             }

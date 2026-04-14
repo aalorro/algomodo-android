@@ -12,6 +12,7 @@ import androidx.compose.animation.fadeIn
 import androidx.compose.animation.fadeOut
 import androidx.compose.animation.slideInVertically
 import androidx.compose.animation.slideOutVertically
+import androidx.compose.foundation.gestures.detectDragGestures
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
@@ -842,12 +843,22 @@ fun MainScreen(
                 }
             }
 
-            // Floating presets button — bottom-left, visible on all tabs
+            // Floating presets button — horizontally draggable, visible on all tabs
             if (!presetsExpanded) {
+                var dragOffsetX by remember { mutableFloatStateOf(0f) }
+
                 Row(
                     modifier = Modifier
                         .align(Alignment.BottomStart)
+                        .offset(x = with(androidx.compose.ui.platform.LocalDensity.current) { dragOffsetX.toDp() })
                         .padding(12.dp)
+                        .pointerInput(Unit) {
+                            detectDragGestures { change, dragAmount ->
+                                change.consume()
+                                dragOffsetX = (dragOffsetX + dragAmount.x)
+                                    .coerceIn(0f, (size.width - 160.dp.toPx()).coerceAtLeast(0f))
+                            }
+                        }
                         .background(
                             Color(0xFFDAA520).copy(alpha = 0.9f),
                             RoundedCornerShape(50)
