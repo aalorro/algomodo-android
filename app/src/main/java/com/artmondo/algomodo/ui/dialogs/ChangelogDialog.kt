@@ -18,28 +18,43 @@ fun ChangelogDialog(onDismiss: () -> Unit) {
         text = {
             Text(
                 text = """
-v1.7.0 (Android)
-New Generator:
-- Harmonics (geometry) — total: 118 generators
+v1.8.0 (Android)
+New Generators (17):
+- New Flux family: 12 audio-reactive generators (Perlin Flow, Simplex Warp, Feedback Loop, Pixel Sort Feedback, Metaballs 2D, Wireframe Terrain, Waveform Stacker, Signal Rings, Displacement Map, Domain Repetition, Instanced Scatter, Trail System)
+- Harmonics, Gravity Packing, Rubik's Permutation (geometry)
+- Sprott Quadratic (animation), Text Code (text)
+- Total: 134 generators across 12 families
 
 New Features:
+- Flux family: 12 TouchDesigner-inspired audio-reactive generators
 - Custom color palettes: create up to 5 named palettes
+- Floating presets button: accessible from all tabs, collapsible overlay
 - 8K resolution export
 - 3D perspective for Spirograph and Superformula
 - Preset saved notification bubble
 - Aspect ratio cropping when loading images
+- New splash screen logo
 
 Improvements:
 - Orbital: redesigned with comets, ion tails, pulsing star coronas, twinkling star field, trinary mode, speed-reactive glow
-- Simplex Noise Field: 5 noise transforms (smooth, ridged, turbulent, billow, veins), ~10× faster via combined LUT + multi-threading, new pulse anim mode, fixed broken parameters
-- Circle Packing: thread-safe cache fixes export turbulence; pulse mode, spin speed, color shift, audio reactivity
+- Simplex Noise Field: 5 noise transforms, ~10× faster via combined LUT + multi-threading, new pulse anim mode
+- Circle Packing: thread-safe cache, pulse mode, spin speed, color shift, audio reactivity
 - Phyllotaxis: new canvas fill, divergence, glow, depth fade params
 - Edge Glow: improved edge detection with adaptive pixel step
-- Cleaner MainScreen layout
+- Voronoi Crackle: concave distance metric
+- Displacement: improved rendering performance
+- Video export: adaptive bitrate based on quality
+- Presets moved to floating overlay for more parameter space
 
 Bug Fixes:
 - Fixed Circle Packing export turbulence (thread race condition)
 - Fixed Simplex Noise Field broken parameters (Anim Mode, Color Mode, Band Count, Octaves)
+
+v1.7.0 (Android)
+Performance:
+- Optimized 10 generators with simulation caching (Ising, Particle Advection, Sandpile, Percolation, Reaction Diffusion, Cyclic CA, Crystal Growth, CurlFluid, Strange Attractor, Game of Life)
+- Two-phase rendering: instant draft preview + full quality
+- Mandelbrot/Multibrot: adaptive resolution with exponential zoom
 
 v1.6.1 (Android)
 Performance:

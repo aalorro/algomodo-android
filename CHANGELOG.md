@@ -2,18 +2,21 @@
 
 All notable changes to Algomodo will be documented in this file.
 
-## [1.7.0] - Android
+## [1.8.0] - Android
 
-### New Generators (5)
+### New Generators (17)
+- New Flux family with 12 audio-reactive TouchDesigner-inspired generators: Perlin Flow, Simplex Warp, Feedback Loop, Pixel Sort Feedback, Metaballs 2D, Wireframe Terrain, Waveform Stacker, Signal Rings, Displacement Map, Domain Repetition, Instanced Scatter, and Trail System
 - Added Harmonics generator (geometry family)
 - Added Gravity Packing generator (geometry family) — dynamic shape stacking simulation
 - Added Rubik's Permutation generator (geometry family) — NxN grid color permutations
 - Added Sprott Quadratic generator (animation family) — chaotic 2D iterated map animations
 - Added Text Code generator (text family) — procedural code generation with customizable rendering
-- Total generators: 122 across 11 families
+- Total generators: 134 across 12 families
 
 ### New Features
+- New Flux generator family: 12 audio-reactive generators inspired by TouchDesigner workflows
 - Custom color palettes: create up to 5 named palettes with custom hex colors, persisted across sessions
+- Floating presets button: accessible from all tabs via a gold button at the bottom-left corner with collapsible overlay panel
 - 8K resolution export option
 - 3D perspective mode for Spirograph generator (with adjustable tilt)
 - 3D perspective mode for Superformula generator
@@ -27,11 +30,14 @@ All notable changes to Algomodo will be documented in this file.
 - Circle Packing: thread-safe LRU cache for packing data eliminates export turbulence; new pulse mode, pulse amount, spin speed, color shift parameters; audio reactivity; improved outline contrast in filled+outline mode
 - Phyllotaxis: new canvas fill, divergence angle, glow, and depth fade parameters; improved color contrast handling
 - Edge Glow: refactored edge detection with adaptive pixel step for gradient and ridge modes
+- Displacement: improved rendering logic for clarity and performance
 - Voronoi Crackle: new concave distance metric
 - Curl Fluid: configurable width and height parameters for simulation control
 - Stippling: contrast adjustment for improved visibility against background colors
 - Sprott Quadratic: improved overflow handling and performance
+- Video export: adaptive bitrate and resolution based on quality settings
 - MainScreen layout: palette strip and action buttons grouped together for cleaner UI
+- Presets moved from fixed Params tab position to floating collapsible overlay, freeing screen space for parameters
 
 ### Bug Fixes
 - Fixed Circle Packing export turbulence/choppiness caused by thread race condition on shared cache arrays
