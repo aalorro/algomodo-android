@@ -26,15 +26,15 @@ fun AboutDialog(onDismiss: () -> Unit) {
                 verticalArrangement = Arrangement.spacedBy(8.dp)
             ) {
                 Text(
-                    "Create stunning algorithmic art using pure mathematics — noise functions, cellular automata, fractals, Voronoi diagrams, geometry, graph theory, image processing, and procedural systems.",
+                    "Create stunning algorithmic art using pure mathematics — noise functions, cellular automata, fractals, Voronoi diagrams, geometry, graph theory, image processing, flux, and procedural systems.",
                     style = MaterialTheme.typography.bodyMedium,
                     textAlign = TextAlign.Center
                 )
                 Spacer(Modifier.height(8.dp))
-                InfoRow("Generators", "118 across 11 families")
+                InfoRow("Generators", "134 across 12 families")
                 InfoRow("Processing", "100% local on device")
                 InfoRow("Determinism", "Same seed = same output")
-                InfoRow("Version", "v1.7.0 (Android)")
+                InfoRow("Version", "v1.8.1 (Android)")
                 InfoRow("Credits", "ArtMondo")
                 Spacer(Modifier.height(4.dp))
                 Text(

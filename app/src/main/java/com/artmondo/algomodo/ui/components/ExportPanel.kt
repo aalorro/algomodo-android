@@ -45,6 +45,7 @@ fun ExportPanel(
     onExportSvg: () -> Unit,
     onExportGif: () -> Unit,
     onExportVideo: () -> Unit,
+    onCancelExport: () -> Unit = {},
     onExportRecipe: (String) -> Unit,
     onImportRecipe: () -> Unit,
     onExportPresets: () -> Unit,
@@ -73,7 +74,19 @@ fun ExportPanel(
                 modifier = Modifier.fillMaxWidth(),
                 color = Color(0xFF39FF14)
             )
-            Text("Exporting...", style = MaterialTheme.typography.bodySmall)
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.SpaceBetween,
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                Text(
+                    "Exporting... ${(exportState.exportProgress * 100).toInt()}%",
+                    style = MaterialTheme.typography.bodySmall
+                )
+                TextButton(onClick = onCancelExport) {
+                    Text("Cancel", color = MaterialTheme.colorScheme.error)
+                }
+            }
             return
         }
 

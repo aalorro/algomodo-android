@@ -10,6 +10,10 @@ import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.animation.fadeIn
 import androidx.compose.animation.fadeOut
+import androidx.compose.animation.slideInVertically
+import androidx.compose.animation.slideOutVertically
+import androidx.compose.foundation.gestures.detectDragGestures
+import androidx.compose.foundation.gestures.detectTapGestures
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
@@ -654,42 +658,33 @@ fun MainScreen(
             }
         }
 
-        // Tab content (takes remaining space)
-        HorizontalPager(
-            state = pagerState,
-            beyondViewportPageCount = 0,
-            userScrollEnabled = false,
-            modifier = Modifier
-                .fillMaxWidth()
-                .weight(1f)
-        ) { page ->
-            when (page) {
-                0 -> GeneratorPicker(
-                    selectedGeneratorId = state.generator?.id,
-                    selectedFamilyId = state.familyId,
-                    onSelectGenerator = { viewModel.selectGenerator(it) },
-                    onSelectFamily = { viewModel.selectFamily(it) }
-                )
-                1 -> {
-                    // No verticalScroll wrapper — ParameterControls has its own LazyColumn
-                    Column(modifier = Modifier.fillMaxSize()) {
+        // Tab content (takes remaining space) + floating presets overlay
+        var presetsExpanded by remember { mutableStateOf(false) }
+
+        Box(modifier = Modifier.fillMaxWidth().weight(1f)) {
+            HorizontalPager(
+                state = pagerState,
+                beyondViewportPageCount = 0,
+                userScrollEnabled = false,
+                modifier = Modifier.fillMaxSize()
+            ) { page ->
+                when (page) {
+                    0 -> GeneratorPicker(
+                        selectedGeneratorId = state.generator?.id,
+                        selectedFamilyId = state.familyId,
+                        onSelectGenerator = { viewModel.selectGenerator(it) },
+                        onSelectFamily = { viewModel.selectFamily(it) }
+                    )
+                    1 -> {
                         ParameterControls(
                             generator = state.generator,
                             params = state.params,
                             lockedParams = state.lockedParams,
                             onParamChange = { key, value -> viewModel.updateParam(key, value) },
                             onToggleLock = { viewModel.toggleParamLock(it) },
-                            modifier = Modifier.weight(1f)
-                        )
-                        PresetsPanel(
-                            presets = presets,
-                            onSavePreset = { viewModel.savePreset(it) },
-                            onLoadPreset = { viewModel.loadPreset(it) },
-                            onDeletePreset = { viewModel.deletePreset(it) },
-                            generatorStyleName = state.generator?.styleName ?: ""
+                            modifier = Modifier.fillMaxSize()
                         )
                     }
-                }
                 2 -> Column(
                     modifier = Modifier
                         .fillMaxSize()
@@ -759,6 +754,7 @@ fun MainScreen(
                             val gen = state.generator ?: return@ExportPanel
                             exportViewModel.exportVideo(context, gen, renderParams, state.seed, state.palette, state.quality, state.animationFps, aspectRatio = state.aspectRatio, audioUri = state.audioUri)
                         },
+                        onCancelExport = { exportViewModel.cancelExport() },
                         onExportRecipe = { fileName ->
                             val json = viewModel.exportRecipeJson()
                             shareText(context, json, fileName)
@@ -808,7 +804,115 @@ fun MainScreen(
                     )
                 }
             }
-        }
+            }
+
+            // Scrim — tapping outside collapses the presets panel
+            if (presetsExpanded) {
+                Box(
+                    modifier = Modifier
+                        .fillMaxSize()
+                        .clickable(
+                            indication = null,
+                            interactionSource = remember { androidx.compose.foundation.interaction.MutableInteractionSource() }
+                        ) { presetsExpanded = false }
+                )
+            }
+
+            // Collapsible presets overlay — slides up from bottom
+            androidx.compose.animation.AnimatedVisibility(
+                visible = presetsExpanded,
+                enter = slideInVertically(initialOffsetY = { it }) + fadeIn(),
+                exit = slideOutVertically(targetOffsetY = { it }) + fadeOut(),
+                modifier = Modifier.align(Alignment.BottomCenter)
+            ) {
+                Surface(
+                    modifier = Modifier.fillMaxWidth(),
+                    shape = RoundedCornerShape(topStart = 16.dp, topEnd = 16.dp),
+                    color = MaterialTheme.colorScheme.surface.copy(alpha = 0.95f),
+                    tonalElevation = 6.dp,
+                    shadowElevation = 8.dp
+                ) {
+                    PresetsPanel(
+                        presets = presets,
+                        onSavePreset = { viewModel.savePreset(it) },
+                        onLoadPreset = {
+                            viewModel.loadPreset(it)
+                            presetsExpanded = false
+                        },
+                        onDeletePreset = { viewModel.deletePreset(it) },
+                        generatorStyleName = state.generator?.styleName ?: ""
+                    )
+                }
+            }
+
+            // Floating presets button — horizontally draggable, visible on all tabs
+            if (!presetsExpanded) {
+                var dragOffsetX by remember { mutableFloatStateOf(0f) }
+                var isDragging by remember { mutableStateOf(false) }
+
+                BoxWithConstraints(
+                    modifier = Modifier
+                        .align(Alignment.BottomStart)
+                        .fillMaxWidth()
+                        .padding(12.dp)
+                ) {
+                    val maxDragPx = with(androidx.compose.ui.platform.LocalDensity.current) {
+                        (maxWidth - 130.dp).toPx().coerceAtLeast(0f)
+                    }
+
+                    Row(
+                        modifier = Modifier
+                            .offset(x = with(androidx.compose.ui.platform.LocalDensity.current) { dragOffsetX.toDp() })
+                            .pointerInput(Unit) {
+                                detectDragGestures(
+                                    onDragStart = { isDragging = false },
+                                    onDrag = { change, dragAmount ->
+                                        change.consume()
+                                        isDragging = true
+                                        dragOffsetX = (dragOffsetX + dragAmount.x)
+                                            .coerceIn(0f, maxDragPx)
+                                    }
+                                )
+                            }
+                            .pointerInput(Unit) {
+                                detectTapGestures {
+                                    if (!isDragging) {
+                                        presetsExpanded = true
+                                    }
+                                    isDragging = false
+                                }
+                            }
+                            .background(
+                                Color(0xFFDAA520).copy(alpha = 0.9f),
+                                RoundedCornerShape(50)
+                            )
+                            .padding(horizontal = 12.dp, vertical = 8.dp),
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.spacedBy(6.dp)
+                    ) {
+                        Icon(
+                            Icons.Filled.Star,
+                            contentDescription = "Presets",
+                            modifier = Modifier.size(23.dp),
+                            tint = Color.White
+                        )
+                        Text(
+                            "Presets",
+                            fontSize = 12.sp,
+                            color = Color.White
+                        )
+                        if (presets.isNotEmpty()) {
+                            Badge(
+                                containerColor = Color.White,
+                                contentColor = Color(0xFFDAA520)
+                            ) {
+                                Text("${presets.size}", fontSize = 9.sp)
+                            }
+                        }
+                    }
+                }
+            }
+        } // end Box
     } // end Column
 
     // Dialogs

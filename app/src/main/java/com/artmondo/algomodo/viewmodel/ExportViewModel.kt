@@ -16,12 +16,14 @@ import com.artmondo.algomodo.rendering.PostFXSettings
 import com.artmondo.algomodo.rendering.SvgBuilder
 import dagger.hilt.android.lifecycle.HiltViewModel
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.Job
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
+import java.util.concurrent.atomic.AtomicBoolean
 import javax.inject.Inject
 
 data class ExportUiState(
@@ -44,6 +46,15 @@ class ExportViewModel @Inject constructor() : ViewModel() {
 
     private val _state = MutableStateFlow(ExportUiState())
     val state: StateFlow<ExportUiState> = _state.asStateFlow()
+
+    private var exportJob: Job? = null
+    private var exportCancelled = AtomicBoolean(false)
+
+    fun cancelExport() {
+        exportCancelled.set(true)
+        exportJob?.cancel()
+        _state.update { it.copy(isExporting = false, exportProgress = 0f) }
+    }
 
     fun setExportFormat(format: String) {
         _state.update { it.copy(exportFormat = format) }
@@ -206,7 +217,8 @@ class ExportViewModel @Inject constructor() : ViewModel() {
         aspectRatio: AspectRatio = AspectRatio.SQUARE
     ) {
         val s = _state.value
-        viewModelScope.launch(Dispatchers.IO) {
+        exportCancelled = AtomicBoolean(false)
+        exportJob = viewModelScope.launch(Dispatchers.IO) {
             _state.update { it.copy(isExporting = true, error = null) }
             try {
                 val uri = GifExporter.export(
@@ -225,9 +237,12 @@ class ExportViewModel @Inject constructor() : ViewModel() {
                     fileName = "algomodo_${System.currentTimeMillis()}",
                     onProgress = { p ->
                         _state.update { it.copy(exportProgress = p) }
-                    }
+                    },
+                    cancelled = exportCancelled
                 )
                 _state.update { it.copy(isExporting = false, exportProgress = 0f, lastExportUri = uri) }
+            } catch (e: GifExporter.ExportCancelledException) {
+                // Cancelled by user — state already reset in cancelExport()
             } catch (e: Exception) {
                 _state.update { it.copy(isExporting = false, exportProgress = 0f, error = e.message ?: "GIF export failed") }
             }
@@ -247,10 +262,16 @@ class ExportViewModel @Inject constructor() : ViewModel() {
     ) {
         val s = _state.value
         val durationSeconds = (s.videoEndSec - s.videoStartSec).coerceAtLeast(1)
-        viewModelScope.launch(Dispatchers.IO) {
+        exportCancelled = AtomicBoolean(false)
+        exportJob = viewModelScope.launch(Dispatchers.IO) {
             _state.update { it.copy(isExporting = true, error = null) }
             try {
-                val resolution = s.gifResolution
+                val baseResolution = s.gifResolution
+                val resolution = when (quality) {
+                    Quality.DRAFT -> baseResolution
+                    Quality.BALANCED -> baseResolution
+                    Quality.ULTRA -> (baseResolution * 2).coerceAtMost(1920)
+                }
                 val uri = VideoExporter.export(
                     context = context,
                     generator = generator,
@@ -268,13 +289,16 @@ class ExportViewModel @Inject constructor() : ViewModel() {
                     fileName = "algomodo_${System.currentTimeMillis()}",
                     onProgress = { p ->
                         _state.update { it.copy(exportProgress = p) }
-                    }
+                    },
+                    cancelled = exportCancelled
                 )
                 if (uri != null) {
                     _state.update { it.copy(isExporting = false, exportProgress = 0f, lastExportUri = uri) }
                 } else {
                     _state.update { it.copy(isExporting = false, exportProgress = 0f, error = "MP4 export failed") }
                 }
+            } catch (e: VideoExporter.ExportCancelledException) {
+                // Cancelled by user — state already reset in cancelExport()
             } catch (e: Exception) {
                 _state.update { it.copy(isExporting = false, exportProgress = 0f, error = e.message ?: "MP4 export failed") }
             }

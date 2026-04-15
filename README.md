@@ -6,7 +6,7 @@ Create stunning algorithmic art using pure mathematics — noise functions, cell
 
 ## Features
 
-- **118 generators** across 11 families (animation, cellular automata, fractals, geometry, graphs, image processing, noise, plotter, procedural, text, Voronoi)
+- **134 generators** across 12 families (animation, cellular automata, flux, fractals, geometry, graphs, image processing, noise, plotter, procedural, text, Voronoi)
 - **Over 9.5 million unique parameter configurations** — before accounting for seeds, which multiply the space into the trillions
 - **Deterministic rendering** — same seed and parameters always produce the same output
 - **Animation support** — play, export as GIF or MP4
@@ -25,16 +25,17 @@ Create stunning algorithmic art using pure mathematics — noise functions, cell
 
 | Family | Count | Examples |
 |--------|-------|---------|
-| Animation | 8 | Attractor Trails, Curl Fluid, Kaleidoscope, Plasma Feedback |
+| Animation | 9 | Attractor Trails, Curl Fluid, Kaleidoscope, Plasma Feedback, Sprott Quadratic |
 | Cellular Automata | 14 | Game of Life, Reaction Diffusion, Turing Patterns, DLA |
+| Flux | 12 | Perlin Flow, Simplex Warp, Feedback Loop, Pixel Sort Feedback, Metaballs 2D, Wireframe Terrain |
 | Fractals | 10 | Mandelbrot, Julia, Burning Ship, Fractal Flames, Multibrot, Orbit Traps, Pythagoras Tree, Strange Attractors |
-| Geometry | 12 | Islamic Patterns, L-System, Recursive Subdivision, Spirograph, Truchet Tiles, Harmonics |
+| Geometry | 15 | Islamic Patterns, L-System, Spirograph, Truchet Tiles, Harmonics, Gravity Packing, Rubik's Permutation |
 | Graphs | 11 | Geodesic, Constrained Delaunay, Anisotropic, Euler Trails, K-Nearest Neighbor, Gabriel, Planar |
 | Image Processing | 14 | Pixel Sort, Halftone, ASCII Art, Glitch Transform |
 | Noise | 7 | Simplex Field, FBM Terrain, Domain Warp, Ridged Noise |
 | Plotter | 14 | Circle Packing, Stippling, Contour Lines, Guilloche |
 | Procedural | 9 | Audio Reactive, SDF Raymarch, Particle Advection, Feedback Systems, Warp |
-| Text | 8 | Concrete Poetry, Matrix, Glyphs, Naive Handwriting, Procedural Cursive, Poem Layout |
+| Text | 9 | Concrete Poetry, Matrix, Glyphs, Naive Handwriting, Procedural Cursive, Poem Layout, Text Code |
 | Voronoi | 11 | Voronoi Cells, Delaunay Mesh, Crackle, Weighted Voronoi |
 
 ## How It Works
@@ -47,7 +48,7 @@ Create stunning algorithmic art using pure mathematics — noise functions, cell
 - **Reload** — re-render with current settings (useful after changing post-FX)
 
 **Tabs:**
-1. **Generators** — browse and select from 118 generators across 11 families
+1. **Generators** — browse and select from 134 generators across 12 families
 2. **Params** — adjust parameters, lock individual params to preserve during randomization
 3. **Export** — save images, export/import recipes
 4. **Settings** — theme, quality, FPS, post-processing

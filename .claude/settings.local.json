@@ -13,7 +13,8 @@
       "Bash(./gradlew clean:*)",
       "Bash(rm:*)",
       "Bash(./gradlew:*)",
-      "Bash(python3:*)"
+      "Bash(python3:*)",
+      "Bash(/dev/null:*)"
     ]
   }
 }

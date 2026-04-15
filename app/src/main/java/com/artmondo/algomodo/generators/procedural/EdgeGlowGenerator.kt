@@ -95,26 +95,37 @@ class EdgeGlowGenerator : Generator {
         val invDim2 = 2f / min(w, h)
         val circuitEps = 0.06f
 
+        // edgeWidth scales sampling distance for gradient/ridge spatial thickness
         val pixelStep = scl * invDim2
-        val gradEps = pixelStep * 0.6f
-        val ridgeEps = pixelStep * 2.5f
+        val gradEps = pixelStep * effEdgeW * 0.4f
+        val ridgeEps = pixelStep * effEdgeW * 1.7f
         val ridgeScale = 1f / max(0.0001f, ridgeEps * ridgeEps)
         val inv2GradEps = 1f / (gradEps * 2f)
 
-        // Brightness LUT: edgeWidth scales raw edge, glowRadius controls soft spread
-        val edgeScale = effEdgeW / 1.5f              // 1.0 at default edgeWidth=1.5
+        // Contour: edgeWidth controls line thickness via power exponent
+        val contourPow = max(0.5f, 4.0f - effEdgeW * 0.7f)
+
+        // Brightness LUT (matching web version)
+        val glowPow = max(0.6f, 3.0f / max(0.3f, effEdgeW))
         val hasGlowR = glowR > 0.01f
-        val softPow = max(0.3f, 1.5f * (1f - glowR)) // lower power = wider glow spread
+        val glowFalloff = if (hasGlowR) 3f / glowR else 200f
+        val softMul = if (hasGlowR) 0.3f + glowR * 1.7f else 0f
+        val ambientGlow = if (hasGlowR) min(1f, exp(-glowFalloff) * effGlow * (0.02f + glowR * 0.2f)) else 0f
 
         val brightnessLUT = FloatArray(256)
         for (i in 0 until 256) {
-            val rawEdge = i / 255f
-            val e = (rawEdge * edgeScale).coerceAtMost(1f)
-            val sharp = e * e * e
-            val soft = if (hasGlowR) e.pow(softPow) * glowR else 0f
-            brightnessLUT[i] = (max(sharp, soft) * effGlow).coerceAtMost(1f)
+            val edgeVal = i / 255f
+            if (edgeVal > 0.004f) {
+                val sharp = edgeVal.pow(glowPow)
+                val soft = if (hasGlowR) exp(-((1f - edgeVal) * glowFalloff)) * softMul else 0f
+                brightnessLUT[i] = ((sharp + soft) * effGlow).coerceAtMost(1f)
+            } else {
+                brightnessLUT[i] = ambientGlow
+            }
         }
 
+        val Qf = Q.toFloat()
+        val invQ = 1f / Qf
         val tOff = t * 0.15f
         val cols = ceil(w.toFloat() / step).toInt()
         val rows = ceil(h.toFloat() / step).toInt()
@@ -131,35 +142,35 @@ class EdgeGlowGenerator : Generator {
                 val n = vn.fbm(nx, ny, maxOct)
 
                 val edge: Float = when (modeId) {
-                    0 -> { // contour — peak at iso-line boundaries
-                        val band = n * Q
+                    0 -> { // contour — bright bands between iso-lines
+                        val band = n * Qf
                         val frac = band - floor(band)
-                        val e = abs(frac * 2f - 1f)
-                        e * e * e
+                        val e = 1f - abs(frac * 2f - 1f)
+                        e.pow(contourPow)
                     }
-                    1 -> { // gradient
+                    1 -> { // gradient — eps scaled by edgeWidth
                         val gxd = (vn.fbm(nx + gradEps, ny, maxOct) - vn.fbm(nx - gradEps, ny, maxOct)) * inv2GradEps
                         val gyd = (vn.fbm(nx, ny + gradEps, maxOct) - vn.fbm(nx, ny - gradEps, maxOct)) * inv2GradEps
                         var e = sqrt(gxd * gxd + gyd * gyd).coerceAtMost(1f)
-                        e = e * e * (3f - 2f * e)
+                        e = round(e * Qf) * invQ
                         e * e * (3f - 2f * e)
                     }
-                    2 -> { // ridge
+                    2 -> { // ridge — eps scaled by edgeWidth
                         val nPx = vn.fbm(nx + ridgeEps, ny, maxOct)
                         val nMx = vn.fbm(nx - ridgeEps, ny, maxOct)
                         val nPy = vn.fbm(nx, ny + ridgeEps, maxOct)
                         val nMy = vn.fbm(nx, ny - ridgeEps, maxOct)
                         val laplacian = nPx + nMx + nPy + nMy - 4f * n
                         var e = (abs(laplacian) * ridgeScale).coerceAtMost(1f)
-                        e = e * e * (3f - 2f * e)
+                        e = round(e * Qf) * invQ
                         e * e * (3f - 2f * e)
                     }
                     else -> { // circuit
                         val nRight = vn.noise(nx + circuitEps, ny)
                         val nDown = vn.noise(nx, ny + circuitEps)
-                        val q1 = ((n * 0.5f + 0.5f) * Q).toInt()
-                        val q2 = ((nRight * 0.5f + 0.5f) * Q).toInt()
-                        val q3 = ((nDown * 0.5f + 0.5f) * Q).toInt()
+                        val q1 = ((n * 0.5f + 0.5f) * Qf).toInt()
+                        val q2 = ((nRight * 0.5f + 0.5f) * Qf).toInt()
+                        val q3 = ((nDown * 0.5f + 0.5f) * Qf).toInt()
                         if (q1 != q2 || q1 != q3) 1f else 0f
                     }
                 }

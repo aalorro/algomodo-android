@@ -19,10 +19,13 @@ class DisplacementGenerator : Generator {
     override val definition =
         "Noise-driven UV displacement mapping — pixels are offset through vector fields to create organic distortion, fracture, radial ripple, and wave effects."
     override val algorithmNotes =
-        "Computes a 2D displacement vector per pixel from multi-octave value noise (FBM). " +
-        "Flow mode applies smooth continuous displacement; fracture quantizes noise; " +
-        "radial scales by distance for ripples; wave wraps through sinusoids. " +
-        "Chromatic aberration offsets RGB channels along the displacement gradient."
+        "Coarse FBM grid (8px spacing) precomputed once per frame, bilinear-interpolated per pixel " +
+        "replacing per-pixel FBM (~10x faster). " +
+        "Flow: smooth displacement with banded palette coloring. " +
+        "Fracture: cell-based displacement with per-cell trig animation and bright edge cracks. " +
+        "Radial: warped-radius ripples with angular color bands per ring. " +
+        "Wave: dual-axis phase-warped sinusoids with band coloring. " +
+        "Chromatic aberration uses noise at warped coords for organic color splitting."
     override val supportsVector = false
     override val supportsAnimation = true
 
@@ -78,7 +81,9 @@ class DisplacementGenerator : Generator {
         val modeId = when (mode) { "flow" -> 0; "fracture" -> 1; "radial" -> 2; else -> 3 }
         val vn = ValueNoise(seed)
 
-        // Palette ramp
+        // Palette ramp + color count for banding
+        val nC = palette.colorInts().size
+        val nCm1f = if (nC > 1) (nC - 1).toFloat() else 1f
         val lut = palette.buildLut(256)
         val rampR = IntArray(256); val rampG = IntArray(256); val rampB = IntArray(256)
         for (i in 0 until 256) {
@@ -91,99 +96,237 @@ class DisplacementGenerator : Generator {
         val doCa = ca > 0.01f
         val doDist = dist > 0.01f
         val warpAmt = dist * 0.5f
-
-        val maxOct = nOct.coerceAtMost(when (quality) { Quality.DRAFT -> 1; Quality.ULTRA -> nOct; else -> 2 })
-
+        val maxOct = if (quality == Quality.DRAFT) nOct.coerceAtMost(2) else nOct
         val TAU = PI.toFloat() * 2f
-        val fractQ = 4f + dist * 8f; val fractInvQ = 1f / fractQ
-        val radialFreq = TAU * (2f + dist * 6f)
-        val radialTimeOff = t * 3f
-        val waveFreq = 3f + dist * 10f
-        val waveT1 = t * 2f; val waveT2 = t * 1.5f
-        val colorScl = effScl * 2f
 
         val tOff1x = t * 0.1f; val tOff1y = t * 0.07f
         val tOff2x = t * 0.07f; val tOff2y = t * 0.1f
         val distNScl = effScl * 2.5f
+        val colorScl = effScl * 2f
+        val dist2 = dist * 2f
 
-        val pixels = IntArray(w * h)
+        // ── Coarse FBM grid (8px spacing): bilinear-interpolated per pixel ──
+        val CS = 8; val invCS = 1f / CS
+        val cCols = w / CS + 2; val cRows = h / CS + 2
+        val coarse1 = FloatArray(cCols * cRows)
+        val coarse2 = FloatArray(cCols * cRows)
 
-        for (py in 0 until h step step) {
-            val v = (py - halfH) * invDim2
-            for (px in 0 until w step step) {
-                val u = (px - halfW) * invDim2
+        val cols = ceil(w.toFloat() / step).toInt()
+        val rows = ceil(h.toFloat() / step).toInt()
+        val smallPixels = IntArray(cols * rows)
 
-                val nx = u * effScl; val ny = v * effScl
-                val n1 = vn.fbm(nx + tOff1x, ny + tOff1y, maxOct)
-                val n2 = vn.fbm(nx + 31.7f + tOff2x, ny + 17.3f + tOff2y, maxOct)
-
-                var dx: Float; var dy: Float
-                when (modeId) {
-                    0 -> { dx = n1; dy = n2 }
-                    1 -> {
-                        dx = (n1 * fractQ).toInt() * fractInvQ
-                        dy = (n2 * fractQ).toInt() * fractInvQ
-                    }
-                    2 -> {
-                        val rad = sqrt(u * u + v * v)
-                        val radMod = sin(rad * radialFreq - radialTimeOff) * rad
-                        dx = n1 * radMod; dy = n2 * radMod
-                    }
-                    else -> {
-                        dx = sin(n1 * waveFreq + waveT1) * 0.5f
-                        dy = cos(n2 * waveFreq + waveT2) * 0.5f
+        when (modeId) {
+            0 -> {
+                // ═══ FLOW ═══════════════════════════════════════════════
+                for (cy in 0 until cRows) {
+                    val cpv = (cy * CS - halfH) * invDim2; val cny = cpv * effScl
+                    val ro = cy * cCols
+                    for (cx in 0 until cCols) {
+                        val cpu = (cx * CS - halfW) * invDim2; val cnx = cpu * effScl
+                        coarse1[ro + cx] = vn.fbm(cnx + tOff1x, cny + tOff1y, maxOct)
+                        coarse2[ro + cx] = vn.fbm(cnx + 31.7f + tOff2x, cny + 17.3f + tOff2y, maxOct)
                     }
                 }
-
-                var wu = u + dx * effStr
-                var wv = v + dy * effStr
-
-                if (doDist) {
-                    val dnx = nx * distNScl; val dny = ny * distNScl
-                    wu += vn.noise(dnx + 50f, dny) * warpAmt
-                    wv += vn.noise(dnx, dny + 50f) * warpAmt
+                for (gy in 0 until rows) {
+                    val py = gy * step; val v = (py - halfH) * invDim2; val ny = v * effScl
+                    val cfy = py * invCS; val cy0 = cfy.toInt(); val fy = cfy - cy0; val cro = cy0 * cCols
+                    for (gx in 0 until cols) {
+                        val px = gx * step; val u = (px - halfW) * invDim2; val nx = u * effScl
+                        val cfx = px * invCS; val cx0 = cfx.toInt(); val fx = cfx - cx0; val ci = cro + cx0
+                        val a1 = coarse1[ci]; val b1 = coarse1[ci + 1]
+                        val c1 = coarse1[ci + cCols]; val d1 = coarse1[ci + cCols + 1]
+                        val n1 = a1 + (b1 - a1) * fx + (c1 - a1) * fy + (a1 - b1 - c1 + d1) * fx * fy
+                        val a2 = coarse2[ci]; val b2 = coarse2[ci + 1]
+                        val c2 = coarse2[ci + cCols]; val d2 = coarse2[ci + cCols + 1]
+                        val n2 = a2 + (b2 - a2) * fx + (c2 - a2) * fy + (a2 - b2 - c2 + d2) * fx * fy
+                        var wu = u + n1 * effStr; var wv = v + n2 * effStr
+                        if (doDist) {
+                            wu += vn.noise(nx * distNScl + 50f, ny * distNScl) * warpAmt
+                            wv += vn.noise(nx * distNScl, ny * distNScl + 50f) * warpAmt
+                        }
+                        val cn = vn.noise(wu * colorScl, wv * colorScl) * 0.5f + 0.5f
+                        val flowBand = (cn * nC * 2).toInt()
+                        val colorVal = ((flowBand % nC) / nCm1f).coerceIn(0f, 1f)
+                        smallPixels[gy * cols + gx] = emitColor(colorVal, wu, wv, doCa, caScale, colorScl, vn, rampR, rampG, rampB)
+                    }
                 }
-
-                val cn1 = vn.noise(wu * colorScl, wv * colorScl)
-                var valG = (cn1 + 0.5f * n2) * 0.5f + 0.5f
-                valG = valG.coerceIn(0f, 1f)
-
-                val rr: Int; val gg: Int; val bb: Int
-                if (doCa) {
-                    val shift = n2 * caScale
-                    val valR = (valG + shift).coerceIn(0f, 1f)
-                    val valB = (valG - shift).coerceIn(0f, 1f)
-                    rr = rampR[(valR * 255f).toInt()]
-                    gg = rampG[(valG * 255f).toInt()]
-                    bb = rampB[(valB * 255f).toInt()]
-                } else {
-                    val idx = (valG * 255f).toInt()
-                    rr = rampR[idx]; gg = rampG[idx]; bb = rampB[idx]
+            }
+            1 -> {
+                // ═══ FRACTURE ═══════════════════════════════════════════
+                val fractCells = 3f + dist * 12f
+                val tSinHalf = sin(t * 0.5f); val tCosHalf = cos(t * 0.5f)
+                for (cy in 0 until cRows) {
+                    val cpv = (cy * CS - halfH) * invDim2; val cny = cpv * effScl
+                    val ro = cy * cCols
+                    for (cx in 0 until cCols) {
+                        val cpu = (cx * CS - halfW) * invDim2; val cnx = cpu * effScl
+                        coarse1[ro + cx] = vn.fbm(cnx + 50f, cny + 50f, maxOct)
+                        coarse2[ro + cx] = vn.fbm(cnx + 80f, cny + 80f, maxOct)
+                    }
                 }
-
-                val pixel = Color.rgb(rr, gg, bb)
-
-                if (step == 1) {
-                    pixels[py * w + px] = pixel
-                } else {
-                    val maxDy = min(step, h - py)
-                    val maxDx = min(step, w - px)
-                    for (ddy in 0 until maxDy) {
-                        val rowBase = (py + ddy) * w + px
-                        for (ddx in 0 until maxDx) pixels[rowBase + ddx] = pixel
+                for (gy in 0 until rows) {
+                    val py = gy * step; val v = (py - halfH) * invDim2
+                    val cfy = py * invCS; val cy0 = cfy.toInt(); val fy = cfy - cy0; val cro = cy0 * cCols
+                    for (gx in 0 until cols) {
+                        val px = gx * step; val u = (px - halfW) * invDim2
+                        val cfx = px * invCS; val cx0 = cfx.toInt(); val fx = cfx - cx0; val ci = cro + cx0
+                        val a1 = coarse1[ci]; val b1 = coarse1[ci + 1]
+                        val c1 = coarse1[ci + cCols]; val d1 = coarse1[ci + cCols + 1]
+                        val wN1 = a1 + (b1 - a1) * fx + (c1 - a1) * fy + (a1 - b1 - c1 + d1) * fx * fy
+                        val a2 = coarse2[ci]; val b2 = coarse2[ci + 1]
+                        val c2 = coarse2[ci + cCols]; val d2 = coarse2[ci + cCols + 1]
+                        val wN2 = a2 + (b2 - a2) * fx + (c2 - a2) * fy + (a2 - b2 - c2 + d2) * fx * fy
+                        val warpU = u + wN1 * effStr * 0.5f
+                        val warpV = v + wN2 * effStr * 0.5f
+                        val cellX = floor((warpU + 1f) * fractCells).toInt()
+                        val cellY = floor((warpV + 1f) * fractCells).toInt()
+                        val ch1 = vn.noise(cellX * 1.37f + 0.5f, cellY * 2.71f + 0.5f)
+                        val ch2 = vn.noise(cellX * 2.71f + 0.5f, cellY * 1.37f + 0.5f)
+                        val cellDx = ch1 * effStr * (tSinHalf * cos(ch1 * TAU) + tCosHalf * sin(ch1 * TAU))
+                        val cellDy = ch2 * effStr * (tCosHalf * cos(ch2 * TAU) - tSinHalf * sin(ch2 * TAU))
+                        val wu = u + cellDx; val wv = v + cellDy
+                        val fracU = (u + 1f) * fractCells - cellX
+                        val fracV = (v + 1f) * fractCells - cellY
+                        val edgeDist = minOf(fracU, 1f - fracU, fracV, 1f - fracV)
+                        val cellColor = ch1 * 0.5f + 0.5f
+                        val edgeBright = if (edgeDist < 0.08f) 1f else 0f
+                        val colorVal = (cellColor * (1f - edgeBright) + edgeBright).coerceIn(0f, 1f)
+                        smallPixels[gy * cols + gx] = emitColor(colorVal, wu, wv, doCa, caScale, colorScl, vn, rampR, rampG, rampB)
+                    }
+                }
+            }
+            2 -> {
+                // ═══ RADIAL ═════════════════════════════════════════════
+                val radialFreq = TAU * (3f + dist * 8f)
+                val radialTime = t * 2.5f
+                val radialFreqOverTAU = radialFreq / TAU
+                val radialTimeColor = radialTime * 0.1f
+                for (cy in 0 until cRows) {
+                    val cpv = (cy * CS - halfH) * invDim2; val cny = cpv * effScl
+                    val ro = cy * cCols
+                    for (cx in 0 until cCols) {
+                        val cpu = (cx * CS - halfW) * invDim2; val cnx = cpu * effScl
+                        coarse1[ro + cx] = vn.fbm(cnx + 70f, cny + 70f, maxOct)
+                        coarse2[ro + cx] = vn.noise(cnx * 2f + 40f, cny * 2f + 40f) * 0.8f
+                    }
+                }
+                for (gy in 0 until rows) {
+                    val py = gy * step; val v = (py - halfH) * invDim2; val ny = v * effScl
+                    val vSq = v * v
+                    val cfy = py * invCS; val cy0 = cfy.toInt(); val fy = cfy - cy0; val cro = cy0 * cCols
+                    for (gx in 0 until cols) {
+                        val px = gx * step; val u = (px - halfW) * invDim2; val nx = u * effScl
+                        val cfx = px * invCS; val cx0 = cfx.toInt(); val fx = cfx - cx0; val ci = cro + cx0
+                        val a1 = coarse1[ci]; val b1 = coarse1[ci + 1]
+                        val c1 = coarse1[ci + cCols]; val d1 = coarse1[ci + cCols + 1]
+                        val nWarp = a1 + (b1 - a1) * fx + (c1 - a1) * fy + (a1 - b1 - c1 + d1) * fx * fy
+                        val a2 = coarse2[ci]; val b2 = coarse2[ci + 1]
+                        val c2 = coarse2[ci + cCols]; val d2 = coarse2[ci + cCols + 1]
+                        val angWarp = a2 + (b2 - a2) * fx + (c2 - a2) * fy + (a2 - b2 - c2 + d2) * fx * fy
+                        val rad = sqrt(vSq + u * u)
+                        val warpedRad = rad + nWarp * 0.15f
+                        val ripple = sin(warpedRad * radialFreq - radialTime)
+                        val dr = ripple * effStr * (1f + nWarp * dist2)
+                        val invRad = if (rad > 0.001f) 1f / rad else 0f
+                        var wu = u + u * invRad * dr
+                        var wv = v + v * invRad * dr
+                        if (doDist) {
+                            wu += vn.noise(nx * distNScl + 50f, ny * distNScl) * warpAmt
+                            wv += vn.noise(nx * distNScl, ny * distNScl + 50f) * warpAmt
+                        }
+                        val ang = atan2(v, u)
+                        val colorRad = rad + nWarp * 0.2f
+                        val colorAng = ang + angWarp
+                        val ringBand = floor(colorRad * radialFreqOverTAU - radialTimeColor).toInt()
+                        val perRingN = vn.noise(ringBand * 0.73f + 5f, colorAng * 1.5f + ringBand * 0.4f) * 0.5f + 0.5f
+                        val colorBand = ((perRingN * nC).toInt() % nC + nC) % nC
+                        val colorVal = (colorBand / nCm1f).coerceIn(0f, 1f)
+                        smallPixels[gy * cols + gx] = emitColor(colorVal, wu, wv, doCa, caScale, colorScl, vn, rampR, rampG, rampB)
+                    }
+                }
+            }
+            else -> {
+                // ═══ WAVE ═══════════════════════════════════════════════
+                val waveFreq = 4f + dist * 14f
+                val waveFreq07 = waveFreq * 0.7f
+                val waveTx = t * 1.8f; val waveTy = t * 1.3f
+                for (cy in 0 until cRows) {
+                    val cpv = (cy * CS - halfH) * invDim2; val cny = cpv * effScl
+                    val ro = cy * cCols
+                    for (cx in 0 until cCols) {
+                        val cpu = (cx * CS - halfW) * invDim2; val cnx = cpu * effScl
+                        coarse1[ro + cx] = vn.fbm(cnx + 90f, cny + 90f, maxOct)
+                        coarse2[ro + cx] = vn.noise(cnx * 2f + 30f, cny * 2f + 30f)
+                    }
+                }
+                for (gy in 0 until rows) {
+                    val py = gy * step; val v = (py - halfH) * invDim2; val ny = v * effScl
+                    val cfy = py * invCS; val cy0 = cfy.toInt(); val fy = cfy - cy0; val cro = cy0 * cCols
+                    for (gx in 0 until cols) {
+                        val px = gx * step; val u = (px - halfW) * invDim2; val nx = u * effScl
+                        val cfx = px * invCS; val cx0 = cfx.toInt(); val fx = cfx - cx0; val ci = cro + cx0
+                        val a1 = coarse1[ci]; val b1 = coarse1[ci + 1]
+                        val c1 = coarse1[ci + cCols]; val d1 = coarse1[ci + cCols + 1]
+                        val nWarp = a1 + (b1 - a1) * fx + (c1 - a1) * fy + (a1 - b1 - c1 + d1) * fx * fy
+                        val a2 = coarse2[ci]; val b2 = coarse2[ci + 1]
+                        val c2 = coarse2[ci + cCols]; val d2 = coarse2[ci + cCols + 1]
+                        val nWarp2 = a2 + (b2 - a2) * fx + (c2 - a2) * fy + (a2 - b2 - c2 + d2) * fx * fy
+                        val phaseV = v * waveFreq + waveTx + nWarp * 1.5f
+                        val phaseU = u * waveFreq07 + waveTy + nWarp2 * 1.5f
+                        val waveX = sin(phaseV) * effStr * (1f + nWarp * dist)
+                        val waveY = sin(phaseU) * effStr * 0.6f * (1f + nWarp * dist)
+                        var wu = u + waveX; var wv = v + waveY
+                        if (doDist) {
+                            wu += vn.noise(nx * distNScl + 50f, ny * distNScl) * warpAmt
+                            wv += vn.noise(nx * distNScl, ny * distNScl + 50f) * warpAmt
+                        }
+                        val hBand = floor(phaseV).toInt()
+                        val vBand = floor(phaseU).toInt()
+                        val bandCombined = ((hBand + vBand) % nC + nC) % nC
+                        val colorVal = (bandCombined / nCm1f).coerceIn(0f, 1f)
+                        smallPixels[gy * cols + gx] = emitColor(colorVal, wu, wv, doCa, caScale, colorScl, vn, rampR, rampG, rampB)
                     }
                 }
             }
         }
 
-        bitmap.setPixels(pixels, 0, w, 0, 0, w, h)
+        // Bilinear upscale if step > 1
+        if (step > 1) {
+            val smallBmp = Bitmap.createBitmap(cols, rows, Bitmap.Config.ARGB_8888)
+            smallBmp.setPixels(smallPixels, 0, cols, 0, 0, cols, rows)
+            val scaled = Bitmap.createScaledBitmap(smallBmp, w, h, true)
+            val pixels = IntArray(w * h)
+            scaled.getPixels(pixels, 0, w, 0, 0, w, h)
+            bitmap.setPixels(pixels, 0, w, 0, 0, w, h)
+            smallBmp.recycle(); scaled.recycle()
+        } else {
+            bitmap.setPixels(smallPixels, 0, w, 0, 0, w, h)
+        }
         canvas.drawBitmap(bitmap, 0f, 0f, null)
+    }
+
+    private fun emitColor(
+        colorVal: Float, wu: Float, wv: Float,
+        doCa: Boolean, caScale: Float, colorScl: Float,
+        vn: ValueNoise, rampR: IntArray, rampG: IntArray, rampB: IntArray
+    ): Int {
+        val rr: Int; val gg: Int; val bb: Int
+        if (doCa) {
+            val shift = vn.noise(wu * colorScl + 7.7f, wv * colorScl + 3.3f) * caScale
+            rr = rampR[((colorVal + shift).coerceIn(0f, 1f) * 255f).toInt()]
+            gg = rampG[(colorVal * 255f).toInt()]
+            bb = rampB[((colorVal - shift).coerceIn(0f, 1f) * 255f).toInt()]
+        } else {
+            val idx = (colorVal * 255f).toInt()
+            rr = rampR[idx]; gg = rampG[idx]; bb = rampB[idx]
+        }
+        return Color.rgb(rr, gg, bb)
     }
 
     override fun estimateCost(params: Map<String, Any>, quality: Quality): Float {
         val oct = (params["octaves"] as? Number)?.toInt() ?: 3
-        val ca = (params["chromaticShift"] as? Number)?.toFloat() ?: 0.1f
-        val caMult = if (ca > 0.01f) 1.1f else 1f
-        return (oct * 0.15f * caMult + 0.2f).coerceIn(0.3f, 1f)
+        val mode = (params["mode"] as? String) ?: "flow"
+        val modeMult = if (mode == "radial") 1.2f else 1f
+        return (oct * 0.1f * modeMult + 0.15f).coerceIn(0.2f, 0.8f)
     }
 }
