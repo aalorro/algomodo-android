@@ -211,16 +211,11 @@ class SuperformulaGenerator : Generator {
         return if (sum == 0.0) 0f else sum.pow(-1.0 / n1.toDouble()).toFloat()
     }
 
-    @Volatile private var pxBuf: FloatArray? = null
-    @Volatile private var pyBuf: FloatArray? = null
-    @Volatile private var pzBuf: FloatArray? = null
-
-    private fun ensureBuffers(n: Int) {
-        if (pxBuf == null || pxBuf!!.size < n) {
-            pxBuf = FloatArray(n)
-            pyBuf = FloatArray(n)
-            pzBuf = FloatArray(n)
-        }
+    private class ProjectionBuffers(size: Int) {
+        val px = FloatArray(size)
+        val py = FloatArray(size)
+        val pz = FloatArray(size)
+        val visible = BooleanArray(size) // false = behind camera, skip
     }
 
     private fun generatePoints(
@@ -357,13 +352,18 @@ class SuperformulaGenerator : Generator {
                     if (rawPoints.isEmpty()) continue
 
                     val n = rawPoints.size
-                    ensureBuffers(n)
-                    val px = pxBuf!!
-                    val py = pyBuf!!
-                    val pz = pzBuf!!
+                    // Thread-safe: use local buffers instead of shared instance arrays
+                    val buf = ProjectionBuffers(n)
+                    val px = buf.px
+                    val py = buf.py
+                    val pz = buf.pz
+                    val vis = buf.visible
 
                     // Layer Z offset — center layers around Z=0
                     val layerZ = depthSpread * (ring.toFloat() - (layerCount - 1) * 0.5f) * 2f
+
+                    // Near-plane threshold: clamp points approaching the camera
+                    val nearPlane = focalLen * 0.05f  // 5% of focal length
 
                     for (i in 0 until n) {
                         var sx = rawPoints[i].first
@@ -393,18 +393,38 @@ class SuperformulaGenerator : Generator {
                         val x3 = sx * cosSpin + z3 * sinSpin
                         val zf = -sx * sinSpin + z3 * cosSpin
 
-                        // Perspective projection
-                        val ps = focalLen / (focalLen + zf)
+                        // Near-plane clipping: skip points behind or very near camera
+                        val denom = focalLen + zf
+                        if (denom < nearPlane) {
+                            vis[i] = false
+                            px[i] = 0f
+                            py[i] = 0f
+                            pz[i] = zf
+                            continue
+                        }
+
+                        vis[i] = true
+                        val ps = focalLen / denom
                         px[i] = cx + x3 * ps
                         py[i] = cy + y3 * ps
                         pz[i] = zf
                     }
 
-                    // Build path from projected points
+                    // Build path from projected points, breaking at clipped points
                     path.reset()
-                    path.moveTo(px[0], py[0])
-                    for (i in 1 until n) path.lineTo(px[i], py[i])
-                    path.close()
+                    var inPath = false
+                    for (i in 0 until n) {
+                        if (!vis[i]) {
+                            inPath = false
+                            continue
+                        }
+                        if (!inPath) {
+                            path.moveTo(px[i], py[i])
+                            inPath = true
+                        } else {
+                            path.lineTo(px[i], py[i])
+                        }
+                    }
 
                     // Fill
                     if (fill) {
@@ -430,10 +450,14 @@ class SuperformulaGenerator : Generator {
                                        else min(n - 1, (s + 1) * segLen)
                             if (iStart >= n) break
 
-                            // Average Z for depth factor
+                            // Average Z for depth factor (only visible points)
                             var avgZ = 0f
-                            for (i in iStart..iEnd) avgZ += pz[i]
-                            avgZ /= (iEnd - iStart + 1)
+                            var visCount = 0
+                            for (i in iStart..iEnd) {
+                                if (vis[i]) { avgZ += pz[i]; visCount++ }
+                            }
+                            if (visCount == 0) continue
+                            avgZ /= visCount
 
                             val df = (1f - depthGlow * (avgZ / focalLen) * 3f).coerceIn(0.15f, 1.8f)
 
@@ -453,13 +477,22 @@ class SuperformulaGenerator : Generator {
                             paint.alpha = 255
                             paint.strokeWidth = strokeWidth * df
 
+                            // Build segment, skipping clipped points
                             val seg = Path()
-                            seg.moveTo(px[iStart], py[iStart])
-                            for (i in iStart + 1..iEnd) seg.lineTo(px[i], py[i])
-                            canvas.drawPath(seg, paint)
+                            var segStarted = false
+                            for (i in iStart..iEnd) {
+                                if (!vis[i]) { segStarted = false; continue }
+                                if (!segStarted) {
+                                    seg.moveTo(px[i], py[i])
+                                    segStarted = true
+                                } else {
+                                    seg.lineTo(px[i], py[i])
+                                }
+                            }
+                            if (segStarted) canvas.drawPath(seg, paint)
                         }
                     } else {
-                        // 3D without depth glow — draw whole path
+                        // 3D without depth glow — draw with visibility-aware paths
                         paint.strokeWidth = strokeWidth
                         when (colorMode) {
                             "gradient" -> {
@@ -470,9 +503,17 @@ class SuperformulaGenerator : Generator {
                                     paint.color = palette.lerpColor(ct)
                                     paint.alpha = 255
                                     val seg = Path()
-                                    seg.moveTo(px[i], py[i])
-                                    for (j in i + 1 until end) seg.lineTo(px[j], py[j])
-                                    canvas.drawPath(seg, paint)
+                                    var segStarted = false
+                                    for (j in i until end) {
+                                        if (!vis[j]) { segStarted = false; continue }
+                                        if (!segStarted) {
+                                            seg.moveTo(px[j], py[j])
+                                            segStarted = true
+                                        } else {
+                                            seg.lineTo(px[j], py[j])
+                                        }
+                                    }
+                                    if (segStarted) canvas.drawPath(seg, paint)
                                 }
                             }
                             "radial" -> {

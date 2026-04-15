@@ -14,8 +14,11 @@ import com.artmondo.algomodo.generators.Generator
 import com.artmondo.algomodo.generators.Quality
 import java.io.*
 import java.util.Arrays
+import java.util.concurrent.atomic.AtomicBoolean
 
 object GifExporter {
+
+    class ExportCancelledException : Exception("Export cancelled")
 
     fun export(
         context: Context,
@@ -31,7 +34,8 @@ object GifExporter {
         boomerang: Boolean,
         endless: Boolean,
         fileName: String,
-        onProgress: (Float) -> Unit = {}
+        onProgress: (Float) -> Unit = {},
+        cancelled: AtomicBoolean = AtomicBoolean(false)
     ): Uri? {
         val totalFrames = durationSeconds * fps
         val frameDelay = 1000 / fps
@@ -55,37 +59,44 @@ object GifExporter {
         val totalOutputFrames = if (doBoomerang)
             totalFrames + (totalFrames - 2) else totalFrames
 
-        // Render and encode forward frames
-        for (i in 0 until totalFrames) {
-            val time = i.toFloat() / fps
-            canvas.drawColor(android.graphics.Color.BLACK)
-            generator.renderCanvas(canvas, bitmap, params, seed, palette, quality, time)
-            bitmap.getPixels(reusablePixels, 0, bmpWidth, 0, 0, bmpWidth, bmpHeight)
-
-            encoder.addFrame(bitmap, reusablePixels)
-            onProgress(i.toFloat() / totalOutputFrames * 0.9f)
-        }
-
-        // Re-render frames in reverse for boomerang (avoids storing all frames in RAM)
-        if (doBoomerang) {
-            for (i in (totalFrames - 2) downTo 1) {
+        try {
+            // Render and encode forward frames
+            for (i in 0 until totalFrames) {
+                if (cancelled.get()) throw ExportCancelledException()
                 val time = i.toFloat() / fps
                 canvas.drawColor(android.graphics.Color.BLACK)
                 generator.renderCanvas(canvas, bitmap, params, seed, palette, quality, time)
                 bitmap.getPixels(reusablePixels, 0, bmpWidth, 0, 0, bmpWidth, bmpHeight)
 
                 encoder.addFrame(bitmap, reusablePixels)
-                val progress = (totalFrames + (totalFrames - 2 - i)).toFloat()
-                onProgress(progress / totalOutputFrames * 0.9f)
+                onProgress(i.toFloat() / totalOutputFrames * 0.9f)
             }
+
+            // Re-render frames in reverse for boomerang (avoids storing all frames in RAM)
+            if (doBoomerang) {
+                for (i in (totalFrames - 2) downTo 1) {
+                    if (cancelled.get()) throw ExportCancelledException()
+                    val time = i.toFloat() / fps
+                    canvas.drawColor(android.graphics.Color.BLACK)
+                    generator.renderCanvas(canvas, bitmap, params, seed, palette, quality, time)
+                    bitmap.getPixels(reusablePixels, 0, bmpWidth, 0, 0, bmpWidth, bmpHeight)
+
+                    encoder.addFrame(bitmap, reusablePixels)
+                    val progress = (totalFrames + (totalFrames - 2 - i)).toFloat()
+                    onProgress(progress / totalOutputFrames * 0.9f)
+                }
+            }
+
+            encoder.finish()
+            bitmap.recycle()
+
+            onProgress(0.95f)
+            val data = baos.toByteArray()
+            return saveGif(context, data, fileName)
+        } catch (e: ExportCancelledException) {
+            bitmap.recycle()
+            throw e
         }
-
-        encoder.finish()
-        bitmap.recycle()
-
-        onProgress(0.95f)
-        val data = baos.toByteArray()
-        return saveGif(context, data, fileName)
     }
 
     private fun saveGif(context: Context, data: ByteArray, fileName: String): Uri? {

@@ -754,6 +754,7 @@ fun MainScreen(
                             val gen = state.generator ?: return@ExportPanel
                             exportViewModel.exportVideo(context, gen, renderParams, state.seed, state.palette, state.quality, state.animationFps, aspectRatio = state.aspectRatio, audioUri = state.audioUri)
                         },
+                        onCancelExport = { exportViewModel.cancelExport() },
                         onExportRecipe = { fileName ->
                             val json = viewModel.exportRecipeJson()
                             shareText(context, json, fileName)

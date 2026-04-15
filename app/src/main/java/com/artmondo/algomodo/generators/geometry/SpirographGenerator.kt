@@ -245,18 +245,32 @@ class SpirographGenerator : Generator {
                 )
             }
 
-            // Apply 3D perspective projection
-            val points = if (use3d) {
-                rawPoints.map { (sx, sy) ->
+            // Apply 3D perspective projection with near-plane clipping
+            val nearPlane = focalLen * 0.05f
+            data class ProjectedPoint(val x: Float, val y: Float, val visible: Boolean)
+
+            val points: List<Pair<Float, Float>>
+            val visibility: List<Boolean>
+
+            if (use3d) {
+                val projected = rawPoints.map { (sx, sy) ->
                     val y3 = sy * cosTilt
                     val z3 = sy * sinTilt
                     val x3 = sx * cosSpin + z3 * sinSpin
                     val zf = -sx * sinSpin + z3 * cosSpin
-                    val ps = focalLen / (focalLen + zf)
-                    (cx + x3 * ps) to (cy + y3 * ps)
+                    val denom = focalLen + zf
+                    if (denom < nearPlane) {
+                        ProjectedPoint(0f, 0f, false)
+                    } else {
+                        val ps = focalLen / denom
+                        ProjectedPoint(cx + x3 * ps, cy + y3 * ps, true)
+                    }
                 }
+                points = projected.map { it.x to it.y }
+                visibility = projected.map { it.visible }
             } else {
-                rawPoints
+                points = rawPoints
+                visibility = List(rawPoints.size) { true }
             }
 
             when (colorMode) {
@@ -266,9 +280,15 @@ class SpirographGenerator : Generator {
                     paint.alpha = if (layers > 1) (200 + 55 / layers).coerceAtMost(255) else 255
 
                     val path = Path()
-                    path.moveTo(points[0].first, points[0].second)
-                    for (j in 1 until points.size) {
-                        path.lineTo(points[j].first, points[j].second)
+                    var inPath = false
+                    for (j in points.indices) {
+                        if (!visibility[j]) { inPath = false; continue }
+                        if (!inPath) {
+                            path.moveTo(points[j].first, points[j].second)
+                            inPath = true
+                        } else {
+                            path.lineTo(points[j].first, points[j].second)
+                        }
                     }
                     canvas.drawPath(path, paint)
                 }
@@ -282,11 +302,17 @@ class SpirographGenerator : Generator {
                         paint.alpha = if (layers > 1) (200 + 55 / layers).coerceAtMost(255) else 255
 
                         val path = Path()
-                        path.moveTo(points[i].first, points[i].second)
-                        for (j in i + 1 until end) {
-                            path.lineTo(points[j].first, points[j].second)
+                        var segStarted = false
+                        for (j in i until end) {
+                            if (!visibility[j]) { segStarted = false; continue }
+                            if (!segStarted) {
+                                path.moveTo(points[j].first, points[j].second)
+                                segStarted = true
+                            } else {
+                                path.lineTo(points[j].first, points[j].second)
+                            }
                         }
-                        canvas.drawPath(path, paint)
+                        if (segStarted) canvas.drawPath(path, paint)
                     }
                 }
             }

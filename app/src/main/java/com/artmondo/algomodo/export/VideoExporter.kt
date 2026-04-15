@@ -21,8 +21,11 @@ import com.artmondo.algomodo.generators.Quality
 import java.io.File
 import java.nio.ByteBuffer
 import java.nio.ByteOrder
+import java.util.concurrent.atomic.AtomicBoolean
 
 object VideoExporter {
+
+    class ExportCancelledException : Exception("Export cancelled")
 
     fun export(
         context: Context,
@@ -39,7 +42,8 @@ object VideoExporter {
         audioUri: Uri? = null,
         audioStartSec: Float = 0f,
         fileName: String,
-        onProgress: (Float) -> Unit = {}
+        onProgress: (Float) -> Unit = {},
+        cancelled: AtomicBoolean = AtomicBoolean(false)
     ): Uri? {
         val videoTempFile = File(context.cacheDir, "$fileName.mp4")
 
@@ -92,7 +96,10 @@ object VideoExporter {
             val bitmapCanvas = Canvas(bitmap)
             val glRenderer = GlBitmapRenderer(width, height)
 
+            var encodeCancelled = false
             for (frameIdx in 0 until totalFrames) {
+                if (cancelled.get()) { encodeCancelled = true; break }
+
                 val time = timeOffsetSec + frameIdx.toFloat() / fps
 
                 bitmapCanvas.drawColor(android.graphics.Color.BLACK)
@@ -112,8 +119,10 @@ object VideoExporter {
                 onProgress(frameIdx.toFloat() / totalFrames)
             }
 
-            codec.signalEndOfInputStream()
-            drainEncoder(codec, muxer, bufferInfo, trackIndex, muxerStarted, drain = true)
+            if (!encodeCancelled) {
+                codec.signalEndOfInputStream()
+                drainEncoder(codec, muxer, bufferInfo, trackIndex, muxerStarted, drain = true)
+            }
 
             glRenderer.release()
             bitmap.recycle()
@@ -123,6 +132,12 @@ object VideoExporter {
             inputSurface.release()
             if (muxerStarted) muxer.stop()
             muxer.release()
+
+            if (encodeCancelled) {
+                videoTempFile.delete()
+                audioTempFile?.delete()
+                throw ExportCancelledException()
+            }
 
             // ── Pass 2: Mux audio if available ──
             val finalFile = if (audioTempFile != null && audioTempFile.exists()) {
