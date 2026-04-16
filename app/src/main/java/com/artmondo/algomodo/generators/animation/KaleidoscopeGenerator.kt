@@ -99,6 +99,7 @@ class KaleidoscopeGenerator : Generator {
      */
     private data class ScreenMapping(
         val w: Int, val h: Int, val radSteps: Int, val angSteps: Int,
+        val symmetry: String,
         val ri0: ShortArray, val ai0: ShortArray,
         val fr: ByteArray, val fa: ByteArray,
         val outOfBounds: BooleanArray
@@ -120,11 +121,12 @@ class KaleidoscopeGenerator : Generator {
     }
 
     private fun getOrBuildMapping(
-        w: Int, h: Int, radSteps: Int, angSteps: Int
+        w: Int, h: Int, radSteps: Int, angSteps: Int, symmetry: String
     ): ScreenMapping {
         val cached = cachedMapping
         if (cached != null && cached.w == w && cached.h == h &&
-            cached.radSteps == radSteps && cached.angSteps == angSteps) {
+            cached.radSteps == radSteps && cached.angSteps == angSteps &&
+            cached.symmetry == symmetry) {
             return cached
         }
 
@@ -145,19 +147,46 @@ class KaleidoscopeGenerator : Generator {
         val radLimit = radSteps - 1
         val piF = PI.toFloat()
 
+        // Cartesian symmetry folds the screen-space offset into a canonical region
+        // before computing polar coordinates. The radial segmentation then replicates
+        // the folded pattern across the mirror axes transparently.
+        val symMode = when (symmetry) {
+            "2-way" -> 1
+            "4-way" -> 2
+            "8-way" -> 3
+            else -> 0
+        }
+
         val latch = CountDownLatch(THREAD_COUNT)
         for (t in 0 until THREAD_COUNT) {
             executor.execute {
                 val pyStart = t * h / THREAD_COUNT
                 val pyEnd = (t + 1) * h / THREAD_COUNT
                 for (py in pyStart until pyEnd) {
-                    val rawDy = (py - cy) * invDim2
-                    val rawDy2 = rawDy * rawDy
                     val rowOff = py * w
                     for (px in 0 until w) {
                         val idx = rowOff + px
-                        val rawDx = (px - cx) * invDim2
-                        val rf = sqrt(rawDx * rawDx + rawDy2) * rScale
+                        var rawDx = (px - cx) * invDim2
+                        var rawDy = (py - cy) * invDim2
+
+                        when (symMode) {
+                            1 -> { // 2-way: horizontal mirror
+                                rawDx = abs(rawDx)
+                            }
+                            2 -> { // 4-way: horizontal + vertical mirrors
+                                rawDx = abs(rawDx)
+                                rawDy = abs(rawDy)
+                            }
+                            3 -> { // 8-way: horizontal + vertical + diagonal
+                                var ax = abs(rawDx)
+                                var ay = abs(rawDy)
+                                if (ay > ax) { val tmp = ax; ax = ay; ay = tmp }
+                                rawDx = ax
+                                rawDy = ay
+                            }
+                        }
+
+                        val rf = sqrt(rawDx * rawDx + rawDy * rawDy) * rScale
                         val ri = rf.toInt()
                         if (ri >= radLimit) {
                             outOfBounds[idx] = true
@@ -177,7 +206,7 @@ class KaleidoscopeGenerator : Generator {
         }
         latch.await()
 
-        val mapping = ScreenMapping(w, h, radSteps, angSteps, ri0, ai0, fr, fa, outOfBounds)
+        val mapping = ScreenMapping(w, h, radSteps, angSteps, symmetry, ri0, ai0, fr, fa, outOfBounds)
         cachedMapping = mapping
         return mapping
     }
@@ -189,6 +218,14 @@ class KaleidoscopeGenerator : Generator {
             group = ParamGroup.COMPOSITION,
             help = "Number of mirror segments — must be ≥ 3",
             min = 3f, max = 24f, step = 1f, default = 8f
+        ),
+        Parameter.SelectParam(
+            name = "Symmetry",
+            key = "symmetry",
+            group = ParamGroup.COMPOSITION,
+            help = "Additional cartesian mirror symmetry overlaid on the radial segments — none · 2-way (horizontal) · 4-way (quadrants) · 8-way (octants)",
+            options = listOf("none", "2-way", "4-way", "8-way"),
+            default = "none"
         ),
         Parameter.SelectParam(
             name = "Pattern",
@@ -252,6 +289,7 @@ class KaleidoscopeGenerator : Generator {
 
     override fun getDefaultParams(): Map<String, Any> = mapOf(
         "segments" to 8f,
+        "symmetry" to "none",
         "pattern" to "geometric",
         "speed" to 1f,
         "scale" to 2f,
@@ -275,6 +313,7 @@ class KaleidoscopeGenerator : Generator {
         val h = bitmap.height
 
         val segments = (params["segments"] as? Number)?.toInt() ?: 8
+        val symmetry = (params["symmetry"] as? String) ?: "none"
         val patternName = (params["pattern"] as? String) ?: "geometric"
         val pat = patternId(patternName)
         val complexity = (params["complexity"] as? Number)?.toInt() ?: 3
@@ -718,7 +757,7 @@ class KaleidoscopeGenerator : Generator {
         }
 
         // --- Screen fill using cached mapping ---
-        val mapping = getOrBuildMapping(w, h, radSteps, angSteps)
+        val mapping = getOrBuildMapping(w, h, radSteps, angSteps, symmetry)
         val pixels = IntArray(w * h)
 
         val mRi0 = mapping.ri0

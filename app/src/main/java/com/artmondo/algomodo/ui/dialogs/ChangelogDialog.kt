@@ -18,6 +18,19 @@ fun ChangelogDialog(onDismiss: () -> Unit) {
         text = {
             Text(
                 text = """
+v1.8.2 (Android)
+New Features:
+- Favorites: star any generator to add it to the yellow Favorites tab, pinned before Animation. Persists across sessions.
+- Kaleidoscope: new Symmetry parameter (none, 2-way, 4-way, 8-way) overlays cartesian mirror axes on the radial segments for new geometric effects.
+
+Improvements:
+- Kaleidoscope: major optimization for iridescent color mode (~segments× speedup) via decoupled pattern/color passes, integer pattern dispatch, cached SimplexNoise, precomputed per-harmonic constants, and angle LUTs
+- Flux generators (Perlin Flow, Trail System, Pixel Sort Feedback): dimension-keyed state caching eliminates recycled-bitmap crashes when bitmap size changes between preview and export
+- Help dialog: new "Favorites vs Presets" section explaining the difference
+
+Bug Fixes:
+- Spirograph & Superformula: fixed 3D perspective artifacts in export via near-plane clipping
+
 v1.8.1 (Android)
 Improvements:
 - Kaleidoscope: new pattern modes (marble, fractal, geometric), detail/sharpness params, multi-threaded rendering
