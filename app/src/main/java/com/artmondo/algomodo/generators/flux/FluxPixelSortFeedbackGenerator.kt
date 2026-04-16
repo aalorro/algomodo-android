@@ -125,22 +125,34 @@ class FluxPixelSortFeedbackGenerator : Generator {
         var frameCount: Int
     )
 
-    @Volatile private var state: SortState? = null
+    // Dimension-keyed state cache — concurrent preview + export renders at different
+    // sizes can coexist with separate states instead of racing on a single shared state.
+    // Evicted entries are not eagerly recycled — letting GC reclaim the bitmaps
+    // avoids "recycled bitmap" crashes when a thread still holds a reference.
+    private val stateLock = Any()
+    private val stateCache = object : LinkedHashMap<String, SortState>(4, 0.75f, true) {
+        override fun removeEldestEntry(eldest: MutableMap.MutableEntry<String, SortState>?): Boolean =
+            size > MAX_STATE_ENTRIES
+    }
 
-    // Pre-allocated sort working arrays
-    private var origPixels = IntArray(2048)
-    private var origBri = IntArray(2048)
-    private var sortedPixels = IntArray(2048)
-    private val counts = IntArray(256)
+    // Thread-local sort working buffers — since origPixels/origBri/sortedPixels/counts are
+    // mutated during countingSortSpan and must not race between preview+export threads,
+    // they're allocated per-render and passed as parameters.
+    private class SortBuffers(initialSize: Int = 2048) {
+        var origPixels = IntArray(initialSize)
+        var origBri = IntArray(initialSize)
+        var sortedPixels = IntArray(initialSize)
+        val counts = IntArray(256)
 
-    // Pre-allocated brightness array
-    @Volatile private var brightnessArr: IntArray? = null
-
-    // Row shift buffer
-    @Volatile private var rowShiftArr: IntArray? = null
-
-    // Row pixel copy buffer
-    @Volatile private var rowBuf: IntArray? = null
+        fun ensure(len: Int) {
+            if (len > origPixels.size) {
+                val sz = max(len, 2048)
+                origPixels = IntArray(sz)
+                origBri = IntArray(sz)
+                sortedPixels = IntArray(sz)
+            }
+        }
+    }
 
     override fun renderCanvas(
         canvas: Canvas,
@@ -188,12 +200,9 @@ class FluxPixelSortFeedbackGenerator : Generator {
         val h = (fullH * scale).roundToInt().coerceAtLeast(1)
 
         // ── State setup ───────────────────────────────────────────────────
-        var st = state
-        if (st == null || st.seed != seed || st.w != w || st.h != h || st.basePattern != basePattern) {
-            // Recycle old bitmaps
-            st?.workBitmap?.recycle()
-            st?.baseBitmap?.recycle()
-
+        val stateKey = "$seed:$w:$h:$basePattern"
+        var st: SortState? = synchronized(stateLock) { stateCache[stateKey] }
+        if (st == null) {
             val baseBmp = Bitmap.createBitmap(w, h, Bitmap.Config.ARGB_8888)
             generateBasePattern(baseBmp, w, h, seed, palette, basePattern)
 
@@ -211,7 +220,7 @@ class FluxPixelSortFeedbackGenerator : Generator {
                 baseBitmap = baseBmp,
                 frameCount = 0
             )
-            state = st
+            synchronized(stateLock) { stateCache[stateKey] = st }
         }
 
         val totalPixels = w * h
@@ -221,11 +230,10 @@ class FluxPixelSortFeedbackGenerator : Generator {
         st.workBitmap.getPixels(pixels, 0, w, 0, 0, w, h)
 
         // ── Compute brightness for all pixels ─────────────────────────────
-        var brightness = brightnessArr
-        if (brightness == null || brightness.size < totalPixels) {
-            brightness = IntArray(totalPixels)
-            brightnessArr = brightness
-        }
+        // Local buffers — previously class-level @Volatile IntArrays; made local for
+        // thread safety (preview + export threads can run concurrently).
+        val sortBuffers = SortBuffers()
+        val brightness = IntArray(totalPixels)
         for (i in 0 until totalPixels) {
             val px = pixels[i]
             val r = (px shr 16) and 0xFF
@@ -252,7 +260,7 @@ class FluxPixelSortFeedbackGenerator : Generator {
                     val threshBri = (rowThreshold * 255f).toInt().coerceIn(0, 255)
                     val bandIdx = (y.toFloat() / (h * 0.1f)).toInt()
                     val reverse = (bandIdx and 1) == 1
-                    countingSortSpan(pixels, brightness, y * w, w, 1, threshBri, sortStrength, reverse)
+                    countingSortSpan(sortBuffers, pixels, brightness, y * w, w, 1, threshBri, sortStrength, reverse)
                 }
             }
             "vertical" -> {
@@ -263,7 +271,7 @@ class FluxPixelSortFeedbackGenerator : Generator {
                     val threshBri = (colThreshold * 255f).toInt().coerceIn(0, 255)
                     val bandIdx = (x.toFloat() / (w * 0.1f)).toInt()
                     val reverse = (bandIdx and 1) == 1
-                    countingSortSpan(pixels, brightness, x, h, w, threshBri, sortStrength, reverse)
+                    countingSortSpan(sortBuffers, pixels, brightness, x, h, w, threshBri, sortStrength, reverse)
                 }
             }
             else -> { // diagonal
@@ -271,12 +279,12 @@ class FluxPixelSortFeedbackGenerator : Generator {
                 for (sx in 0 until w) {
                     if (frameRng.random() > 0.7f) continue
                     val reverse = (sx and 15) > 7
-                    countingSortSpan(pixels, brightness, sx, min(w - sx, h), w + 1, threshBri, sortStrength, reverse)
+                    countingSortSpan(sortBuffers, pixels, brightness, sx, min(w - sx, h), w + 1, threshBri, sortStrength, reverse)
                 }
                 for (sy in 1 until h) {
                     if (frameRng.random() > 0.7f) continue
                     val reverse = (sy and 15) > 7
-                    countingSortSpan(pixels, brightness, sy * w, min(w, h - sy), w + 1, threshBri, sortStrength, reverse)
+                    countingSortSpan(sortBuffers, pixels, brightness, sy * w, min(w, h - sy), w + 1, threshBri, sortStrength, reverse)
                 }
             }
         }
@@ -285,11 +293,7 @@ class FluxPixelSortFeedbackGenerator : Generator {
         if (glitch > 0.01f && sortDirection == "horizontal") {
             val maxShift = (w * glitch * 0.15f).toInt()
             if (maxShift > 0) {
-                var rowShift = rowShiftArr
-                if (rowShift == null || rowShift.size < h) {
-                    rowShift = IntArray(h)
-                    rowShiftArr = rowShift
-                }
+                val rowShift = IntArray(h)
                 val noiseScale = 4.0f / h
 
                 for (y in 0 until h) {
@@ -300,11 +304,7 @@ class FluxPixelSortFeedbackGenerator : Generator {
                     rowShift[y] = if (inSortZone) (n * maxShift).roundToInt() else 0
                 }
 
-                var rb = rowBuf
-                if (rb == null || rb.size < w) {
-                    rb = IntArray(w)
-                    rowBuf = rb
-                }
+                val rb = IntArray(w)
 
                 for (y in 0 until h) {
                     val shift = rowShift[y]
@@ -422,6 +422,7 @@ class FluxPixelSortFeedbackGenerator : Generator {
     // ── Counting sort with reverse option ─────────────────────────────────
 
     private fun countingSortSpan(
+        buffers: SortBuffers,
         pixels: IntArray,
         brightness: IntArray,
         startIdx: Int,
@@ -444,7 +445,11 @@ class FluxPixelSortFeedbackGenerator : Generator {
             } else if (spanStart >= 0) {
                 val spanLen = i - spanStart
                 if (spanLen >= 2) {
-                    ensureSpanBuffers(spanLen)
+                    buffers.ensure(spanLen)
+                    val origPixels = buffers.origPixels
+                    val origBri = buffers.origBri
+                    val sortedPixels = buffers.sortedPixels
+                    val counts = buffers.counts
 
                     for (j in 0 until spanLen) {
                         val pIdx = startIdx + (spanStart + j) * stride
@@ -504,15 +509,6 @@ class FluxPixelSortFeedbackGenerator : Generator {
                 }
                 spanStart = -1
             }
-        }
-    }
-
-    private fun ensureSpanBuffers(len: Int) {
-        if (len > origPixels.size) {
-            val sz = max(len, 2048)
-            origPixels = IntArray(sz)
-            origBri = IntArray(sz)
-            sortedPixels = IntArray(sz)
         }
     }
 
@@ -664,5 +660,9 @@ class FluxPixelSortFeedbackGenerator : Generator {
             Quality.BALANCED -> base * 0.7f / 1000f
             Quality.ULTRA -> base / 1000f
         }.coerceIn(0.1f, 0.8f)
+    }
+
+    companion object {
+        private const val MAX_STATE_ENTRIES = 3
     }
 }
