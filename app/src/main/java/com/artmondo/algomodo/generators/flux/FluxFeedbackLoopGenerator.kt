@@ -151,19 +151,15 @@ class FluxFeedbackLoopGenerator : Generator {
         var initialized: Boolean       // warmup done?
     )
 
-    @Volatile private var state: FeedbackState? = null
-
-    // Reusable paints
-    private val feedbackPaint = Paint(Paint.FILTER_BITMAP_FLAG)
-    private val decayPaint = Paint()
-    private val shapePaint = Paint(Paint.ANTI_ALIAS_FLAG)
-    private val linePaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
-        style = Paint.Style.STROKE
-        strokeCap = Paint.Cap.ROUND
+    // Thread-safe dimension-keyed cache: preview (live canvas) and export threads
+    // can coexist with separate states instead of racing on a single shared state.
+    // Evicted entries are not eagerly recycled — letting GC reclaim the bitmaps
+    // avoids "recycled bitmap" crashes when a thread still holds a reference.
+    private val stateLock = Any()
+    private val stateCache = object : LinkedHashMap<String, FeedbackState>(4, 0.75f, true) {
+        override fun removeEldestEntry(eldest: MutableMap.MutableEntry<String, FeedbackState>?): Boolean =
+            size > MAX_STATE_ENTRIES
     }
-    private val bloomPaint = Paint(Paint.FILTER_BITMAP_FLAG)
-    private val matrix = Matrix()
-    private val shapePath = Path()
 
     override fun renderCanvas(
         canvas: Canvas,
@@ -179,6 +175,19 @@ class FluxFeedbackLoopGenerator : Generator {
         val cx = w * 0.5f
         val cy = h * 0.5f
         val minDim = min(w, h).toFloat()
+
+        // Thread-local paints/matrix/path — can't share instance-level ones
+        // because preview and export threads may run concurrently.
+        val feedbackPaint = Paint(Paint.FILTER_BITMAP_FLAG)
+        val decayPaint = Paint()
+        val shapePaint = Paint(Paint.ANTI_ALIAS_FLAG)
+        val linePaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+            style = Paint.Style.STROKE
+            strokeCap = Paint.Cap.ROUND
+        }
+        val bloomPaint = Paint(Paint.FILTER_BITMAP_FLAG)
+        val matrix = Matrix()
+        val shapePath = Path()
 
         // ── Parameters ──────────────────────────────────────────────────────
         val seedShape = (params["seedShape"] as? String) ?: "circle"
@@ -237,13 +246,10 @@ class FluxFeedbackLoopGenerator : Generator {
             }
         } else null
 
-        // ── Ensure buffers (state cache) ────────────────────────────────────
-        var st = state
-        if (st == null || st.seed != seed || st.w != w || st.h != h || st.emitterCount != emitterCount) {
-            // Recycle old bitmaps
-            st?.bufferA?.recycle()
-            st?.bufferB?.recycle()
-
+        // ── Ensure buffers (dimension-keyed state cache) ────────────────────
+        val stateKey = "$seed:$w:$h:$emitterCount"
+        var st: FeedbackState? = synchronized(stateLock) { stateCache[stateKey] }
+        if (st == null) {
             val rng = SeededRNG(seed)
             val freqA = FloatArray(emitterCount)
             val freqB = FloatArray(emitterCount)
@@ -267,7 +273,7 @@ class FluxFeedbackLoopGenerator : Generator {
                 emitterPhase = phase, emitterOrbitR = orbitR,
                 initialized = false
             )
-            state = st
+            synchronized(stateLock) { stateCache[stateKey] = st }
 
             // ── Draw initial burst on bufferA ───────────────────────────────
             val canA = Canvas(bufA)
@@ -340,7 +346,7 @@ class FluxFeedbackLoopGenerator : Generator {
                     )
                     val ci = e % nColors
                     val sz = baseSeedSize * (0.8f + 0.4f * sin(wt + e))
-                    drawSeed(canB, seedShape, sx, sy, sz, colorInts[ci], wt * 0.5f)
+                    drawSeed(canB, seedShape, sx, sy, sz, colorInts[ci], wt * 0.5f, shapePaint, shapePath)
                 }
 
                 // Copy B -> A for next warmup iteration
@@ -403,7 +409,7 @@ class FluxFeedbackLoopGenerator : Generator {
                 val ci = ((e + floor(iterT * 1.5f).toInt()) % nColors + nColors) % nColors
                 val rot = iterT * (0.5f + e * 0.3f)
 
-                drawSeed(dstCanvas, seedShape, sx, sy, sz, colorInts[ci], rot)
+                drawSeed(dstCanvas, seedShape, sx, sy, sz, colorInts[ci], rot, shapePaint, shapePath)
 
                 // Connecting line between consecutive emitters
                 if (e > 0) {
@@ -495,7 +501,8 @@ class FluxFeedbackLoopGenerator : Generator {
     private fun drawSeed(
         canvas: Canvas, shape: String,
         x: Float, y: Float, sz: Float,
-        color: Int, rotation: Float
+        color: Int, rotation: Float,
+        shapePaint: Paint, shapePath: Path
     ) {
         val cR = Color.red(color)
         val cG = Color.green(color)
@@ -510,16 +517,16 @@ class FluxFeedbackLoopGenerator : Generator {
         shapePaint.style = Paint.Style.FILL
         shapePaint.color = glowColor
         shapePaint.shader = null
-        drawShape(canvas, shape, 0f, 0f, sz * 1.6f)
+        drawShape(canvas, shape, 0f, 0f, sz * 1.6f, shapePaint, shapePath)
 
         // Core shape (full opacity)
         shapePaint.color = color
-        drawShape(canvas, shape, 0f, 0f, sz)
+        drawShape(canvas, shape, 0f, 0f, sz, shapePaint, shapePath)
 
         canvas.restore()
     }
 
-    private fun drawShape(canvas: Canvas, shape: String, x: Float, y: Float, sz: Float) {
+    private fun drawShape(canvas: Canvas, shape: String, x: Float, y: Float, sz: Float, shapePaint: Paint, shapePath: Path) {
         when (shape) {
             "circle" -> {
                 canvas.drawCircle(x, y, sz, shapePaint)
@@ -578,5 +585,8 @@ class FluxFeedbackLoopGenerator : Generator {
         private const val TAU = 2.0f * 3.1415926535897932f
         private const val DEG_TO_RAD = 3.1415926535897932f / 180f
         private const val RAD_TO_DEG = 180f / 3.1415926535897932f
+        // Max concurrent states. 2 is enough for preview + export at different dims.
+        // More than that and cache evicts least-recently-used entries.
+        private const val MAX_STATE_ENTRIES = 3
     }
 }

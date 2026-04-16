@@ -33,6 +33,9 @@ import java.security.SecureRandom
 import java.util.UUID
 import javax.inject.Inject
 
+/** Virtual family id for the favorites tab (not a real registered family). */
+const val FAVORITES_FAMILY_ID = "__favorites__"
+
 data class HistorySnapshot(
     val params: Map<String, Any>,
     val palette: Palette,
@@ -68,6 +71,7 @@ data class MainUiState(
     val interactionEnabled: Boolean = true,
     val snapshotTime: Float = 2.0f, // animation time captured on pause
     val customPalettes: List<Palette> = emptyList(),
+    val favoriteGeneratorIds: Set<String> = emptySet(),
     val renderTrigger: Int = 0, // increment to force re-render
     val activeTab: Int = 0 // 0=generators, 1=params, 2=export, 3=settings
 )
@@ -131,6 +135,11 @@ class MainViewModel @Inject constructor(
             launch {
                 prefs.customPalettes.collect { json ->
                     _state.update { s -> s.copy(customPalettes = CustomPaletteHelper.parse(json)) }
+                }
+            }
+            launch {
+                prefs.favoriteGenerators.collect { favorites ->
+                    _state.update { s -> s.copy(favoriteGeneratorIds = favorites) }
                 }
             }
         }
@@ -218,9 +227,12 @@ class MainViewModel @Inject constructor(
     fun selectGenerator(generator: Generator) {
         pushHistory()
         _state.update {
+            // Preserve the Favorites virtual family when user picks from it;
+            // otherwise switch to the generator's real family.
+            val newFamilyId = if (it.familyId == FAVORITES_FAMILY_ID) it.familyId else generator.family
             it.copy(
                 generator = generator,
-                familyId = generator.family,
+                familyId = newFamilyId,
                 params = generator.getDefaultParams(),
                 renderTrigger = it.renderTrigger + 1
             )
@@ -229,6 +241,13 @@ class MainViewModel @Inject constructor(
 
     fun selectFamily(familyId: String) {
         _state.update { it.copy(familyId = familyId) }
+    }
+
+    fun toggleFavoriteGenerator(generatorId: String) {
+        val current = _state.value.favoriteGeneratorIds
+        val updated = if (generatorId in current) current - generatorId else current + generatorId
+        _state.update { it.copy(favoriteGeneratorIds = updated) }
+        viewModelScope.launch { prefs.setFavoriteGenerators(updated) }
     }
 
     fun updateParam(key: String, value: Any) {

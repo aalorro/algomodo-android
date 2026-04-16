@@ -23,6 +23,7 @@ class AppPreferences(private val dataStore: DataStore<Preferences>) {
         val INTERACTION_ENABLED = booleanPreferencesKey("interactionEnabled")
         val ASPECT_RATIO = stringPreferencesKey("aspectRatio")
         val CUSTOM_PALETTES = stringPreferencesKey("customPalettes")
+        val FAVORITE_GENERATORS = stringSetPreferencesKey("favoriteGenerators")
     }
 
     val theme: Flow<String> = dataStore.data.map { it[THEME] ?: "dark" }
@@ -36,6 +37,7 @@ class AppPreferences(private val dataStore: DataStore<Preferences>) {
     val interactionEnabled: Flow<Boolean> = dataStore.data.map { it[INTERACTION_ENABLED] ?: true }
     val aspectRatio: Flow<String> = dataStore.data.map { it[ASPECT_RATIO] ?: "square" }
     val customPalettes: Flow<String> = dataStore.data.map { it[CUSTOM_PALETTES] ?: "[]" }
+    val favoriteGenerators: Flow<Set<String>> = dataStore.data.map { it[FAVORITE_GENERATORS] ?: emptySet() }
 
     suspend fun setTheme(value: String) { dataStore.edit { it[THEME] = value } }
     suspend fun setPerformanceMode(value: Boolean) { dataStore.edit { it[PERFORMANCE_MODE] = value } }
@@ -48,4 +50,5 @@ class AppPreferences(private val dataStore: DataStore<Preferences>) {
     suspend fun setInteractionEnabled(value: Boolean) { dataStore.edit { it[INTERACTION_ENABLED] = value } }
     suspend fun setAspectRatio(value: String) { dataStore.edit { it[ASPECT_RATIO] = value } }
     suspend fun setCustomPalettes(json: String) { dataStore.edit { it[CUSTOM_PALETTES] = json } }
+    suspend fun setFavoriteGenerators(value: Set<String>) { dataStore.edit { it[FAVORITE_GENERATORS] = value } }
 }

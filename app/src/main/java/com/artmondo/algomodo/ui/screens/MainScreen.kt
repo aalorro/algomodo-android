@@ -672,8 +672,10 @@ fun MainScreen(
                     0 -> GeneratorPicker(
                         selectedGeneratorId = state.generator?.id,
                         selectedFamilyId = state.familyId,
+                        favoriteGeneratorIds = state.favoriteGeneratorIds,
                         onSelectGenerator = { viewModel.selectGenerator(it) },
-                        onSelectFamily = { viewModel.selectFamily(it) }
+                        onSelectFamily = { viewModel.selectFamily(it) },
+                        onToggleFavorite = { viewModel.toggleFavoriteGenerator(it) }
                     )
                     1 -> {
                         ParameterControls(

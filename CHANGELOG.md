@@ -2,6 +2,20 @@
 
 All notable changes to Algomodo will be documented in this file.
 
+## [1.8.2] - Android
+
+### New Features
+- Favorites: star/bookmark any generator from the list. A yellow Favorites tab pinned before Animation shows all favorited generators across families. Persists across sessions.
+- Kaleidoscope: new Symmetry parameter (none, 2-way, 4-way, 8-way) overlays cartesian mirror axes on the radial segments, enabling new geometric compositions like quadrant or octant tilings.
+
+### Improvements
+- Kaleidoscope: major optimization for iridescent color mode — decoupled pattern computation from color application so iridescent no longer scales with segment count (~segments× speedup). Integer pattern dispatch, cached SimplexNoise per seed, precomputed per-harmonic/octave/source constants, and segTheta/iridescent-shift LUTs.
+- Flux generators (Perlin Flow, Trail System, Pixel Sort Feedback): dimension-keyed state caching eliminates recycled-bitmap crashes when bitmap size changes between preview and export threads.
+- Help dialog: new "Favorites vs Presets" section clarifies the difference between the two.
+
+### Bug Fixes
+- Spirograph & Superformula: fixed 3D perspective rendering artifacts in export via near-plane clipping and visibility management.
+
 ## [1.8.1] - Android
 
 ### Improvements

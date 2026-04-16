@@ -162,7 +162,15 @@ class FluxTrailSystemGenerator : Generator {
         var frameIdx: Int
     )
 
-    @Volatile private var state: TrailState? = null
+    // Dimension-keyed state cache — concurrent preview + export renders at different
+    // sizes can coexist with separate states instead of racing on a single shared state.
+    // Evicted entries are not eagerly recycled — letting GC reclaim the bitmaps
+    // avoids "recycled bitmap" crashes when a thread still holds a reference.
+    private val stateLock = Any()
+    private val stateCache = object : LinkedHashMap<String, TrailState>(4, 0.75f, true) {
+        override fun removeEldestEntry(eldest: MutableMap.MutableEntry<String, TrailState>?): Boolean =
+            size > MAX_STATE_ENTRIES
+    }
 
     override fun renderCanvas(
         canvas: Canvas,
@@ -224,13 +232,9 @@ class FluxTrailSystemGenerator : Generator {
         val halfW = w * 0.5f
 
         // ── State cache — keyed by seed + dimensions + emitterCount + scaledPPE + trailLen ──
-        var st = state
-        if (st == null || st.seed != seed || st.w != w || st.h != h ||
-            st.emitterCount != emitterCount || st.scaledPPE != scaledPPE || st.trailLen != trailLen
-        ) {
-            // Recycle old retained bitmap
-            st?.retainedBitmap?.recycle()
-
+        val stateKey = "$seed:$w:$h:$emitterCount:$scaledPPE:$trailLen"
+        var st: TrailState? = synchronized(stateLock) { stateCache[stateKey] }
+        if (st == null) {
             val rng = SeededRNG(seed)
             val simplex = SimplexNoise(seed)
 
@@ -300,7 +304,7 @@ class FluxTrailSystemGenerator : Generator {
                 warmupDone = false,
                 frameIdx = 0
             )
-            state = st
+            synchronized(stateLock) { stateCache[stateKey] = st }
         }
 
         val n = st.totalParticles
@@ -606,5 +610,6 @@ class FluxTrailSystemGenerator : Generator {
     companion object {
         private const val PI = 3.1415926535897932f
         private const val TAU = 2.0f * PI
+        private const val MAX_STATE_ENTRIES = 3
     }
 }

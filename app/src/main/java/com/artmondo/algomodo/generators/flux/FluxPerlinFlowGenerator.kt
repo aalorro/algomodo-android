@@ -154,11 +154,15 @@ class FluxPerlinFlowGenerator : Generator {
         var retainedBitmap: Bitmap   // accumulated trail bitmap
     )
 
-    @Volatile private var state: FlowState? = null
-
-    // FBM weight cache (max 4 octaves)
-    private val fbmAmp = FloatArray(4)
-    private val fbmFreq = FloatArray(4)
+    // Dimension-keyed state cache — concurrent preview + export renders at different
+    // sizes can coexist with separate states instead of racing on a single shared state.
+    // Evicted entries are not eagerly recycled — letting GC reclaim the bitmaps
+    // avoids "recycled bitmap" crashes when a thread still holds a reference.
+    private val stateLock = Any()
+    private val stateCache = object : LinkedHashMap<String, FlowState>(4, 0.75f, true) {
+        override fun removeEldestEntry(eldest: MutableMap.MutableEntry<String, FlowState>?): Boolean =
+            size > MAX_STATE_ENTRIES
+    }
 
     override fun renderCanvas(
         canvas: Canvas,
@@ -200,13 +204,9 @@ class FluxPerlinFlowGenerator : Generator {
         noiseScale *= (1f + audioMid * 0.5f)
 
         // ── State cache — keyed by seed + dimensions + particleCount + trailLength ──
-        var st = state
-        if (st == null || st.seed != seed || st.w != w || st.h != h ||
-            st.particleCountBase != particleCountBase || st.trailLen != trailLength
-        ) {
-            // Recycle old retained bitmap
-            st?.retainedBitmap?.recycle()
-
+        val stateKey = "$seed:$w:$h:$particleCountBase:$trailLength"
+        var st: FlowState? = synchronized(stateLock) { stateCache[stateKey] }
+        if (st == null) {
             val rng = SeededRNG(seed)
             val noiseSt = SimplexNoise(seed)
             val n = particleCountBase
@@ -248,7 +248,7 @@ class FluxPerlinFlowGenerator : Generator {
                 angles = FloatArray(n),
                 retainedBitmap = retained
             )
-            state = st
+            synchronized(stateLock) { stateCache[stateKey] = st }
         }
 
         // ── Detect field type change -> clear canvas + reset trails ──────────
@@ -271,6 +271,10 @@ class FluxPerlinFlowGenerator : Generator {
         // ── FBM setup ───────────────────────────────────────────────────────
         val noise = st.noise
         val maxOct = if (quality == Quality.DRAFT) min(octaves, 2) else octaves
+        // Local FBM weight arrays — thread-safe (previously a @Volatile class field
+        // that could be corrupted by concurrent preview+export renders)
+        val fbmAmp = FloatArray(4)
+        val fbmFreq = FloatArray(4)
         var fbmTotalInv: Float
         run {
             var amp = 1f
@@ -638,5 +642,6 @@ class FluxPerlinFlowGenerator : Generator {
 
     companion object {
         private const val TAU = 2.0f * 3.1415926535897932f
+        private const val MAX_STATE_ENTRIES = 3
     }
 }
