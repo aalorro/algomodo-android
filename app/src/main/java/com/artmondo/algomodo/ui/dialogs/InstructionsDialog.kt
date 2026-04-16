@@ -79,6 +79,12 @@ fun InstructionsDialog(onDismiss: () -> Unit) {
                     "Lock the palette (tap the lock icon) to keep your colors while randomizing other settings. When unlocked, both Surprise Me and Rand will pick a new palette automatically.\n\n" +
                     "Custom palettes: Create up to 5 custom palettes with your own hex colors. Custom palettes appear alongside the curated list and persist across sessions."
                 }
+                HelpSection("Favorites vs Presets") {
+                    "Algomodo offers two ways to save what you like — they serve different purposes:\n\n" +
+                    "Favorites (⭐): Bookmark generators you return to often. Tap the star icon next to any generator in the list to mark it as a favorite. Favorited generators appear in the yellow 'Favorites' tab, pinned before Animation at the top of the Generators list. Favorites save only the generator itself — not its parameters, palette, or seed. Use favorites to build a shortlist of go-to styles across all 12 families.\n\n" +
+                    "Presets: Snapshot an entire configuration — generator + every parameter + palette + seed + PostFX. Presets capture a specific artwork you created, so you can reload it exactly later or share it with someone else. Use presets when you've dialled in a look you want to keep or recreate.\n\n" +
+                    "In short: favorites = which generators you love, presets = specific artworks you've made."
+                }
                 HelpSection("Presets") {
                     "Save your favorite generator + parameter + palette combos as presets. Tap the floating Presets button at the bottom of the screen (available on all tabs) to open the presets panel. You can drag the button horizontally to reposition it so it doesn't block parameter controls. Tap the + button to save the current state, or tap any preset thumbnail to load it. Long-press a preset thumbnail to delete it. Tap outside the panel to dismiss it.\n\n" +
                     "Export Presets: Go to Export tab > 'Export Presets' to save all presets as a plain text (.txt) file. The format is compatible with the Algomodo web app — presets can be shared between platforms.\n\n" +

@@ -2,7 +2,6 @@ package com.artmondo.algomodo.generators.animation
 
 import android.graphics.Bitmap
 import android.graphics.Canvas
-import android.graphics.Color
 import com.artmondo.algomodo.core.rng.SeededRNG
 import com.artmondo.algomodo.core.rng.SimplexNoise
 import com.artmondo.algomodo.data.palettes.Palette
@@ -18,7 +17,10 @@ import kotlin.math.*
  * Kaleidoscopic animation built from noise with multiple pattern modes.
  *
  * Optimised with trig LUTs, combined value→colour LUT, segment symmetry
- * exploitation, cached screen-to-polar mapping, and multi-threaded rendering.
+ * exploitation, cached screen-to-polar mapping, multi-threaded rendering,
+ * and decoupled pattern / colour passes so that iridescent colour mode
+ * (which has no segment rotational symmetry on the colour) still only
+ * computes the expensive pattern values once per segment.
  */
 class KaleidoscopeGenerator : Generator {
 
@@ -45,6 +47,34 @@ class KaleidoscopeGenerator : Generator {
         private val THREAD_COUNT = Runtime.getRuntime().availableProcessors().coerceIn(2, 8)
         private val executor = Executors.newFixedThreadPool(THREAD_COUNT)
 
+        // Pattern ids for fast integer dispatch in the inner loop.
+        private const val PAT_GEOMETRIC = 0
+        private const val PAT_ORGANIC = 1
+        private const val PAT_CRYSTALLINE = 2
+        private const val PAT_MANDALA = 3
+        private const val PAT_FRACTAL = 4
+        private const val PAT_STARBURST = 5
+        private const val PAT_MOSAIC = 6
+        private const val PAT_INTERFERENCE = 7
+        private const val PAT_ELECTRIC = 8
+        private const val PAT_LACE = 9
+        private const val PAT_PSYCHEDELIC = 10
+
+        private fun patternId(name: String): Int = when (name) {
+            "geometric" -> PAT_GEOMETRIC
+            "organic" -> PAT_ORGANIC
+            "crystalline" -> PAT_CRYSTALLINE
+            "mandala" -> PAT_MANDALA
+            "fractal" -> PAT_FRACTAL
+            "starburst" -> PAT_STARBURST
+            "mosaic" -> PAT_MOSAIC
+            "interference" -> PAT_INTERFERENCE
+            "electric" -> PAT_ELECTRIC
+            "lace" -> PAT_LACE
+            "psychedelic" -> PAT_PSYCHEDELIC
+            else -> PAT_GEOMETRIC
+        }
+
         private fun sinLut(x: Float): Float = SIN_LUT[(x * INV_2PI_LUT).toInt() and LUT_MASK]
         private fun cosLut(x: Float): Float = COS_LUT[(x * INV_2PI_LUT).toInt() and LUT_MASK]
 
@@ -54,7 +84,6 @@ class KaleidoscopeGenerator : Generator {
             val ax = abs(x); val ay = abs(y)
             val mn = min(ax, ay); val mx = max(ax, ay)
             val a = mn / mx
-            // Polynomial minimax approximation for atan(a) on [0,1]
             val s = a * a
             var r = ((-0.0464964749f * s + 0.15931422f) * s - 0.327622764f) * s * a + a
             if (ay > ax) r = PI.toFloat() / 2f - r
@@ -76,6 +105,19 @@ class KaleidoscopeGenerator : Generator {
     )
 
     @Volatile private var cachedMapping: ScreenMapping? = null
+
+    // Cache SimplexNoise instances by seed to avoid rebuilding 512-entry permutation tables
+    // per thread per frame. Accessed from multiple threads (live preview + export) so
+    // guarded by a lock; values are effectively immutable after construction.
+    private val noiseCacheLock = Any()
+    private val noiseCache = object : LinkedHashMap<Int, SimplexNoise>(4, 0.75f, true) {
+        override fun removeEldestEntry(eldest: MutableMap.MutableEntry<Int, SimplexNoise>?): Boolean =
+            size > 8
+    }
+
+    private fun getNoise(seed: Int): SimplexNoise = synchronized(noiseCacheLock) {
+        noiseCache.getOrPut(seed) { SimplexNoise(seed) }
+    }
 
     private fun getOrBuildMapping(
         w: Int, h: Int, radSteps: Int, angSteps: Int
@@ -233,7 +275,8 @@ class KaleidoscopeGenerator : Generator {
         val h = bitmap.height
 
         val segments = (params["segments"] as? Number)?.toInt() ?: 8
-        val pattern = (params["pattern"] as? String) ?: "geometric"
+        val patternName = (params["pattern"] as? String) ?: "geometric"
+        val pat = patternId(patternName)
         val complexity = (params["complexity"] as? Number)?.toInt() ?: 3
         val detail = (params["detail"] as? Number)?.toInt() ?: 2
         val rotationSpeed = (params["speed"] as? Number)?.toFloat() ?: 1f
@@ -265,264 +308,414 @@ class KaleidoscopeGenerator : Generator {
             (((sharpened * 0.5f + 0.5f).coerceIn(0f, 1f)) * 1023f).toInt()
         }
 
-        // Pre-compute pow LUT for patterns using pow(x, sharpness*k)
-        // Maps [0..255] (input 0..1) to output 0..1 for pow(x, sharpness*2)
-        val powLut2 = FloatArray(256) { i ->
-            val x = i / 255f
-            x.pow(sharpness * 2f)
-        }
-        val powLut3 = FloatArray(256) { i ->
-            val x = i / 255f
-            x.pow(sharpness * 3f)
-        }
-        val powLutS = FloatArray(256) { i ->
-            val x = i / 255f
-            x.pow(sharpness)
-        }
+        val powLut2 = FloatArray(256) { i -> (i / 255f).pow(sharpness * 2f) }
+        val powLut3 = FloatArray(256) { i -> (i / 255f).pow(sharpness * 3f) }
+        val powLutS = FloatArray(256) { i -> (i / 255f).pow(sharpness) }
 
         val iriTimeShift = sinLut(time * rotationSpeed * 0.5f) * 0.1f
 
         // --- Polar buffer dimensions ---
+        // angSteps is adjusted to be an exact multiple of segments so that
+        // ai_full % segAngSteps maps cleanly back to a segment-local angle for
+        // iridescent mode's per-angle colour lookup.
         val radSteps = when (quality) {
             Quality.DRAFT -> 250
             Quality.BALANCED -> 400
             Quality.ULTRA -> 600
         }
-        val angSteps = when (quality) {
+        val baseAngSteps = when (quality) {
             Quality.DRAFT -> 450
             Quality.BALANCED -> 720
             Quality.ULTRA -> 1080
         }
+        val segAngSteps = (baseAngSteps / segments).coerceAtLeast(1)
+        val angSteps = segAngSteps * segments
         val maxR = sqrt(2f)
 
         val isIridescent = colorMode == "iridescent"
-        val segAngSteps = if (isIridescent) angSteps else (angSteps / segments).coerceAtLeast(1)
-        val computeAngSteps = if (isIridescent) angSteps else segAngSteps
+        val isDepth = colorMode == "depth"
 
-        val polarBuffer = IntArray(radSteps * angSteps)
-
-        // Pre-compute vignette per radius
+        // --- Per-radius LUTs ---
         val vignetteLut = FloatArray(radSteps) { ri ->
             val r = ri.toFloat() / (radSteps - 1) * maxR
             (1f - (r * 0.4f).coerceAtMost(0.7f)).coerceAtLeast(0.3f)
         }
-
-        // Pre-compute r values
         val rLut = FloatArray(radSteps) { ri -> ri.toFloat() / (radSteps - 1) * maxR }
 
-        // --- Multi-threaded polar buffer computation ---
+        // --- Per-angle LUTs (segment-local: [0, segAngSteps)) ---
+        // segTheta is in [0, halfSeg]; its sin/cos drive the pattern sx/sy.
+        val segThetaLut = FloatArray(segAngSteps)
+        val segThetaCosLut = FloatArray(segAngSteps)
+        val segThetaSinLut = FloatArray(segAngSteps)
+        for (ai in 0 until segAngSteps) {
+            val theta = ai.toFloat() / angSteps * twoPi
+            val thetaFolded = ((theta + rotation) % twoPi + twoPi) % twoPi
+            var segTheta = thetaFolded % segAngle
+            if (segTheta > halfSeg) segTheta = segAngle - segTheta
+            segThetaLut[ai] = segTheta
+            segThetaCosLut[ai] = cosLut(segTheta)
+            segThetaSinLut[ai] = sinLut(segTheta)
+        }
+
+        // Iridescent-only: per-full-angle palette shift LUT.
+        val iriShiftLut: FloatArray? = if (isIridescent) FloatArray(angSteps) { ai ->
+            val theta = ai.toFloat() / angSteps * twoPi
+            val thetaFolded = ((theta + rotation) % twoPi + twoPi) % twoPi
+            (thetaFolded / twoPi) * 0.3f + iriTimeShift
+        } else null
+
+        // --- Pattern-specific hoisted constants ---
+        // Many patterns have per-harmonic/per-octave/per-source values that do
+        // not depend on (r, segTheta). Compute them once here.
+        val c = complexity
+        val ccap5 = c.coerceAtMost(5)
+        val ccap6 = c.coerceAtMost(6)
+
+        // Mandala hoist
+        val mandalaRFreq = FloatArray(c) { idx -> val harm = idx + 1; harm * 2f * PI.toFloat() * zoom }
+        val mandalaTimeR = FloatArray(c) { idx -> val harm = idx + 1; time * rotationSpeed * 0.3f * harm }
+        val mandalaAFreq = FloatArray(c) { idx -> val harm = idx + 1; harm * segments / 2f }
+        val mandalaTimeA = FloatArray(c) { idx -> val harm = idx + 1; time * 0.2f * harm }
+        val mandalaInvHarm = FloatArray(c) { idx -> 1f / (idx + 1).toFloat() }
+        val mandalaPetalFreq = segments * 0.5f
+
+        // Interference hoist
+        val interfSrcX = FloatArray(ccap6)
+        val interfSrcY = FloatArray(ccap6)
+        val interfDistFreq = c * 8f
+        val interfTimeShift = time * rotationSpeed * 3f
+        for (src in 0 until ccap6) {
+            val srcAngle = src * twoPi / c + time * rotationSpeed * 0.2f
+            val srcR = 0.3f + src * 0.15f
+            interfSrcX[src] = cosLut(srcAngle) * srcR * zoom
+            interfSrcY[src] = sinLut(srcAngle) * srcR * zoom
+        }
+
+        // Organic hoist
+        val organicTimeA = FloatArray(c) { idx -> time * 0.08f * (idx + 1) }
+        val organicTimeB = FloatArray(c) { idx -> time * 0.06f * (idx + 1) }
+        // freq grows by *2.1 per octave, amp by *0.5
+        val organicFreq = FloatArray(c).also {
+            var f = 1f
+            for (i in 0 until c) { it[i] = f; f *= 2.1f }
+        }
+        val organicAmp = FloatArray(c).also {
+            var a = 1f
+            for (i in 0 until c) { it[i] = a; a *= 0.5f }
+        }
+
+        // Electric hoist
+        val electricTimeA = FloatArray(ccap6) { idx -> time * 0.05f * (idx + 1) }
+        val electricFreq = FloatArray(ccap6).also {
+            var f = 1f
+            for (i in 0 until ccap6) { it[i] = f; f *= 2.2f }
+        }
+        val electricAmp = FloatArray(ccap6).also {
+            var a = 1f
+            for (i in 0 until ccap6) { it[i] = a; a *= 0.5f }
+        }
+
+        // Fractal hoist
+        val fractalTimeA = FloatArray(ccap5) { idx -> time * 0.05f * (idx + 1) }
+        val fractalTimeB = FloatArray(ccap5) { idx -> time * 0.04f * (idx + 1) }
+        val fractalTimeC = time * 0.03f
+
+        // Geometric hoist
+        val ringFreq = c * 3f
+        val spokeFreq = c * 2f
+        val geometricRingTime = time * rotationSpeed * 2f
+        val geometricSpokeTime = time * 0.5f
+        val geometricRadialTime = time * rotationSpeed * 3f
+
+        // Starburst hoist
+        val starburstSpokeCount = segments.toFloat() * c * 0.5f
+        val starburstPulseTime = time * rotationSpeed * 4f
+        val starburstGlowTime = time * rotationSpeed * 2f
+
+        // Mosaic hoist
+        val mosaicRadialBands = c * 3f + 2f
+        val mosaicAngularBands = segments * c * 2f
+        val mosaicTimeR = time * 0.08f
+        val mosaicTimeA = time * 0.06f
+
+        // Crystalline hoist
+        val crystallineCellScale = zoom * 3f
+        val crystallineTimeA = time * 0.1f
+        val crystallineTimeB = time * 0.12f
+        val crystallineTimeC = time * rotationSpeed
+        val crystallineLevels = c * 2f + 2f
+        val crystallineRingFreq = c * 5f
+
+        // Lace hoist
+        val lceCount = c.coerceAtMost(5)
+        val laceRFreq = FloatArray(lceCount) { idx -> val layer = idx + 1; zoom * layer * 4f }
+        val laceTimeR = FloatArray(lceCount) { idx -> val layer = idx + 1; time * rotationSpeed * 0.3f * layer }
+        val laceAFreq = FloatArray(lceCount) { idx -> val layer = idx + 1; layer * 0.5f }
+        val laceTimeA = FloatArray(lceCount) { idx -> val layer = idx + 1; time * 0.15f * layer }
+        val laceInvLayer = FloatArray(lceCount) { idx -> 1f / (idx + 1f) }
+
+        // Psychedelic hoist
+        val psyBandFreq = zoom * c * 4f
+        val psySpiralTime = time * rotationSpeed * 2f
+        val psyWarpTimeA = time * 0.15f
+        val psyWarpTimeB = time * 0.12f
+        val psyMorphTimeA = time * 0.05f
+
+        // Detail overlay hoist
+        val detailFreq = detail * 4f
+        val detailAmp = 0.05f * detail
+        val detailTimeA = time * 0.1f
+        val detailTimeB = time * 0.08f
+
+        val noise = getNoise(seed)
+
+        // --- Phase 1: compute pattern values at segment-local resolution ---
+        val valueBuffer = FloatArray(radSteps * segAngSteps)
+
         val latch1 = CountDownLatch(THREAD_COUNT)
         for (t in 0 until THREAD_COUNT) {
             executor.execute {
-                val noise = SimplexNoise(seed)
                 val riStart = t * radSteps / THREAD_COUNT
                 val riEnd = (t + 1) * radSteps / THREAD_COUNT
 
                 for (ri in riStart until riEnd) {
                     val r = rLut[ri]
-                    val vignette = vignetteLut[ri]
+                    val rowOff = ri * segAngSteps
 
-                    for (ai in 0 until computeAngSteps) {
-                        val theta = ai.toFloat() / angSteps * twoPi
+                    for (ai in 0 until segAngSteps) {
+                        val segTheta = segThetaLut[ai]
+                        val cosSeg = segThetaCosLut[ai]
+                        val sinSeg = segThetaSinLut[ai]
+                        val sx = r * cosSeg * zoom
+                        val sy = r * sinSeg * zoom
 
-                        val thetaFolded = ((theta + rotation) % twoPi + twoPi) % twoPi
-                        var segTheta = thetaFolded % segAngle
-                        if (segTheta > halfSeg) segTheta = segAngle - segTheta
-
-                        val sx = r * cosLut(segTheta) * zoom
-                        val sy = r * sinLut(segTheta) * zoom
-
-                        var value: Float = when (pattern) {
-                            "geometric" -> {
-                                val ringFreq = complexity * 3f
-                                val spokeFreq = complexity * 2f
-                                val rings = sinLut(r * ringFreq * PI.toFloat() + time * rotationSpeed * 2f)
-                                val spokes = sinLut(segTheta * spokeFreq * segments.toFloat() + time * 0.5f)
+                        var value: Float = when (pat) {
+                            PAT_GEOMETRIC -> {
+                                val rings = sinLut(r * ringFreq * PI.toFloat() + geometricRingTime)
+                                val spokes = sinLut(segTheta * spokeFreq * segments.toFloat() + geometricSpokeTime)
                                 val nMod = noise.noise2D(sx * 2f + offsetX + time * 0.15f, sy * 2f + offsetY)
-                                val radialWave = sinLut(r * zoom * 8f - time * rotationSpeed * 3f)
+                                val radialWave = sinLut(r * zoom * 8f - geometricRadialTime)
                                 rings * 0.4f + spokes * 0.25f + radialWave * 0.2f + nMod * 0.15f
                             }
-                            "organic" -> {
+                            PAT_ORGANIC -> {
                                 val warpX = noise.noise2D(sx * 1.5f + offsetX + time * 0.12f, sy * 1.5f + offsetY) * 0.5f
                                 val warpY = noise.noise2D(sx * 1.5f + offsetX + 50f, sy * 1.5f + offsetY + time * 0.1f) * 0.5f
                                 val wsx = sx + warpX
                                 val wsy = sy + warpY
-                                var v = 0f; var amp = 1f; var freq = 1f
-                                for (oct in 0 until complexity) {
+                                var v = 0f
+                                for (oct in 0 until c) {
+                                    val f = organicFreq[oct]
                                     v += noise.noise2D(
-                                        wsx * freq * 2f + offsetX + time * 0.08f * (oct + 1),
-                                        wsy * freq * 2f + offsetY + time * 0.06f * (oct + 1)
-                                    ) * amp
-                                    amp *= 0.5f; freq *= 2.1f
+                                        wsx * f * 2f + offsetX + organicTimeA[oct],
+                                        wsy * f * 2f + offsetY + organicTimeB[oct]
+                                    ) * organicAmp[oct]
                                 }
                                 v + sinLut(r * zoom * 4f + time * 0.8f) * 0.3f
                             }
-                            "crystalline" -> {
-                                val cellScale = zoom * 3f
-                                val nsx = sx * cellScale + offsetX + time * 0.1f
-                                val nsy = sy * cellScale + offsetY + time * 0.08f
+                            PAT_CRYSTALLINE -> {
+                                val nsx = sx * crystallineCellScale + offsetX + crystallineTimeA
+                                val nsy = sy * crystallineCellScale + offsetY + crystallineTimeB
                                 val n1 = noise.noise2D(nsx, nsy)
-                                val n2 = noise.noise2D(nsx * 2.3f + 30f, nsy * 2.3f + time * 0.12f)
-                                val n3 = sinLut(r * complexity * 5f + n1 * 3f + time * rotationSpeed)
+                                val n2 = noise.noise2D(nsx * 2.3f + 30f, nsy * 2.3f + crystallineTimeB)
+                                val n3 = sinLut(r * crystallineRingFreq + n1 * 3f + crystallineTimeC)
                                 val raw = n1 * 0.5f + n2 * 0.3f + n3 * 0.2f
-                                val levels = (complexity * 2f + 2f)
-                                (raw * levels).toInt().toFloat() / levels
+                                (raw * crystallineLevels).toInt().toFloat() / crystallineLevels
                             }
-                            "mandala" -> {
+                            PAT_MANDALA -> {
                                 var v = 0f
-                                for (harm in 1..complexity) {
-                                    val rFreq = harm * 2f * PI.toFloat()
-                                    val aFreq = (harm * segments / 2f)
-                                    val radial = cosLut(r * rFreq * zoom + time * rotationSpeed * 0.3f * harm)
-                                    val angular = sinLut(segTheta * aFreq + time * 0.2f * harm)
-                                    v += radial * angular / harm
+                                for (harm in 0 until c) {
+                                    val radial = cosLut(r * mandalaRFreq[harm] + mandalaTimeR[harm])
+                                    val angular = sinLut(segTheta * mandalaAFreq[harm] + mandalaTimeA[harm])
+                                    v += radial * angular * mandalaInvHarm[harm]
                                 }
-                                val petal = abs(cosLut(segTheta * segments * 0.5f)).pow(0.5f)
+                                val petal = abs(cosLut(segTheta * mandalaPetalFreq)).pow(0.5f)
                                 v * 0.7f + petal * sinLut(r * zoom * 6f + time * rotationSpeed) * 0.3f
                             }
-                            "fractal" -> {
+                            PAT_FRACTAL -> {
                                 var fx = sx * 2f + offsetX
                                 var fy = sy * 2f + offsetY
                                 var v = 0f
                                 var amp = 1f
-                                for (iter in 0 until complexity.coerceAtMost(5)) {
-                                    val n = noise.noise2D(fx + time * 0.05f * (iter + 1), fy + time * 0.04f * (iter + 1))
+                                for (iter in 0 until ccap5) {
+                                    val n = noise.noise2D(fx + fractalTimeA[iter], fy + fractalTimeB[iter])
                                     v += n * amp
                                     fx += n * 1.5f
-                                    fy += noise.noise2D(fy + 77f, fx + time * 0.03f) * 1.5f
+                                    fy += noise.noise2D(fy + 77f, fx + fractalTimeC) * 1.5f
                                     amp *= 0.6f
                                 }
                                 v
                             }
-                            "starburst" -> {
-                                val spokeCount = segments.toFloat() * complexity
-                                val spoke = abs(cosLut(segTheta * spokeCount * 0.5f))
+                            PAT_STARBURST -> {
+                                val spoke = abs(cosLut(segTheta * starburstSpokeCount))
                                 val sharpSpoke = powLut2[(spoke * 255f).toInt().coerceIn(0, 255)]
-                                val radialPulse = sinLut(r * zoom * 10f - time * rotationSpeed * 4f)
+                                val radialPulse = sinLut(r * zoom * 10f - starburstPulseTime)
                                 val radialEnvelope = (1f - r * 0.5f).coerceAtLeast(0f)
                                 val burst = sharpSpoke * (0.6f + radialPulse * 0.4f) * radialEnvelope
-                                val glow = exp(-r * 2f) * sinLut(time * rotationSpeed * 2f + segTheta * segments) * 0.3f
+                                val glow = exp(-r * 2f) * sinLut(starburstGlowTime + segTheta * segments) * 0.3f
                                 burst + glow
                             }
-                            "mosaic" -> {
-                                val radialBands = (complexity * 3f + 2f)
-                                val angularBands = (segments * complexity * 2f)
-                                val rCell = floor(r * zoom * radialBands) / radialBands
-                                val aCell = floor(segTheta / segAngle * angularBands) / angularBands
+                            PAT_MOSAIC -> {
+                                val rCell = floor(r * zoom * mosaicRadialBands) / mosaicRadialBands
+                                val aCell = floor(segTheta / segAngle * mosaicAngularBands) / mosaicAngularBands
                                 val cellNoise = noise.noise2D(
-                                    rCell * 10f + offsetX + time * 0.08f,
-                                    aCell * 10f + offsetY + time * 0.06f
+                                    rCell * 10f + offsetX + mosaicTimeR,
+                                    aCell * 10f + offsetY + mosaicTimeA
                                 )
-                                val rFrac = (r * zoom * radialBands) % 1f
-                                val aFrac = (segTheta / segAngle * angularBands) % 1f
+                                val rFrac = (r * zoom * mosaicRadialBands) % 1f
+                                val aFrac = (segTheta / segAngle * mosaicAngularBands) % 1f
                                 val edgeDist = min(min(rFrac, 1f - rFrac), min(aFrac, 1f - aFrac))
                                 val edge = (edgeDist * sharpness * 5f).coerceAtMost(1f)
                                 cellNoise * edge
                             }
-                            "interference" -> {
+                            PAT_INTERFERENCE -> {
                                 var v = 0f
-                                for (src in 0 until complexity.coerceAtMost(6)) {
-                                    val srcAngle = src * twoPi / complexity + time * rotationSpeed * 0.2f
-                                    val srcR = 0.3f + src * 0.15f
-                                    val srcX = cosLut(srcAngle) * srcR * zoom
-                                    val srcY = sinLut(srcAngle) * srcR * zoom
-                                    val dx = sx - srcX; val dy = sy - srcY
+                                for (src in 0 until ccap6) {
+                                    val dx = sx - interfSrcX[src]
+                                    val dy = sy - interfSrcY[src]
                                     val dist = sqrt(dx * dx + dy * dy)
-                                    v += sinLut(dist * complexity * 8f - time * rotationSpeed * 3f) / (1f + dist * 2f)
+                                    v += sinLut(dist * interfDistFreq - interfTimeShift) / (1f + dist * 2f)
                                 }
                                 v
                             }
-                            "electric" -> {
+                            PAT_ELECTRIC -> {
                                 val ex = sx * 3f + offsetX + time * 0.12f
                                 val ey = sy * 3f + offsetY + time * 0.1f
-                                var v = 0f; var amp = 1f; var freq = 1f
-                                for (oct in 0 until complexity.coerceAtMost(6)) {
-                                    val n = noise.noise2D(ex * freq, ey * freq + time * 0.05f * (oct + 1))
-                                    v += abs(n) * amp
-                                    amp *= 0.5f; freq *= 2.2f
+                                var v = 0f
+                                for (oct in 0 until ccap6) {
+                                    val f = electricFreq[oct]
+                                    val n = noise.noise2D(ex * f, ey * f + electricTimeA[oct])
+                                    v += abs(n) * electricAmp[oct]
                                 }
                                 val ridged = 1f - v * 0.7f
-                                val arc = abs(sinLut(segTheta * segments * 2f + r * zoom * 5f + time * rotationSpeed * 2f))
+                                val arc = abs(sinLut(segTheta * segments * 2f + r * zoom * 5f + starburstGlowTime))
                                 val arcIdx = (arc * 255f).toInt().coerceIn(0, 255)
                                 ridged * 0.6f + powLutS[arcIdx] * 0.4f
                             }
-                            "lace" -> {
+                            PAT_LACE -> {
                                 val thetaN = segTheta * segments
                                 var v = 0f
-                                for (layer in 1..complexity.coerceAtMost(5)) {
-                                    val rWave = sinLut(r * zoom * layer * 4f + time * rotationSpeed * 0.3f * layer)
-                                    val aWave = cosLut(thetaN * layer * 0.5f + time * 0.15f * layer)
+                                for (layer in 0 until lceCount) {
+                                    val rWave = sinLut(r * laceRFreq[layer] + laceTimeR[layer])
+                                    val aWave = cosLut(thetaN * laceAFreq[layer] + laceTimeA[layer])
                                     val thread = abs(rWave * aWave)
                                     val invThread = (1f - thread).coerceIn(0f, 1f)
                                     val invIdx = (invThread * 255f).toInt()
-                                    v += powLut3[invIdx] / layer
+                                    v += powLut3[invIdx] * laceInvLayer[layer]
                                 }
                                 v * 0.6f
                             }
-                            "psychedelic" -> {
+                            PAT_PSYCHEDELIC -> {
                                 val spiralAngle = segTheta * segments + r * zoom * 8f
-                                val warp = noise.noise2D(sx * 2f + offsetX + time * 0.15f, sy * 2f + offsetY + time * 0.12f)
-                                val spiral = sinLut(spiralAngle + warp * complexity * 3f - time * rotationSpeed * 2f)
-                                val bands = sinLut(r * zoom * complexity * 4f + spiral * 2f + time * rotationSpeed)
-                                val morph = noise.noise2D(sx * 0.5f + time * 0.05f, sy * 0.5f + offsetY) * 0.4f
+                                val warp = noise.noise2D(sx * 2f + offsetX + psyWarpTimeA, sy * 2f + offsetY + psyWarpTimeB)
+                                val spiral = sinLut(spiralAngle + warp * c * 3f - psySpiralTime)
+                                val bands = sinLut(r * psyBandFreq + spiral * 2f + time * rotationSpeed)
+                                val morph = noise.noise2D(sx * 0.5f + psyMorphTimeA, sy * 0.5f + offsetY) * 0.4f
                                 spiral * 0.4f + bands * 0.4f + morph * 0.2f
                             }
-                            else -> noise.noise2D(sx + time * 0.1f, sy + time * 0.08f)
+                            else -> noise.noise2D(sx + detailTimeA, sy + detailTimeB)
                         }
 
-                        // Detail overlay
                         if (detail > 1) {
-                            val detailFreq = detail * 4f
-                            val detailAmp = 0.05f * detail
                             value += noise.noise2D(
-                                sx * detailFreq + offsetX + 200f + time * 0.1f,
-                                sy * detailFreq + offsetY + 200f + time * 0.08f
+                                sx * detailFreq + offsetX + 200f + detailTimeA,
+                                sy * detailFreq + offsetY + 200f + detailTimeB
                             ) * detailAmp
                         }
 
-                        // Combined LUT: raw value → normalised 0..1023
-                        val lutIdx = ((value * 0.5f + 0.5f).coerceIn(0f, 1f) * 1023f).toInt()
-                        val normInt = combinedLut[lutIdx]
-                        val norm = normInt / 1023f
-
-                        // Color mode
-                        val palVal = when (colorMode) {
-                            "depth" -> ((norm + r * 0.4f) % 1f + 1f) % 1f
-                            "iridescent" -> {
-                                val angleShift = (thetaFolded / twoPi) * 0.3f
-                                ((norm + angleShift + iriTimeShift) % 1f + 1f) % 1f
-                            }
-                            else -> norm
-                        }
-
-                        val baseColor = paletteLut[(palVal * 255f).toInt().coerceIn(0, 255)]
-                        val red = ((baseColor shr 16 and 0xFF) * vignette).toInt()
-                        val green = ((baseColor shr 8 and 0xFF) * vignette).toInt()
-                        val blue = ((baseColor and 0xFF) * vignette).toInt()
-
-                        polarBuffer[ri * angSteps + ai] = (0xFF shl 24) or (red shl 16) or (green shl 8) or blue
-                    }
-
-                    // Segment symmetry replication
-                    if (!isIridescent && segAngSteps < angSteps) {
-                        val rowOff = ri * angSteps
-                        for (seg in 1 until segments) {
-                            val dstOffset = seg * segAngSteps
-                            System.arraycopy(polarBuffer, rowOff, polarBuffer, rowOff + dstOffset,
-                                minOf(segAngSteps, angSteps - dstOffset))
-                        }
-                        val filled = segments * segAngSteps
-                        if (filled < angSteps) {
-                            for (ai in filled until angSteps) {
-                                polarBuffer[rowOff + ai] = polarBuffer[rowOff + ai % segAngSteps]
-                            }
-                        }
+                        valueBuffer[rowOff + ai] = value
                     }
                 }
                 latch1.countDown()
             }
         }
         latch1.await()
+
+        // --- Phase 2: apply colour to polar buffer ---
+        val polarBuffer = IntArray(radSteps * angSteps)
+
+        if (isIridescent) {
+            // Colour depends on full-angle thetaFolded, so iterate full angSteps
+            // but reuse the segment-local pattern values.
+            val shiftLut = iriShiftLut!!
+            val latch2 = CountDownLatch(THREAD_COUNT)
+            for (t in 0 until THREAD_COUNT) {
+                executor.execute {
+                    val riStart = t * radSteps / THREAD_COUNT
+                    val riEnd = (t + 1) * radSteps / THREAD_COUNT
+
+                    for (ri in riStart until riEnd) {
+                        val vignette = vignetteLut[ri]
+                        val valRowOff = ri * segAngSteps
+                        val colRowOff = ri * angSteps
+
+                        for (ai in 0 until angSteps) {
+                            val aiLocal = ai % segAngSteps
+                            val value = valueBuffer[valRowOff + aiLocal]
+
+                            val lutIdx = ((value * 0.5f + 0.5f).coerceIn(0f, 1f) * 1023f).toInt()
+                            val normInt = combinedLut[lutIdx]
+                            val norm = normInt / 1023f
+
+                            val palVal = ((norm + shiftLut[ai]) % 1f + 1f) % 1f
+                            val baseColor = paletteLut[(palVal * 255f).toInt().coerceIn(0, 255)]
+                            val red = ((baseColor shr 16 and 0xFF) * vignette).toInt()
+                            val green = ((baseColor shr 8 and 0xFF) * vignette).toInt()
+                            val blue = ((baseColor and 0xFF) * vignette).toInt()
+
+                            polarBuffer[colRowOff + ai] = (0xFF shl 24) or (red shl 16) or (green shl 8) or blue
+                        }
+                    }
+                    latch2.countDown()
+                }
+            }
+            latch2.await()
+        } else {
+            // Non-iridescent: colour doesn't depend on thetaFolded. Apply colour at
+            // segment-local resolution and replicate rows across segments.
+            val latch2 = CountDownLatch(THREAD_COUNT)
+            for (t in 0 until THREAD_COUNT) {
+                executor.execute {
+                    val riStart = t * radSteps / THREAD_COUNT
+                    val riEnd = (t + 1) * radSteps / THREAD_COUNT
+
+                    for (ri in riStart until riEnd) {
+                        val r = rLut[ri]
+                        val vignette = vignetteLut[ri]
+                        val valRowOff = ri * segAngSteps
+                        val colRowOff = ri * angSteps
+                        val depthShift = if (isDepth) r * 0.4f else 0f
+
+                        for (ai in 0 until segAngSteps) {
+                            val value = valueBuffer[valRowOff + ai]
+
+                            val lutIdx = ((value * 0.5f + 0.5f).coerceIn(0f, 1f) * 1023f).toInt()
+                            val normInt = combinedLut[lutIdx]
+                            val norm = normInt / 1023f
+
+                            val palVal = if (isDepth) ((norm + depthShift) % 1f + 1f) % 1f else norm
+                            val baseColor = paletteLut[(palVal * 255f).toInt().coerceIn(0, 255)]
+                            val red = ((baseColor shr 16 and 0xFF) * vignette).toInt()
+                            val green = ((baseColor shr 8 and 0xFF) * vignette).toInt()
+                            val blue = ((baseColor and 0xFF) * vignette).toInt()
+
+                            polarBuffer[colRowOff + ai] = (0xFF shl 24) or (red shl 16) or (green shl 8) or blue
+                        }
+
+                        // Replicate segment-local colours across remaining segments.
+                        for (seg in 1 until segments) {
+                            val dstOffset = seg * segAngSteps
+                            System.arraycopy(
+                                polarBuffer, colRowOff,
+                                polarBuffer, colRowOff + dstOffset,
+                                segAngSteps
+                            )
+                        }
+                    }
+                    latch2.countDown()
+                }
+            }
+            latch2.await()
+        }
 
         // --- Screen fill using cached mapping ---
         val mapping = getOrBuildMapping(w, h, radSteps, angSteps)
@@ -534,7 +727,7 @@ class KaleidoscopeGenerator : Generator {
         val mFa = mapping.fa
         val mOob = mapping.outOfBounds
 
-        val latch2 = CountDownLatch(THREAD_COUNT)
+        val latch3 = CountDownLatch(THREAD_COUNT)
         for (t in 0 until THREAD_COUNT) {
             executor.execute {
                 val pxStart = t * pixels.size / THREAD_COUNT
@@ -551,13 +744,11 @@ class KaleidoscopeGenerator : Generator {
                     val ai1 = if (ai0 + 1 >= angSteps) 0 else ai0 + 1
                     val ri1 = ri0 + 1
 
-                    // Unpack fractional parts (0..255 → 0..1)
                     val frI = mFr[idx].toInt() and 0xFF
                     val faI = mFa[idx].toInt() and 0xFF
                     val invFrI = 255 - frI
                     val invFaI = 255 - faI
 
-                    // Weights as integers (0..65025), divide by 65025 at the end
                     val w00 = invFrI * invFaI
                     val w10 = frI * invFaI
                     val w01 = invFrI * faI
@@ -577,10 +768,10 @@ class KaleidoscopeGenerator : Generator {
 
                     pixels[idx] = (0xFF shl 24) or (red shl 16) or (green shl 8) or blue
                 }
-                latch2.countDown()
+                latch3.countDown()
             }
         }
-        latch2.await()
+        latch3.await()
 
         bitmap.setPixels(pixels, 0, w, 0, 0, w, h)
         canvas.drawBitmap(bitmap, 0f, 0f, null)
