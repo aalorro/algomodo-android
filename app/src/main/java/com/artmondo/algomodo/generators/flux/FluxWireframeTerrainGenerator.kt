@@ -639,10 +639,6 @@ class FluxWireframeTerrainGenerator : Generator {
             }
         }
 
-        // Clip terrain to prevent lines bleeding into the sky area
-        canvas.save()
-        canvas.clipRect(0f, horizonY - h * 0.1f, w, h)
-
         // ── 8. Render terrain scanlines ──────────────────────────────────
         val baseLineWidth = when (quality) {
             Quality.DRAFT -> 1f; Quality.ULTRA -> 2f; else -> 1.5f
@@ -680,19 +676,6 @@ class FluxWireframeTerrainGenerator : Generator {
 
         fun palCacheFromHeight(ht: Float): Int {
             return palCache[((ht * 63f + 0.5f).toInt()).coerceIn(0, 63)]
-        }
-
-        // ── Scene-specific glow overrides ──────────────────────────────────
-        val sceneGlowFilter = when (scene) {
-            "neon" -> {
-                // Neon: much wider glow for bright neon look
-                val blur = when (quality) {
-                    Quality.DRAFT -> 14f; Quality.ULTRA -> 32f; else -> 22f
-                }
-                BlurMaskFilter(blur, BlurMaskFilter.Blur.NORMAL)
-            }
-            "void" -> null // Void: sharp lines, no glow even in glow mode
-            else -> glowFilter
         }
 
         // ── Render back-to-front ─────────────────────────────────────────
@@ -795,7 +778,7 @@ class FluxWireframeTerrainGenerator : Generator {
                 // ── Wireframe / Glow mode ────────────────────────────────
                 val lw = baseLineWidth * (1f + lineBoost)
                 paint.style = Paint.Style.STROKE
-                paint.maskFilter = sceneGlowFilter
+                paint.maskFilter = glowFilter
 
                 if (colorMode == "height") {
                     // Batch consecutive segments of the same color bucket
@@ -859,14 +842,13 @@ class FluxWireframeTerrainGenerator : Generator {
                     }
                     canvas.drawPath(path, paint)
                     paint.alpha = 255
-                    paint.maskFilter = sceneGlowFilter
+                    paint.maskFilter = glowFilter
                 }
             }
         }
 
-        // Reset mask filter and restore terrain clip
+        // Reset mask filter
         paint.maskFilter = null
-        canvas.restore()
 
         // ── 8b. Neon scene: perspective grid floor overlay ─────────────
         if (scene == "neon") {
