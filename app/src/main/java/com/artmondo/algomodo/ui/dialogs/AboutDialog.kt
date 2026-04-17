@@ -34,7 +34,7 @@ fun AboutDialog(onDismiss: () -> Unit) {
                 InfoRow("Generators", "134 across 12 families")
                 InfoRow("Processing", "100% local on device")
                 InfoRow("Determinism", "Same seed = same output")
-                InfoRow("Version", "v1.8.2 (Android)")
+                InfoRow("Version", "v1.8.3 (Android)")
                 InfoRow("Credits", "ArtMondo")
                 Spacer(Modifier.height(4.dp))
                 Text(
