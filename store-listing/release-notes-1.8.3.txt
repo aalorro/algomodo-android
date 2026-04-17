@@ -1,0 +1,8 @@
+Wireframe Terrain overhaul:
+• Fixed chaotic animation and stray line artifacts during MP4/GIF export
+• Each scene now has a distinct look — neon grid floor, starfield nebula glow, void minimal fog
+• Smoother terrain animation with reduced glitch and eruption spikes
+
+Other:
+• Removed unused storage permission (Google Play policy compliance)
+• App title updated for better store discoverability
