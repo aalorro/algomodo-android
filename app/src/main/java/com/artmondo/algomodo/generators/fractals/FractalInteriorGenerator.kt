@@ -577,7 +577,7 @@ class FractalInteriorGenerator : Generator {
             val q = crm * crm + ci2
             val isCardioid = q * (q + crm) <= 0.25 * ci2
             val period = if (isCardioid) 1 else 2
-            return lut[((period * 8 + cycleOffset) and 0xFF).coerceIn(0, lutMax)]
+            return lut[((period * 37 + cycleOffset) and 0xFF).coerceIn(0, lutMax)]
         }
 
         // For non-trap, non-final-value modes, use fallback color
@@ -622,9 +622,9 @@ class FractalInteriorGenerator : Generator {
                 lut[t.coerceIn(0, lutMax)]
             }
             else -> { // INT_FINAL_VALUE
-                val mag = sqrt(zr2 + zi2).coerceIn(0.0, 4.0) / 4.0
+                val mag = sqrt(zr2 + zi2).coerceIn(0.0, 2.0) / 2.0
                 val angle = ((atan2(zi, zr) / (2.0 * PI)) % 1.0 + 1.0) % 1.0
-                val t = (((mag * 0.5 + angle * 0.5) * lutMax).toInt() + cycleOffset) and 0xFF
+                val t = ((((angle * 0.7 + mag * 0.3) % 1.0) * lutMax).toInt() + cycleOffset) and 0xFF
                 lut[t.coerceIn(0, lutMax)]
             }
         }
@@ -642,7 +642,7 @@ class FractalInteriorGenerator : Generator {
                 val period = detectPeriod(ringX, ringY, ringHead, iter.coerceAtMost(RING_SIZE))
                 if (period <= 0) lut[(cycleOffset and 0xFF).coerceIn(0, lutMax)]
                 else {
-                    val t = ((period * 8 + cycleOffset) and 0xFF).coerceIn(0, lutMax)
+                    val t = ((period * 37 + cycleOffset) and 0xFF).coerceIn(0, lutMax)
                     lut[t]
                 }
             }
@@ -676,9 +676,9 @@ class FractalInteriorGenerator : Generator {
                 }
             }
             INT_FINAL_VALUE -> {
-                val mag = sqrt(finalZr * finalZr + finalZi * finalZi).coerceIn(0.0, 4.0) / 4.0
+                val mag = sqrt(finalZr * finalZr + finalZi * finalZi).coerceIn(0.0, 2.0) / 2.0
                 val angle = ((atan2(finalZi, finalZr) / (2.0 * PI)) % 1.0 + 1.0) % 1.0
-                val combined = mag * 0.5 + angle * 0.5
+                val combined = (angle * 0.7 + mag * 0.3) % 1.0
                 val t = ((combined * lutMax).toInt() + cycleOffset) and 0xFF
                 lut[t.coerceIn(0, lutMax)]
             }
@@ -702,7 +702,7 @@ class FractalInteriorGenerator : Generator {
             val idx = (last - p) and RING_MASK
             val dx = ringX[idx] - refX
             val dy = ringY[idx] - refY
-            if (dx * dx + dy * dy < 1e-12) return p
+            if (dx * dx + dy * dy < 1e-8) return p
         }
         return 0
     }
@@ -720,7 +720,7 @@ class FractalInteriorGenerator : Generator {
             val nI = prodR * dI + prodI * dR
             prodR = nR; prodI = nI
         }
-        out[0] = sqrt(prodR * prodR + prodI * prodI).coerceAtMost(10.0) / 10.0
+        out[0] = sqrt(prodR * prodR + prodI * prodI).coerceIn(0.0, 1.0)
         out[1] = atan2(prodI, prodR)
     }
 
