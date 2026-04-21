@@ -303,7 +303,7 @@ class MainViewModel @Inject constructor(
     }
 
     // Select params that should always keep their default during randomize/surpriseMe
-    private val ALWAYS_DEFAULT_PARAMS = setOf("fill")
+    private val ALWAYS_DEFAULT_PARAMS = setOf("fill", "centerX", "centerY")
 
     /**
      * Randomize a NumberParam to a safe range — avoids the bottom 15% of
