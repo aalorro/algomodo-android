@@ -587,6 +587,7 @@ fun MainScreen(
                     .padding(horizontal = 16.dp, vertical = 2.dp),
                 horizontalArrangement = Arrangement.spacedBy(8.dp)
             ) {
+                val compactPadding = PaddingValues(horizontal = 12.dp, vertical = 8.dp)
                 if (needsImage) {
                     val flashTransition = rememberInfiniteTransition(label = "loadFlash")
                     val flashAlpha by flashTransition.animateFloat(
@@ -618,20 +619,23 @@ fun MainScreen(
                         onClick = {
                             imagePickerLauncher.launch(PickVisualMediaRequest(ActivityResultContracts.PickVisualMedia.ImageOnly))
                         },
-                        modifier = Modifier.weight(1f)
+                        modifier = Modifier.weight(1f),
+                        contentPadding = compactPadding
                     ) { Text("Load Image", fontSize = 12.sp) }
                 }
                 if (state.sourceImage != null) {
                     OutlinedButton(
                         onClick = { showOriginalImage = !showOriginalImage },
-                        modifier = Modifier.weight(1f)
+                        modifier = Modifier.weight(1f),
+                        contentPadding = compactPadding
                     ) { Text(if (showOriginalImage) "Result" else "Source", fontSize = 12.sp, maxLines = 1) }
                     OutlinedButton(
                         onClick = {
                             showOriginalImage = false
                             viewModel.setSourceImage(null)
                         },
-                        modifier = Modifier.weight(1f)
+                        modifier = Modifier.weight(1f),
+                        contentPadding = compactPadding
                     ) { Text("Clear", fontSize = 12.sp) }
                 }
             }
