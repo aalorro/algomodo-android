@@ -92,7 +92,7 @@ class AlgoApp : Application() {
         GeneratorRegistry.register(GraphSteinerNetworksGenerator())
         GeneratorRegistry.register(GraphTessellationsGenerator())
 
-        // Image (14)
+        // Image (15)
         GeneratorRegistry.register(AsciiArtGenerator())
         GeneratorRegistry.register(ConvolutionGenerator())
         GeneratorRegistry.register(DataMoshGenerator())
@@ -107,6 +107,7 @@ class AlgoApp : Application() {
         GeneratorRegistry.register(MosaicGenerator())
         GeneratorRegistry.register(OpticalFlowGenerator())
         GeneratorRegistry.register(PixelSortGenerator())
+        GeneratorRegistry.register(StipplePortraitGenerator())
 
         // Noise (7)
         GeneratorRegistry.register(DomainWarpMarbleGenerator())
