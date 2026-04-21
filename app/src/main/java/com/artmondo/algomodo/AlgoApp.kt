@@ -118,7 +118,7 @@ class AlgoApp : Application() {
         GeneratorRegistry.register(NoiseRidgedGenerator())
         GeneratorRegistry.register(NoiseTurbulenceGenerator())
 
-        // Plotter (14)
+        // Plotter (15)
         GeneratorRegistry.register(PlotterBezierRibbonGenerator())
         GeneratorRegistry.register(PlotterCirclePackingGenerator())
         GeneratorRegistry.register(PlotterContourLinesGenerator())
@@ -130,6 +130,7 @@ class AlgoApp : Application() {
         GeneratorRegistry.register(PlotterOffsetPathsGenerator())
         GeneratorRegistry.register(PlotterPhyllotaxisGenerator())
         GeneratorRegistry.register(PlotterScribbleGenerator())
+        GeneratorRegistry.register(SpaceFillingCurveGenerator())
         GeneratorRegistry.register(StipplingGenerator())
         GeneratorRegistry.register(PlotterStreamlinesGenerator())
         GeneratorRegistry.register(PlotterTspGenerator())
