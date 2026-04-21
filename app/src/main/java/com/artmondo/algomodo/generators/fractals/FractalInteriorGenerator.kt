@@ -19,7 +19,7 @@ class FractalInteriorGenerator : Generator {
         "Interior coloring of fractal sets — reveals hidden structure inside the Mandelbrot set, Julia sets, and other fractals using orbit traps, period detection, and multiplier analysis."
     override val algorithmNotes =
         "Instead of leaving interior pixels black, this generator colors them using six methods: " +
-        "orbit trap (minimum distance to a geometric shape during iteration), period detection (cycle length of converged orbits), " +
+        "orbit trap (accumulated proximity to a geometric shape during iteration), period detection (cycle length of converged orbits), " +
         "multiplier magnitude/angle (derivative product over one period cycle), interior distance estimate, and final orbit value. " +
         "Five fractal variants: Mandelbrot, Julia, Newton (z³-1), Tricorn (conjugate), Burning Ship (abs). " +
         "Four exterior modes control escaped-pixel appearance. Animation rotates traps and shifts Julia seed."
@@ -34,17 +34,17 @@ class FractalInteriorGenerator : Generator {
             "trap: orbit trap distance | period: cycle detection | multiplier-mag: derivative magnitude | multiplier-arg: derivative angle | interior-de: distance estimate | final-value: last orbit position",
             listOf("trap", "period", "multiplier-mag", "multiplier-arg", "interior-de", "final-value"), "trap"),
         Parameter.SelectParam("Trap Type", "trapType", ParamGroup.GEOMETRY,
-            "point: distance to origin | line: horizontal line | cross: axis cross | circle: ring | polygon: hexagon",
+            "point: distance to a point | line: horizontal line | cross: axis cross | circle: ring | polygon: hexagon",
             listOf("point", "line", "cross", "circle", "polygon"), "point"),
         Parameter.SelectParam("Exterior Mode", "exteriorMode", ParamGroup.COLOR,
             "smooth: gradient | banded: discrete steps | off: black exterior | subtle: dim exterior",
             listOf("smooth", "banded", "off", "subtle"), "smooth"),
         Parameter.NumberParam("Max Iterations", "maxIterations", ParamGroup.COMPOSITION, null, 50f, 800f, 10f, 150f),
-        Parameter.NumberParam("Center X", "centerX", ParamGroup.COMPOSITION, null, -2.5f, 1.5f, 0.05f, -0.5f),
+        Parameter.NumberParam("Center X", "centerX", ParamGroup.COMPOSITION, null, -2.5f, 1.5f, 0.05f, 0f),
         Parameter.NumberParam("Center Y", "centerY", ParamGroup.COMPOSITION, null, -1.5f, 1.5f, 0.05f, 0f),
-        Parameter.NumberParam("Zoom", "zoom", ParamGroup.COMPOSITION, null, 0.1f, 50f, 0.1f, 1f),
-        Parameter.NumberParam("Trap Center X", "trapCX", ParamGroup.GEOMETRY, null, -2f, 2f, 0.05f, 0f),
-        Parameter.NumberParam("Trap Center Y", "trapCY", ParamGroup.GEOMETRY, null, -2f, 2f, 0.05f, 0f),
+        Parameter.NumberParam("Zoom", "zoom", ParamGroup.COMPOSITION, null, 0.1f, 3f, 0.1f, 1f),
+        Parameter.NumberParam("Trap Center X", "trapCX", ParamGroup.GEOMETRY, null, -2f, 2f, 0.05f, 0.25f),
+        Parameter.NumberParam("Trap Center Y", "trapCY", ParamGroup.GEOMETRY, null, -2f, 2f, 0.05f, 0.5f),
         Parameter.NumberParam("Julia CX", "juliaCX", ParamGroup.GEOMETRY, "Real part of Julia constant", -2f, 2f, 0.01f, -0.7f),
         Parameter.NumberParam("Julia CY", "juliaCY", ParamGroup.GEOMETRY, "Imaginary part of Julia constant", -2f, 2f, 0.01f, 0.27f),
         Parameter.NumberParam("Trap Radius", "trapRadius", ParamGroup.GEOMETRY, null, 0.01f, 2f, 0.01f, 0.5f)
@@ -56,11 +56,11 @@ class FractalInteriorGenerator : Generator {
         "trapType" to "point",
         "exteriorMode" to "smooth",
         "maxIterations" to 150f,
-        "centerX" to -0.5f,
+        "centerX" to 0f,
         "centerY" to 0f,
         "zoom" to 1f,
-        "trapCX" to 0f,
-        "trapCY" to 0f,
+        "trapCX" to 0.25f,
+        "trapCY" to 0.5f,
         "juliaCX" to -0.7f,
         "juliaCY" to 0.27f,
         "trapRadius" to 0.5f
@@ -95,8 +95,11 @@ class FractalInteriorGenerator : Generator {
         private const val RING_MASK = 63
 
         private const val ESCAPE_R2 = 65536.0
-        private const val LN2 = 0.6931471805599453      // ln(2)
-        private const val LN_ESC_R = 5.545177444479562   // ln(256)
+        private const val LN2 = 0.6931471805599453
+        private const val LN_ESC_R = 5.545177444479562
+
+        // Skip first N iterations before tracking trap (avoids z=0 degeneracy)
+        private const val TRAP_SKIP = 3
 
         // Hexagon normals for polygon trap (3 axes, 6-fold symmetry)
         private val HEX_NX = doubleArrayOf(1.0, cos(PI / 3.0), cos(2.0 * PI / 3.0))
@@ -120,11 +123,11 @@ class FractalInteriorGenerator : Generator {
         val trapTypeStr = (params["trapType"] as? String) ?: "point"
         val extModeStr = (params["exteriorMode"] as? String) ?: "smooth"
         val maxIter = (params["maxIterations"] as? Number)?.toInt() ?: 150
-        val centerX = (params["centerX"] as? Number)?.toDouble() ?: -0.5
+        val centerX = (params["centerX"] as? Number)?.toDouble() ?: 0.0
         val centerY = (params["centerY"] as? Number)?.toDouble() ?: 0.0
         val zoom = (params["zoom"] as? Number)?.toDouble() ?: 1.0
-        val baseTrapCX = (params["trapCX"] as? Number)?.toDouble() ?: 0.0
-        val baseTrapCY = (params["trapCY"] as? Number)?.toDouble() ?: 0.0
+        val baseTrapCX = (params["trapCX"] as? Number)?.toDouble() ?: 0.25
+        val baseTrapCY = (params["trapCY"] as? Number)?.toDouble() ?: 0.5
         val baseJuliaCX = (params["juliaCX"] as? Number)?.toDouble() ?: -0.7
         val baseJuliaCY = (params["juliaCY"] as? Number)?.toDouble() ?: 0.27
         val trapRadius = (params["trapRadius"] as? Number)?.toDouble() ?: 0.5
@@ -165,7 +168,7 @@ class FractalInteriorGenerator : Generator {
         val juliaCY = baseJuliaCY + 0.1 * sin(time * 0.2)
         val colorCycleOffset = (time * 30).toInt() and 0xFF
 
-        // Adaptive resolution: render smaller during animation, upscale after
+        // Adaptive resolution for animation
         val renderW: Int; val renderH: Int
         if (isAnim) {
             renderW = (w * 0.55).toInt().coerceAtLeast(w / 2)
@@ -187,8 +190,8 @@ class FractalInteriorGenerator : Generator {
         val needsRing = intMode != INT_TRAP && intMode != INT_FINAL_VALUE
         val renderPixels = IntArray(renderW * renderH)
 
-        // Pre-compute trap radius squared for point trap (avoid sqrt per iter)
-        val trapR2 = trapRadius * trapRadius
+        // Decay factor for accumulated trap: controls how sharply proximity contributes
+        val trapDecay = 4.0
 
         val cores = Runtime.getRuntime().availableProcessors().coerceIn(2, 8)
         val threads = Array(cores) { t ->
@@ -196,14 +199,11 @@ class FractalInteriorGenerator : Generator {
                 val y0 = t * renderH / cores
                 val y1 = (t + 1) * renderH / cores
 
-                // Per-thread ring buffers (only allocated when needed)
                 val ringX = if (needsRing) DoubleArray(RING_SIZE) else null
                 val ringY = if (needsRing) DoubleArray(RING_SIZE) else null
-                // Reusable output for multiplier (avoid Pair allocation)
                 val multOut = if (needsRing) DoubleArray(2) else null
 
                 for (py in y0 until y1) {
-                    // Interrupt check every 4 rows
                     if ((py and 3) == 0 && Thread.currentThread().isInterrupted) return@Thread
 
                     val rawY = (py * invH - 0.5) * rangeY
@@ -214,7 +214,6 @@ class FractalInteriorGenerator : Generator {
                         val pixX = centerX + rawX
                         val pixY = centerY + rawY
 
-                        // Init z and c based on variant
                         var zr: Double; var zi: Double
                         var cr: Double; var ci: Double
                         when (variant) {
@@ -229,7 +228,9 @@ class FractalInteriorGenerator : Generator {
 
                         if (variant == VAR_NEWTON) {
                             // ---- Newton: z = z - (z³-1)/(3z²) ----
-                            var minTD = Double.MAX_VALUE
+                            // Newton starts at z=pixel (not 0), so trap skip less critical
+                            var trapAccum = 0.0
+                            var trapCount = 0
                             var ringHead = 0
                             while (iter < scaledMaxIter) {
                                 if (ringX != null) {
@@ -237,9 +238,11 @@ class FractalInteriorGenerator : Generator {
                                     ringY!![ringHead and RING_MASK] = zi
                                     ringHead++
                                 }
-                                // Inline trap distance
-                                val td = inlineTrapDist(zr, zi, trapType, trapCX, trapCY, trapRadius)
-                                if (td < minTD) minTD = td
+                                if (iter >= TRAP_SKIP) {
+                                    val td = computeTrapDist(zr, zi, trapType, trapCX, trapCY, trapRadius)
+                                    trapAccum += 1.0 / (1.0 + td * trapDecay)
+                                    trapCount++
+                                }
 
                                 val z2r = zr * zr - zi * zi
                                 val z2i = 2.0 * zr * zi
@@ -260,6 +263,8 @@ class FractalInteriorGenerator : Generator {
                                 if (zr * zr + zi * zi > 1e10) { escaped = true; break }
                             }
 
+                            val trapVal = if (trapCount > 0) trapAccum / trapCount else 0.0
+
                             renderPixels[rowOff + px] = if (convergedNewton) {
                                 val rootAngle = atan2(zi, zr)
                                 val rootIdx = ((rootAngle / (2.0 * PI) + 1.0) % 1.0)
@@ -267,64 +272,35 @@ class FractalInteriorGenerator : Generator {
                                 val shade = (1.0 - iter.toDouble() / scaledMaxIter).coerceIn(0.3, 1.0)
                                 blendShade(paletteLut[t.coerceIn(0, lutMax)], shade)
                             } else {
-                                colorInterior(intMode, minTD, trapRadius, zr, zi,
+                                colorInterior(intMode, trapVal, zr, zi,
                                     ringX, ringY, ringHead, multOut, iter, scaledMaxIter,
-                                    paletteLut, lutMax, colorCycleOffset, variant)
+                                    paletteLut, lutMax, colorCycleOffset)
                             }
                         } else {
                             // ---- Escape-time variants ----
 
-                            // Cardioid/bulb skip for Mandelbrot — color directly, no fake iteration
+                            // Cardioid/bulb skip for Mandelbrot
                             if (variant == VAR_MANDELBROT) {
                                 val crm = cr - 0.25; val ci2 = ci * ci
                                 val q = crm * crm + ci2
                                 if (q * (q + crm) <= 0.25 * ci2 ||
                                     (cr + 1.0).let { it * it } + ci2 <= 0.0625) {
-                                    // Known interior — fast-path: compute a simple interior color
-                                    // For trap mode use low synthetic distance, for others use palette base
-                                    renderPixels[rowOff + px] = when (intMode) {
-                                        INT_TRAP -> {
-                                            // Point near origin: trap dist ≈ |c|
-                                            val cd = sqrt(cr * cr + ci * ci)
-                                            val norm = (cd / trapRadius.coerceAtLeast(0.01)).coerceIn(0.0, 1.0)
-                                            val t = ((norm * lutMax).toInt() + colorCycleOffset) and 0xFF
-                                            paletteLut[t.coerceIn(0, lutMax)]
-                                        }
-                                        INT_FINAL_VALUE -> {
-                                            // Use c as approximate final value
-                                            val mag = sqrt(cr * cr + ci * ci).coerceIn(0.0, 2.0) / 2.0
-                                            val angle = ((atan2(ci, cr) / (2.0 * PI)) % 1.0 + 1.0) % 1.0
-                                            val t = (((mag * 0.5 + angle * 0.5) * lutMax).toInt() + colorCycleOffset) and 0xFF
-                                            paletteLut[t.coerceIn(0, lutMax)]
-                                        }
-                                        INT_PERIOD -> {
-                                            // Cardioid = period 1, bulb = period 2
-                                            val crm2 = cr - 0.25; val ci22 = ci * ci
-                                            val q2 = crm2 * crm2 + ci22
-                                            val isCardioid = q2 * (q2 + crm2) <= 0.25 * ci22
-                                            val period = if (isCardioid) 1 else 2
-                                            val t = ((period * 8 + colorCycleOffset) and 0xFF)
-                                            paletteLut[t.coerceIn(0, lutMax)]
-                                        }
-                                        else -> {
-                                            // multiplier modes — period-1 bulb has multiplier ≈ 0, cardioid varies
-                                            val norm = sqrt(cr * cr + ci * ci).coerceIn(0.0, 2.0) / 2.0
-                                            val t = ((norm * lutMax).toInt() + colorCycleOffset) and 0xFF
-                                            paletteLut[t.coerceIn(0, lutMax)]
-                                        }
-                                    }
+                                    renderPixels[rowOff + px] = fastInteriorColor(
+                                        intMode, cr, ci, trapType, trapCX, trapCY, trapRadius, trapDecay,
+                                        scaledMaxIter, paletteLut, lutMax, colorCycleOffset)
                                     continue
                                 }
                             }
 
+                            // Accumulated trap value + minimum (blend both for richness)
+                            var trapAccum = 0.0
+                            var trapCount = 0
                             var minTD = Double.MAX_VALUE
                             var ringHead = 0
 
-                            // Brent's periodicity detection
                             var refZr = 0.0; var refZi = 0.0
                             var period = 1; var pCount = 0
 
-                            // Dispatch by variant OUTSIDE inner loop to avoid branch per iteration
                             when (variant) {
                                 VAR_MANDELBROT, VAR_JULIA -> {
                                     while (iter < scaledMaxIter) {
@@ -333,36 +309,27 @@ class FractalInteriorGenerator : Generator {
                                             ringY!![ringHead and RING_MASK] = zi
                                             ringHead++
                                         }
-                                        // Inline trap dist for each type (no function call)
-                                        when (trapType) {
-                                            TRAP_POINT -> {
-                                                val dx = zr - trapCX; val dy = zi - trapCY
-                                                val d2 = dx * dx + dy * dy
-                                                if (d2 < minTD) minTD = d2 // compare squared, sqrt later
-                                            }
-                                            TRAP_LINE -> {
-                                                val d = abs(zi - trapCY)
-                                                if (d < minTD) minTD = d
-                                            }
-                                            TRAP_CROSS -> {
-                                                val d = min(abs(zr - trapCX), abs(zi - trapCY))
-                                                if (d < minTD) minTD = d
-                                            }
-                                            TRAP_CIRCLE -> {
-                                                val dx = zr - trapCX; val dy = zi - trapCY
-                                                val d = abs(sqrt(dx * dx + dy * dy) - trapRadius)
-                                                if (d < minTD) minTD = d
-                                            }
-                                            else -> { // POLYGON
-                                                val dx = zr - trapCX; val dy = zi - trapCY
-                                                var maxDot = -1e30
-                                                for (i in 0..2) {
-                                                    val dot = abs(dx * HEX_NX[i] + dy * HEX_NY[i])
-                                                    if (dot > maxDot) maxDot = dot
+
+                                        // Only track trap after TRAP_SKIP iterations
+                                        if (iter >= TRAP_SKIP) {
+                                            val dx = zr - trapCX; val dy = zi - trapCY
+                                            val td = when (trapType) {
+                                                TRAP_LINE -> abs(dy)
+                                                TRAP_CROSS -> min(abs(dx), abs(dy))
+                                                TRAP_CIRCLE -> abs(sqrt(dx * dx + dy * dy) - trapRadius)
+                                                TRAP_POLYGON -> {
+                                                    var mx = -1e30
+                                                    for (i in 0..2) {
+                                                        val dot = abs(dx * HEX_NX[i] + dy * HEX_NY[i])
+                                                        if (dot > mx) mx = dot
+                                                    }
+                                                    (mx - trapRadius).coerceAtLeast(0.0)
                                                 }
-                                                val d = (maxDot - trapRadius).coerceAtLeast(0.0)
-                                                if (d < minTD) minTD = d
+                                                else -> sqrt(dx * dx + dy * dy) // POINT
                                             }
+                                            trapAccum += 1.0 / (1.0 + td * trapDecay)
+                                            trapCount++
+                                            if (td < minTD) minTD = td
                                         }
 
                                         val tmp = zr * zr - zi * zi + cr
@@ -387,8 +354,12 @@ class FractalInteriorGenerator : Generator {
                                             ringY!![ringHead and RING_MASK] = zi
                                             ringHead++
                                         }
-                                        val td = inlineTrapDist(zr, zi, trapType, trapCX, trapCY, trapRadius)
-                                        if (td < minTD) minTD = td
+                                        if (iter >= TRAP_SKIP) {
+                                            val td = computeTrapDist(zr, zi, trapType, trapCX, trapCY, trapRadius)
+                                            trapAccum += 1.0 / (1.0 + td * trapDecay)
+                                            trapCount++
+                                            if (td < minTD) minTD = td
+                                        }
 
                                         val tmp = zr * zr - zi * zi + cr
                                         zi = -2.0 * zr * zi + ci
@@ -411,8 +382,12 @@ class FractalInteriorGenerator : Generator {
                                             ringY!![ringHead and RING_MASK] = zi
                                             ringHead++
                                         }
-                                        val td = inlineTrapDist(zr, zi, trapType, trapCX, trapCY, trapRadius)
-                                        if (td < minTD) minTD = td
+                                        if (iter >= TRAP_SKIP) {
+                                            val td = computeTrapDist(zr, zi, trapType, trapCX, trapCY, trapRadius)
+                                            trapAccum += 1.0 / (1.0 + td * trapDecay)
+                                            trapCount++
+                                            if (td < minTD) minTD = td
+                                        }
 
                                         val azr = abs(zr); val azi = abs(zi)
                                         val tmp = azr * azr - azi * azi + cr
@@ -431,10 +406,7 @@ class FractalInteriorGenerator : Generator {
                                 }
                             }
 
-                            // For point trap we tracked squared distance — take sqrt now
-                            if (trapType == TRAP_POINT && (variant == VAR_MANDELBROT || variant == VAR_JULIA)) {
-                                minTD = sqrt(minTD)
-                            }
+                            val trapVal = if (trapCount > 0) trapAccum / trapCount else 0.0
 
                             renderPixels[rowOff + px] = if (escaped) {
                                 when (extMode) {
@@ -456,9 +428,9 @@ class FractalInteriorGenerator : Generator {
                                     }
                                 }
                             } else {
-                                colorInterior(intMode, minTD, trapRadius, zr, zi,
+                                colorInterior(intMode, trapVal, zr, zi,
                                     ringX, ringY, ringHead, multOut, iter, scaledMaxIter,
-                                    paletteLut, lutMax, colorCycleOffset, variant)
+                                    paletteLut, lutMax, colorCycleOffset)
                             }
                         }
                     }
@@ -467,7 +439,6 @@ class FractalInteriorGenerator : Generator {
         }
         threads.forEach { it.join() }
 
-        // Upscale to full bitmap if rendered at reduced resolution
         if (renderW < w) {
             val pixels = IntArray(w * h)
             val xMap = IntArray(w) { (it * renderW / w).coerceAtMost(renderW - 1) }
@@ -486,8 +457,59 @@ class FractalInteriorGenerator : Generator {
         canvas.drawBitmap(bitmap, 0f, 0f, null)
     }
 
-    /** Trap distance — used by Tricorn/BurningShip paths. Mandelbrot/Julia inline it directly. */
-    private fun inlineTrapDist(
+    /** Fast interior color for cardioid/bulb skipped pixels — runs a short orbit to get real trap data. */
+    private fun fastInteriorColor(
+        intMode: Int, cr: Double, ci: Double,
+        trapType: Int, trapCX: Double, trapCY: Double, trapRadius: Double, trapDecay: Double,
+        maxIter: Int, lut: IntArray, lutMax: Int, cycleOffset: Int
+    ): Int {
+        // Run a short orbit (30 iters) to collect real trap/period data
+        val shortIters = 30
+        var zr = 0.0; var zi = 0.0
+        var trapAccum = 0.0
+        var trapCount = 0
+
+        for (i in 0 until shortIters) {
+            val tmp = zr * zr - zi * zi + cr
+            zi = 2.0 * zr * zi + ci
+            zr = tmp
+            if (i >= TRAP_SKIP) {
+                val td = computeTrapDist(zr, zi, trapType, trapCX, trapCY, trapRadius)
+                trapAccum += 1.0 / (1.0 + td * trapDecay)
+                trapCount++
+            }
+        }
+        val trapVal = if (trapCount > 0) trapAccum / trapCount else 0.5
+
+        return when (intMode) {
+            INT_TRAP -> {
+                val t = ((trapVal * lutMax).toInt() + cycleOffset) and 0xFF
+                lut[t.coerceIn(0, lutMax)]
+            }
+            INT_FINAL_VALUE -> {
+                val mag = sqrt(zr * zr + zi * zi).coerceIn(0.0, 4.0) / 4.0
+                val angle = ((atan2(zi, zr) / (2.0 * PI)) % 1.0 + 1.0) % 1.0
+                val t = (((mag * 0.5 + angle * 0.5) * lutMax).toInt() + cycleOffset) and 0xFF
+                lut[t.coerceIn(0, lutMax)]
+            }
+            INT_PERIOD -> {
+                // Cardioid = period 1, bulb = period 2
+                val crm = cr - 0.25; val ci2 = ci * ci
+                val q = crm * crm + ci2
+                val isCardioid = q * (q + crm) <= 0.25 * ci2
+                val period = if (isCardioid) 1 else 2
+                val t = ((period * 8 + cycleOffset) and 0xFF)
+                lut[t.coerceIn(0, lutMax)]
+            }
+            else -> {
+                // multiplier/DE modes — use trap value as approximation
+                val t = ((trapVal * lutMax).toInt() + cycleOffset) and 0xFF
+                lut[t.coerceIn(0, lutMax)]
+            }
+        }
+    }
+
+    private fun computeTrapDist(
         zx: Double, zy: Double, trapType: Int,
         tcx: Double, tcy: Double, radius: Double
     ): Double {
@@ -509,11 +531,11 @@ class FractalInteriorGenerator : Generator {
     }
 
     private fun colorInterior(
-        intMode: Int, minTrapDist: Double, trapRadius: Double,
+        intMode: Int, trapVal: Double,
         finalZr: Double, finalZi: Double,
         ringX: DoubleArray?, ringY: DoubleArray?, ringHead: Int,
         multOut: DoubleArray?, iter: Int, maxIter: Int,
-        lut: IntArray, lutMax: Int, cycleOffset: Int, variant: Int
+        lut: IntArray, lutMax: Int, cycleOffset: Int
     ): Int {
         return when (intMode) {
             INT_PERIOD -> {
@@ -560,10 +582,8 @@ class FractalInteriorGenerator : Generator {
                 val t = ((combined * lutMax).toInt() + cycleOffset) and 0xFF
                 lut[t.coerceIn(0, lutMax)]
             }
-            else -> { // INT_TRAP
-                if (minTrapDist >= 1e30) return lut[(cycleOffset and 0xFF).coerceIn(0, lutMax)]
-                val normalized = (minTrapDist / trapRadius.coerceAtLeast(0.01)).coerceIn(0.0, 1.0)
-                val t = ((normalized * lutMax).toInt() + cycleOffset) and 0xFF
+            else -> { // INT_TRAP — uses accumulated proximity score
+                val t = ((trapVal * lutMax).toInt() + cycleOffset) and 0xFF
                 lut[t.coerceIn(0, lutMax)]
             }
         }
@@ -586,7 +606,6 @@ class FractalInteriorGenerator : Generator {
         return 0
     }
 
-    /** Writes [mag, arg] into out array. No allocation. */
     private fun computeMultiplier(
         ringX: DoubleArray, ringY: DoubleArray, ringHead: Int, period: Int,
         out: DoubleArray
