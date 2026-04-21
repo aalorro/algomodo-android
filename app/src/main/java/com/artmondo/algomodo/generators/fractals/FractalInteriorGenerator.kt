@@ -555,7 +555,7 @@ class FractalInteriorGenerator : Generator {
             EXT_OFF -> {
                 val si = iter + 1.0 - ln(ln(sqrt(zr * zr + zi * zi)) / LN_ESC_R) / LN2
                 val rawT = ((si * invMaxIter + cycleD) % 1.0 + 1.0) % 1.0
-                blendShade(lut[(rawT * lutMax).toInt().coerceIn(0, lutMax)], 0.08)
+                blendShade(lut[(rawT * lutMax).toInt().coerceIn(0, lutMax)], 0.15)
             }
             EXT_SUBTLE -> {
                 val si = iter + 1.0 - ln(ln(sqrt(zr * zr + zi * zi)) / LN_ESC_R) / LN2
