@@ -341,7 +341,11 @@ class MainViewModel @Inject constructor(
             if (param.key in s.lockedParams) continue
             when (param) {
                 is Parameter.NumberParam -> {
-                    newParams[param.key] = safeRandomStep(param, rng)
+                    if (param.key in ALWAYS_DEFAULT_PARAMS) {
+                        newParams[param.key] = param.default
+                    } else {
+                        newParams[param.key] = safeRandomStep(param, rng)
+                    }
                 }
                 is Parameter.BooleanParam -> {
                     newParams[param.key] = rng.boolean()
@@ -390,7 +394,11 @@ class MainViewModel @Inject constructor(
         for (param in gen.parameterSchema) {
             when (param) {
                 is Parameter.NumberParam -> {
-                    newParams[param.key] = safeRandomStep(param, rng)
+                    if (param.key in ALWAYS_DEFAULT_PARAMS) {
+                        newParams[param.key] = param.default
+                    } else {
+                        newParams[param.key] = safeRandomStep(param, rng)
+                    }
                 }
                 is Parameter.BooleanParam -> newParams[param.key] = rng.boolean()
                 is Parameter.SelectParam -> {
