@@ -587,7 +587,8 @@ fun MainScreen(
                     .padding(horizontal = 16.dp, vertical = 2.dp),
                 horizontalArrangement = Arrangement.spacedBy(8.dp)
             ) {
-                val compactPadding = PaddingValues(horizontal = 12.dp, vertical = 8.dp)
+                val compactPadding = PaddingValues(horizontal = 8.dp, vertical = 6.dp)
+                val buttonShape = RoundedCornerShape(8.dp)
                 if (needsImage) {
                     val flashTransition = rememberInfiniteTransition(label = "loadFlash")
                     val flashAlpha by flashTransition.animateFloat(
@@ -620,14 +621,16 @@ fun MainScreen(
                             imagePickerLauncher.launch(PickVisualMediaRequest(ActivityResultContracts.PickVisualMedia.ImageOnly))
                         },
                         modifier = Modifier.weight(1f),
-                        contentPadding = compactPadding
-                    ) { Text("Load Image", fontSize = 12.sp) }
+                        contentPadding = compactPadding,
+                        shape = buttonShape
+                    ) { Text("Load Image", fontSize = 12.sp, maxLines = 1) }
                 }
                 if (state.sourceImage != null) {
                     OutlinedButton(
                         onClick = { showOriginalImage = !showOriginalImage },
                         modifier = Modifier.weight(1f),
-                        contentPadding = compactPadding
+                        contentPadding = compactPadding,
+                        shape = buttonShape
                     ) { Text(if (showOriginalImage) "Result" else "Source", fontSize = 12.sp, maxLines = 1) }
                     OutlinedButton(
                         onClick = {
@@ -635,8 +638,9 @@ fun MainScreen(
                             viewModel.setSourceImage(null)
                         },
                         modifier = Modifier.weight(1f),
-                        contentPadding = compactPadding
-                    ) { Text("Clear", fontSize = 12.sp) }
+                        contentPadding = compactPadding,
+                        shape = buttonShape
+                    ) { Text("Clear", fontSize = 12.sp, maxLines = 1) }
                 }
             }
         }
