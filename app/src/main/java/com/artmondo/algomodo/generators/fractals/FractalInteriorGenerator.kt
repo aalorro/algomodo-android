@@ -36,8 +36,8 @@ class FractalInteriorGenerator : Generator {
             "point: distance to a point | line: horizontal line | cross: axis cross | circle: ring | polygon: hexagon",
             listOf("point", "line", "cross", "circle", "polygon"), "point"),
         Parameter.SelectParam("Exterior Mode", "exteriorMode", ParamGroup.COLOR,
-            "smooth: gradient | banded: discrete steps | off: black exterior | subtle: dim exterior",
-            listOf("smooth", "banded", "off", "subtle"), "smooth"),
+            "smooth: gradient | banded: discrete steps | subtle: dim exterior",
+            listOf("smooth", "banded", "subtle"), "smooth"),
         Parameter.NumberParam("Max Iterations", "maxIterations", ParamGroup.COMPOSITION, null, 50f, 800f, 10f, 150f),
         Parameter.NumberParam("Center X", "centerX", ParamGroup.COMPOSITION, null, -2.5f, 1.5f, 0.05f, 0f),
         Parameter.NumberParam("Center Y", "centerY", ParamGroup.COMPOSITION, null, -1.5f, 1.5f, 0.05f, 0f),
@@ -93,8 +93,7 @@ class FractalInteriorGenerator : Generator {
 
         private const val EXT_SMOOTH = 0
         private const val EXT_BANDED = 1
-        private const val EXT_OFF = 2
-        private const val EXT_SUBTLE = 3
+        private const val EXT_SUBTLE = 2
 
         private const val RING_SIZE = 64
         private const val RING_MASK = 63
@@ -153,7 +152,7 @@ class FractalInteriorGenerator : Generator {
             "circle" -> TRAP_CIRCLE; "polygon" -> TRAP_POLYGON; else -> TRAP_POINT
         }
         val extMode = when (extModeStr) {
-            "banded" -> EXT_BANDED; "off" -> EXT_OFF; "subtle" -> EXT_SUBTLE; else -> EXT_SMOOTH
+            "banded" -> EXT_BANDED; "subtle" -> EXT_SUBTLE; else -> EXT_SMOOTH
         }
 
         val isDraft = quality == Quality.DRAFT
@@ -552,15 +551,10 @@ class FractalInteriorGenerator : Generator {
             EXT_BANDED -> {
                 lut[((iter * 7 + cycleOffset) and 0xFF).coerceIn(0, lutMax)]
             }
-            EXT_OFF -> {
-                val si = iter + 1.0 - ln(ln(sqrt(zr * zr + zi * zi)) / LN_ESC_R) / LN2
-                val rawT = ((si * invMaxIter + cycleD) % 1.0 + 1.0) % 1.0
-                blendShade(lut[(rawT * lutMax).toInt().coerceIn(0, lutMax)], 0.15)
-            }
             EXT_SUBTLE -> {
                 val si = iter + 1.0 - ln(ln(sqrt(zr * zr + zi * zi)) / LN_ESC_R) / LN2
                 val rawT = ((si * invMaxIter + cycleD) % 1.0 + 1.0) % 1.0
-                blendShade(lut[(rawT * lutMax).toInt().coerceIn(0, lutMax)], 0.4)
+                blendShade(lut[(rawT * lutMax).toInt().coerceIn(0, lutMax)], 0.5)
             }
             else -> { // EXT_SMOOTH
                 val si = iter + 1.0 - ln(ln(sqrt(zr * zr + zi * zi)) / LN_ESC_R) / LN2
