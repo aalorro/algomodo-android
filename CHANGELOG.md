@@ -2,6 +2,18 @@
 
 All notable changes to Algomodo will be documented in this file.
 
+## [1.8.3] - Android
+
+### Improvements
+- App title updated to "Algomodo - Generative Art" for better Play Store discoverability
+- Wireframe Terrain: scene-specific atmosphere — neon gets a perspective grid floor, starfield gets animated nebula color wash, void gets stark cubic fog falloff
+- Wireframe Terrain: smoother animation — toned-down glitch shift, reduced eruption/pulse height spikes, vertical connectors rendered without glow blur
+
+### Bug Fixes
+- Wireframe Terrain: fixed chaotic animation and stray line artifacts caused by concurrent render threads corrupting shared height/projection buffers (thread-safe immutable snapshot caches)
+- Wireframe Terrain: clamped terrain heights to prevent extreme perspective projection sending lines above the horizon
+- Removed READ_MEDIA_IMAGES permission to comply with Google Play Photo and Video Permissions policy (app already uses Android Photo Picker which requires no permission)
+
 ## [1.8.2] - Android
 
 ### New Features

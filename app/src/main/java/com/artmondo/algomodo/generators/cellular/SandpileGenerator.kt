@@ -74,7 +74,11 @@ class SandpileGenerator : Generator {
 
         val w = bitmap.width
         val h = bitmap.height
-        val targetSteps = ((totalGrains.toFloat() / dropRate.coerceAtLeast(1)) * (time * 0.1f + 1f)).toInt()
+        val baseSteps = ((totalGrains.toFloat() / dropRate.coerceAtLeast(1)) * (time * 0.1f + 1f)).toInt()
+        val targetSteps = when (quality) {
+            Quality.DRAFT -> (baseSteps * 0.05f).toInt().coerceAtLeast(1)
+            else -> baseSteps
+        }
         val totalCells = gridSize * gridSize
         val cx = gridSize / 2
         val cy = gridSize / 2
@@ -122,6 +126,11 @@ class SandpileGenerator : Generator {
         val recentlyToppled = if (needAvalanche) BooleanArray(totalCells) else null
 
         for (step in sim.stepsDone until targetSteps) {
+            // Allow runInterruptible to cancel stale renders promptly
+            if (step and 0xFF == 0 && Thread.currentThread().isInterrupted) {
+                sim.stepsDone = step
+                return
+            }
             var stackTop = 0
             val isLastStep = step == targetSteps - 1
 

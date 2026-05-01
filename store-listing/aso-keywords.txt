@@ -1,0 +1,47 @@
+ASO Keyword Research — Target Keywords by Priority
+==================================================
+
+These keywords are strategically embedded in the title, short description,
+and full description. Google Play indexes all three fields.
+
+PRIMARY (high volume, directly relevant):
+- generative art
+- art generator
+- algorithmic art
+- fractal art
+- digital art maker
+- abstract art
+
+SECONDARY (moderate volume, strong relevance):
+- wallpaper generator
+- pattern maker
+- creative coding
+- procedural art
+- math art
+- fractal generator
+
+LONG-TAIL (lower volume, low competition, high conversion):
+- Mandelbrot generator
+- Voronoi art
+- cellular automata art
+- noise art generator
+- generative design app
+- algorithmic patterns
+- L-system generator
+- spirograph app
+- halftone effect
+- pixel sort
+- circle packing art
+- Truchet tiles
+
+COMPETITOR KEYWORDS:
+- Processing app
+- p5js alternative
+- creative coding mobile
+- touchdesigner alternative
+
+KEYWORD PLACEMENT STRATEGY:
+- Title (strongest signal): "Generative Art"
+- Short description: algorithmic art, generators, fractals, noise, Voronoi, offline
+- Full description: All primary + secondary keywords naturally woven into copy
+  First paragraph is critical — Google weights early text more heavily

@@ -587,6 +587,8 @@ fun MainScreen(
                     .padding(horizontal = 16.dp, vertical = 2.dp),
                 horizontalArrangement = Arrangement.spacedBy(8.dp)
             ) {
+                val compactPadding = PaddingValues(horizontal = 8.dp, vertical = 6.dp)
+                val buttonShape = RoundedCornerShape(8.dp)
                 if (needsImage) {
                     val flashTransition = rememberInfiniteTransition(label = "loadFlash")
                     val flashAlpha by flashTransition.animateFloat(
@@ -618,21 +620,27 @@ fun MainScreen(
                         onClick = {
                             imagePickerLauncher.launch(PickVisualMediaRequest(ActivityResultContracts.PickVisualMedia.ImageOnly))
                         },
-                        modifier = Modifier.weight(1f)
-                    ) { Text("Load Image", fontSize = 12.sp) }
+                        modifier = Modifier.weight(1f),
+                        contentPadding = compactPadding,
+                        shape = buttonShape
+                    ) { Text("Load Image", fontSize = 12.sp, maxLines = 1) }
                 }
                 if (state.sourceImage != null) {
                     OutlinedButton(
                         onClick = { showOriginalImage = !showOriginalImage },
-                        modifier = Modifier.weight(1f)
+                        modifier = Modifier.weight(1f),
+                        contentPadding = compactPadding,
+                        shape = buttonShape
                     ) { Text(if (showOriginalImage) "Result" else "Source", fontSize = 12.sp, maxLines = 1) }
                     OutlinedButton(
                         onClick = {
                             showOriginalImage = false
                             viewModel.setSourceImage(null)
                         },
-                        modifier = Modifier.weight(1f)
-                    ) { Text("Clear", fontSize = 12.sp) }
+                        modifier = Modifier.weight(1f),
+                        contentPadding = compactPadding,
+                        shape = buttonShape
+                    ) { Text("Clear", fontSize = 12.sp, maxLines = 1) }
                 }
             }
         }
@@ -951,7 +959,7 @@ fun MainScreen(
             shadowElevation = 4.dp
         ) {
             Text(
-                text = "Preset saved! Find it in the Params tab.",
+                text = "Preset saved",
                 color = MaterialTheme.colorScheme.inverseOnSurface,
                 fontSize = 13.sp,
                 modifier = Modifier.padding(horizontal = 20.dp, vertical = 10.dp)

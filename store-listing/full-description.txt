@@ -1,0 +1,52 @@
+Turn your phone into a generative art studio. Algomodo lets you create stunning algorithmic art using pure mathematics — no drawing skills required.
+
+Choose from 134 unique generators across 12 families and explore over 300 million parameter configurations. Every tap reveals new patterns, textures, and abstract compositions powered by algorithms used in creative coding, data visualization, and computational design.
+
+GENERATOR FAMILIES
+
+◆ Fractals — Mandelbrot, Julia sets, Burning Ship, Fractal Flames, Multibrot, Orbit Traps, Pythagoras Tree, Strange Attractors
+◆ Noise — Simplex fields, FBM terrain, domain warp, ridged noise
+◆ Cellular Automata — Game of Life, Reaction Diffusion, Turing Patterns, DLA
+◆ Voronoi — Voronoi cells, Delaunay mesh, crackle, weighted Voronoi
+◆ Geometry — Islamic patterns, L-systems, spirograph, Truchet tiles, harmonics, gravity packing
+◆ Plotter — Circle packing, stippling, contour lines, guilloche
+◆ Graphs — Geodesic, constrained Delaunay, Euler trails, planar graphs
+◆ Animation — Attractor trails, curl fluid, kaleidoscope, plasma feedback
+◆ Flux — Perlin flow, simplex warp, feedback loops, pixel sort feedback, metaballs, wireframe terrain
+◆ Image Processing — Pixel sort, halftone, ASCII art, glitch transform
+◆ Procedural — Audio reactive, SDF raymarch, particle advection, warp
+◆ Text — Concrete poetry, matrix, glyphs, handwriting, procedural cursive
+
+KEY FEATURES
+
+★ 134 Art Generators — The largest collection of algorithmic art generators in a mobile app
+★ Infinite Variety — Seed-based deterministic rendering means trillions of unique outputs
+★ Real-Time Preview — See changes instantly as you adjust parameters
+★ 14 Color Palettes — Curated palettes with gradient interpolation, plus 5 custom palette slots
+★ Animation — Create animated art, export as GIF or MP4 video with audio
+★ High-Resolution Export — Save as PNG, JPG, or SVG up to 8K resolution
+★ Post-Processing — Apply grain, vignette, dither, and posterize effects
+★ Presets & Recipes — Save your favorite configs and share them as JSON recipes
+★ Image Effects — Load photos from gallery or camera and apply generative effects
+★ Touch Gestures — Tap to expand, swipe to randomize, undo, or surprise
+★ 50-Step Undo/Redo — Never lose a configuration you liked
+★ Parameter Locking — Lock any parameter to keep it fixed during randomization
+★ Favorites — Star your favorite generators for quick access
+
+PERFECT FOR
+
+• Digital artists and creative coders
+• Generative art enthusiasts
+• Wallpaper and background creation
+• Abstract art exploration
+• Math and algorithm visualization
+• Print-ready artwork generation
+• Social media content creation
+
+PRIVACY FIRST
+
+Algomodo works 100% offline. No internet required, no tracking, no analytics, no ads. All processing happens on your device. Your images are never uploaded anywhere.
+
+Whether you're a creative coder, a math enthusiast, or just someone who appreciates beautiful patterns — Algomodo puts the beauty of algorithms in your hands.
+
+Download now and start creating generative art.

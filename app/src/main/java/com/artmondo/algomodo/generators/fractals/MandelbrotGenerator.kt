@@ -22,23 +22,26 @@ class MandelbrotGenerator : Generator {
         "For each pixel, iterates z = z^2 + c where c is the complex coordinate. " +
         "Pixels that don't escape after maxIterations are considered inside the set (colored black). " +
         "Three coloring styles: smooth (classic), stripe (fine-detail patterns via orbit statistics), " +
-        "and glow (boundary edge glow via distance estimation). Animation zooms exponentially " +
-        "toward a seed-selected boundary region with gentle rotation."
+        "and glow (boundary edge glow via distance estimation). Four animation movements: " +
+        "dive (exponential zoom toward boundary), orbit (circles the set), " +
+        "pulse (breathing zoom), wander (Lissajous drift across regions)."
     override val supportsVector = false
     override val supportsAnimation = true
 
     override val parameterSchema: List<Parameter> = listOf(
         Parameter.SelectParam("Style", "style", ParamGroup.COMPOSITION, "smooth: classic gradient | stripe: fine detail patterns | glow: boundary edge glow", listOf("smooth", "stripe", "glow"), "stripe"),
-        Parameter.NumberParam("Center X", "centerX", ParamGroup.COMPOSITION, "Real-axis center of the view", -1.5f, 0.5f, 0.05f, -0.5f),
-        Parameter.NumberParam("Center Y", "centerY", ParamGroup.COMPOSITION, "Imaginary-axis center of the view", -1f, 1f, 0.05f, 0f),
+        Parameter.SelectParam("Movement", "movement", ParamGroup.FLOW_MOTION, "dive: zoom into boundary | orbit: circle the set | pulse: breathe in/out | wander: drift across regions", listOf("dive", "orbit", "pulse", "wander"), "dive"),
+        Parameter.NumberParam("Center X", "centerX", ParamGroup.COMPOSITION, "Real-axis center of the view", -0.8f, -0.2f, 0.05f, -0.5f),
+        Parameter.NumberParam("Center Y", "centerY", ParamGroup.COMPOSITION, "Imaginary-axis center of the view", -0.3f, 0.3f, 0.05f, 0f),
         Parameter.NumberParam("Zoom", "zoom", ParamGroup.COMPOSITION, "Zoom level — higher values zoom deeper into the fractal", 0.5f, 4f, 0.5f, 1f),
         Parameter.NumberParam("Max Iterations", "maxIterations", ParamGroup.COMPOSITION, "Higher = more detail in boundary regions but slower", 32f, 256f, 16f, 100f),
         Parameter.NumberParam("Color Cycles", "colorCycles", ParamGroup.COLOR, "How many times the palette repeats across the iteration range", 1f, 8f, 1f, 3f),
-        Parameter.NumberParam("Speed", "speed", ParamGroup.FLOW_MOTION, "Animation speed — exponential zoom into fractal boundary with rotation", 0.1f, 3.0f, 0.1f, 0.5f)
+        Parameter.NumberParam("Speed", "speed", ParamGroup.FLOW_MOTION, "Animation speed", 0.1f, 3.0f, 0.1f, 0.5f)
     )
 
     override fun getDefaultParams(): Map<String, Any> = mapOf(
         "style" to "stripe",
+        "movement" to "dive",
         "centerX" to -0.5f,
         "centerY" to 0f,
         "zoom" to 1f,
@@ -81,6 +84,7 @@ class MandelbrotGenerator : Generator {
         val maxIter = (params["maxIterations"] as? Number)?.toInt() ?: 100
         val colorCycles = (params["colorCycles"] as? Number)?.toFloat() ?: 3f
         val speed = (params["speed"] as? Number)?.toFloat() ?: 0.5f
+        val movement = (params["movement"] as? String) ?: "dive"
 
         val scaledMaxIter = when (quality) {
             Quality.DRAFT -> (maxIter / 2).coerceAtLeast(16)
@@ -90,11 +94,11 @@ class MandelbrotGenerator : Generator {
 
         val isAnim = time > 0f
 
-        // Pick a zoom target from seed
+        // Pick a zoom target from seed (used by dive)
         val rng = SeededRNG(seed)
         val target = zoomTargets[rng.integer(0, zoomTargets.size - 1)]
 
-        // ---- Animation: exponential zoom + rotation + smooth pan ----
+        // ---- Animation: movement style dispatch ----
         val animCenterX: Double
         val animCenterY: Double
         val animZoom: Double
@@ -103,16 +107,73 @@ class MandelbrotGenerator : Generator {
 
         if (isAnim) {
             val t = time.toDouble() * speed
-            // Exponential zoom — accelerating dive into the fractal
-            animZoom = baseZoom * exp(t * 0.3)
-            // S-curve eased pan toward target
-            val lerpT = (1.0 - 1.0 / (1.0 + t * 0.15)).coerceIn(0.0, 0.95)
-            animCenterX = baseCenterX + (target[0] - baseCenterX) * lerpT
-            animCenterY = baseCenterY + (target[1] - baseCenterY) * lerpT
-            // Gentle rotation
-            val rotAngle = t * 0.04
-            cosRot = cos(rotAngle)
-            sinRot = sin(rotAngle)
+
+            when (movement) {
+                "orbit" -> {
+                    // Circle around the Mandelbrot boundary at moderate zoom
+                    val orbitRadius = 0.3 + rng.randomDouble() * 0.5
+                    val startAngle = rng.randomDouble() * 2.0 * PI
+                    val orbitSpeed = 0.15 + rng.randomDouble() * 0.1
+
+                    val angle = startAngle + t * orbitSpeed
+                    val orbitCx = -0.5 + orbitRadius * cos(angle) * 0.8
+                    val orbitCy = orbitRadius * sin(angle) * 0.7
+
+                    animCenterX = baseCenterX + (orbitCx - baseCenterX) * 0.7
+                    animCenterY = baseCenterY + (orbitCy - baseCenterY) * 0.7
+                    animZoom = baseZoom * (2.0 + 0.5 * sin(t * 0.1))
+                    val rotAngle = t * 0.02
+                    cosRot = cos(rotAngle)
+                    sinRot = sin(rotAngle)
+                }
+
+                "pulse" -> {
+                    // Sinusoidal zoom in/out with slight XY wobble
+                    val breathDepth = 1.5 + rng.randomDouble() * 1.0
+                    animZoom = baseZoom * (1.0 + breathDepth * (0.5 + 0.5 * sin(t * 0.25)))
+
+                    val wobbleAmpX = 0.02 + rng.randomDouble() * 0.03
+                    val wobbleAmpY = 0.02 + rng.randomDouble() * 0.03
+                    val phaseX = rng.randomDouble() * 2.0 * PI
+                    val phaseY = rng.randomDouble() * 2.0 * PI
+                    animCenterX = baseCenterX + wobbleAmpX * sin(t * 0.3 + phaseX)
+                    animCenterY = baseCenterY + wobbleAmpY * sin(t * 0.2 + phaseY)
+
+                    val rotAngle = t * 0.015
+                    cosRot = cos(rotAngle)
+                    sinRot = sin(rotAngle)
+                }
+
+                "wander" -> {
+                    // Lissajous drift across boundary regions
+                    val freqX = (2 + rng.integer(0, 3)).toDouble()
+                    val freqY = (3 + rng.integer(0, 3)).toDouble()
+                    val phaseOffset = rng.randomDouble() * 2.0 * PI
+
+                    val ampX = 0.3 + rng.randomDouble() * 0.2
+                    val ampY = 0.25 + rng.randomDouble() * 0.15
+
+                    val wanderSpeed = 0.08
+                    animCenterX = baseCenterX + ampX * sin(freqX * t * wanderSpeed)
+                    animCenterY = baseCenterY + ampY * sin(freqY * t * wanderSpeed + phaseOffset)
+
+                    animZoom = baseZoom * (2.0 + 1.0 * sin(t * 0.05))
+                    val rotAngle = t * 0.03
+                    cosRot = cos(rotAngle)
+                    sinRot = sin(rotAngle)
+                }
+
+                else -> {
+                    // Dive: exponential zoom + S-curve pan toward boundary target + rotation
+                    animZoom = baseZoom * exp(t * 0.3)
+                    val lerpT = (1.0 - 1.0 / (1.0 + t * 0.15)).coerceIn(0.0, 0.95)
+                    animCenterX = baseCenterX + (target[0] - baseCenterX) * lerpT
+                    animCenterY = baseCenterY + (target[1] - baseCenterY) * lerpT
+                    val rotAngle = t * 0.04
+                    cosRot = cos(rotAngle)
+                    sinRot = sin(rotAngle)
+                }
+            }
         } else {
             animCenterX = baseCenterX
             animCenterY = baseCenterY

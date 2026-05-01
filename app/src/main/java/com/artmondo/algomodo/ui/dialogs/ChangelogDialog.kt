@@ -18,6 +18,17 @@ fun ChangelogDialog(onDismiss: () -> Unit) {
         text = {
             Text(
                 text = """
+v1.8.3 (Android)
+Improvements:
+- App title updated to "Algomodo - Generative Art" for better Play Store discoverability
+- Wireframe Terrain: scene-specific atmosphere (neon grid floor, starfield nebula, void stark fog)
+- Wireframe Terrain: smoother animation with toned-down glitch and eruption effects
+
+Bug Fixes:
+- Wireframe Terrain: fixed chaotic animation and stray lines from concurrent render thread data corruption
+- Wireframe Terrain: clamped heights to prevent lines projecting above the horizon
+- Removed READ_MEDIA_IMAGES permission (Google Play policy compliance; app uses Photo Picker)
+
 v1.8.2 (Android)
 New Features:
 - Favorites: star any generator to add it to the yellow Favorites tab, pinned before Animation. Persists across sessions.

@@ -101,51 +101,44 @@ class FluxWireframeTerrainGenerator : Generator {
         "reactivity" to 1.0f
     )
 
-    // ── Pre-allocated grid buffers ───────────────────────────────────────
-    @Volatile private var _heights: FloatArray? = null
-    @Volatile private var _screenX: FloatArray? = null
-    @Volatile private var _screenY: FloatArray? = null
-    @Volatile private var _lastGridSize = 0
+    // ── Thread-safe seed-based caches ────────────────────────────────────
+    // Uses immutable data class snapshots with synchronized LRU cache so that
+    // concurrent calls from the animation-preview thread and the export thread
+    // each get their own consistent snapshot (keyed by seed + bitmap dims).
 
-    // ── Cached star positions ────────────────────────────────────────────
-    @Volatile private var _starX: FloatArray? = null
-    @Volatile private var _starY: FloatArray? = null
-    @Volatile private var _starBright: FloatArray? = null
-    @Volatile private var _starPhase: FloatArray? = null
-    @Volatile private var _starSeed = -1
+    private data class StarSnapshot(
+        val sx: FloatArray, val sy: FloatArray,
+        val sb: FloatArray, val sp: FloatArray
+    )
+    private data class MountainSnapshot(val mh: FloatArray)
+    private data class EruptionSnapshot(
+        val ex: FloatArray, val ez: FloatArray,
+        val ep: FloatArray, val es: FloatArray
+    )
+    private data class ShooterSnapshot(
+        val sx: FloatArray, val sy: FloatArray,
+        val dx: FloatArray, val dy: FloatArray,
+        val phase: FloatArray, val len: FloatArray
+    )
 
-    // ── Cached mountain silhouette ───────────────────────────────────────
-    @Volatile private var _mtHeights: FloatArray? = null
-    @Volatile private var _mtSeed = -1
+    private val cacheLock = Any()
 
-    // ── Cached eruption points ───────────────────────────────────────────
-    @Volatile private var _eruptX: FloatArray? = null
-    @Volatile private var _eruptZ: FloatArray? = null
-    @Volatile private var _eruptPhase: FloatArray? = null
-    @Volatile private var _eruptStrength: FloatArray? = null
-    @Volatile private var _eruptSeed = -1
-
-    // ── Shooting star state ──────────────────────────────────────────────
-    @Volatile private var _shootX: FloatArray? = null
-    @Volatile private var _shootY: FloatArray? = null
-    @Volatile private var _shootDX: FloatArray? = null
-    @Volatile private var _shootDY: FloatArray? = null
-    @Volatile private var _shootPhase: FloatArray? = null
-    @Volatile private var _shootLen: FloatArray? = null
-    @Volatile private var _shootSeed = -1
-
-    private fun ensureGridBuffers(size: Int) {
-        if (_lastGridSize != size) {
-            _heights = FloatArray(size)
-            _screenX = FloatArray(size)
-            _screenY = FloatArray(size)
-            _lastGridSize = size
-        }
+    private val starCache = object : LinkedHashMap<String, StarSnapshot>(4, 0.75f, true) {
+        override fun removeEldestEntry(eldest: MutableMap.MutableEntry<String, StarSnapshot>?) = size > 2
+    }
+    private val mtCache = object : LinkedHashMap<Int, MountainSnapshot>(4, 0.75f, true) {
+        override fun removeEldestEntry(eldest: MutableMap.MutableEntry<Int, MountainSnapshot>?) = size > 2
+    }
+    private val eruptCache = object : LinkedHashMap<Int, EruptionSnapshot>(4, 0.75f, true) {
+        override fun removeEldestEntry(eldest: MutableMap.MutableEntry<Int, EruptionSnapshot>?) = size > 2
+    }
+    private val shootCache = object : LinkedHashMap<String, ShooterSnapshot>(4, 0.75f, true) {
+        override fun removeEldestEntry(eldest: MutableMap.MutableEntry<String, ShooterSnapshot>?) = size > 2
     }
 
-    private fun ensureStars(seed: Int, w: Int, h: Int, horizonY: Float) {
-        if (_starSeed == seed) return
-        _starSeed = seed
+    private fun getStars(seed: Int, w: Int, h: Int, horizonY: Float): StarSnapshot {
+        val key = "$seed-$w-$h"
+        synchronized(cacheLock) { starCache[key]?.let { return it } }
         val rng = SeededRNG(seed + 7777)
         val sx = FloatArray(STAR_COUNT)
         val sy = FloatArray(STAR_COUNT)
@@ -157,24 +150,26 @@ class FluxWireframeTerrainGenerator : Generator {
             sb[i] = rng.range(0.3f, 1.0f)
             sp[i] = rng.range(0f, TAU)
         }
-        _starX = sx; _starY = sy; _starBright = sb; _starPhase = sp
+        val snap = StarSnapshot(sx, sy, sb, sp)
+        synchronized(cacheLock) { starCache[key] = snap }
+        return snap
     }
 
-    private fun ensureMountains(seed: Int) {
-        if (_mtSeed == seed) return
-        _mtSeed = seed
+    private fun getMountains(seed: Int): MountainSnapshot {
+        synchronized(cacheLock) { mtCache[seed]?.let { return it } }
         val noise = SimplexNoise(seed + 3333)
         val mh = FloatArray(MT_POINTS)
         for (i in 0 until MT_POINTS) {
             val x = i.toFloat() / MT_POINTS
             mh[i] = noise.fbm(x * 3f, 0f, 3, 2f, 0.5f) * 0.5f + 0.3f
         }
-        _mtHeights = mh
+        val snap = MountainSnapshot(mh)
+        synchronized(cacheLock) { mtCache[seed] = snap }
+        return snap
     }
 
-    private fun ensureEruptions(seed: Int) {
-        if (_eruptSeed == seed) return
-        _eruptSeed = seed
+    private fun getEruptions(seed: Int): EruptionSnapshot {
+        synchronized(cacheLock) { eruptCache[seed]?.let { return it } }
         val rng = SeededRNG(seed + 5555)
         val ex = FloatArray(MAX_ERUPTIONS)
         val ez = FloatArray(MAX_ERUPTIONS)
@@ -186,12 +181,14 @@ class FluxWireframeTerrainGenerator : Generator {
             ep[i] = rng.range(0f, TAU)
             es[i] = rng.range(0.4f, 1.0f)
         }
-        _eruptX = ex; _eruptZ = ez; _eruptPhase = ep; _eruptStrength = es
+        val snap = EruptionSnapshot(ex, ez, ep, es)
+        synchronized(cacheLock) { eruptCache[seed] = snap }
+        return snap
     }
 
-    private fun ensureShooters(seed: Int, w: Int, horizonY: Float) {
-        if (_shootSeed == seed) return
-        _shootSeed = seed
+    private fun getShooters(seed: Int, w: Int, horizonY: Float): ShooterSnapshot {
+        val key = "$seed-$w-$horizonY"
+        synchronized(cacheLock) { shootCache[key]?.let { return it } }
         val rng = SeededRNG(seed + 9999)
         val shX = FloatArray(MAX_SHOOTERS)
         val shY = FloatArray(MAX_SHOOTERS)
@@ -208,8 +205,9 @@ class FluxWireframeTerrainGenerator : Generator {
             shP[i] = rng.range(0f, 20f) // staggered appearance
             shL[i] = rng.range(40f, 100f)
         }
-        _shootX = shX; _shootY = shY; _shootDX = shDX; _shootDY = shDY
-        _shootPhase = shP; _shootLen = shL
+        val snap = ShooterSnapshot(shX, shY, shDX, shDY, shP, shL)
+        synchronized(cacheLock) { shootCache[key] = snap }
+        return snap
     }
 
     // ── Palette interpolation helper ─────────────────────────────────────
@@ -322,11 +320,11 @@ class FluxWireframeTerrainGenerator : Generator {
 
         // ── 2. Stars ─────────────────────────────────────────────────────
         if (scene == "starfield" || scene == "synthwave") {
-            ensureStars(seed, wI, hI, horizonY)
-            val starX = _starX!!
-            val starY = _starY!!
-            val starBright = _starBright!!
-            val starPhase = _starPhase!!
+            val stars = getStars(seed, wI, hI, horizonY)
+            val starX = stars.sx
+            val starY = stars.sy
+            val starBright = stars.sb
+            val starPhase = stars.sp
             paint.color = Color.WHITE
             paint.style = Paint.Style.FILL
             for (i in 0 until STAR_COUNT) {
@@ -344,13 +342,13 @@ class FluxWireframeTerrainGenerator : Generator {
 
         // ── 2b. Shooting stars ───────────────────────────────────────────
         if (scene == "starfield" || scene == "synthwave") {
-            ensureShooters(seed, wI, horizonY)
-            val shootX = _shootX!!
-            val shootY = _shootY!!
-            val shootDX = _shootDX!!
-            val shootDY = _shootDY!!
-            val shootPhase = _shootPhase!!
-            val shootLen = _shootLen!!
+            val shooters = getShooters(seed, wI, horizonY)
+            val shootX = shooters.sx
+            val shootY = shooters.sy
+            val shootDX = shooters.dx
+            val shootDY = shooters.dy
+            val shootPhase = shooters.phase
+            val shootLen = shooters.len
 
             paint.style = Paint.Style.STROKE
             paint.strokeCap = Paint.Cap.ROUND
@@ -470,8 +468,8 @@ class FluxWireframeTerrainGenerator : Generator {
 
         // ── 4. Distant mountain silhouette ───────────────────────────────
         if (scene == "synthwave" || scene == "starfield") {
-            ensureMountains(seed)
-            val mtHeights = _mtHeights!!
+            val mtSnap = getMountains(seed)
+            val mtHeights = mtSnap.mh
             val mtColor = if (scene == "synthwave")
                 Color.argb(230, 30, 0, 50) else Color.argb(230, 10, 10, 30)
 
@@ -515,20 +513,19 @@ class FluxWireframeTerrainGenerator : Generator {
         }
 
         val totalPoints = gridWidth * gridDepth
-        ensureGridBuffers(totalPoints)
-        val heights = _heights!!
-        val screenXArr = _screenX!!
-        val screenYArr = _screenY!!
+        val heights = FloatArray(totalPoints)
+        val screenXArr = FloatArray(totalPoints)
+        val screenYArr = FloatArray(totalPoints)
 
         var minH = Float.MAX_VALUE
         var maxH = -Float.MAX_VALUE
 
         // Pre-compute eruption state for this frame
-        ensureEruptions(seed)
-        val eruptX = _eruptX!!
-        val eruptZ = _eruptZ!!
-        val eruptPhase = _eruptPhase!!
-        val eruptStrength = _eruptStrength!!
+        val eruptSnap = getEruptions(seed)
+        val eruptX = eruptSnap.ex
+        val eruptZ = eruptSnap.ez
+        val eruptPhase = eruptSnap.ep
+        val eruptStrength = eruptSnap.es
         val eruptActive = FloatArray(MAX_ERUPTIONS)
         for (e in 0 until MAX_ERUPTIONS) {
             // Each eruption pulses on a ~5s cycle, active for ~1.5s
@@ -548,7 +545,7 @@ class FluxWireframeTerrainGenerator : Generator {
             // Energy pulse height boost for this row
             val pulseDist = abs(gzNorm - (1f - pulseProgress))
             val pulseBoost = if (pulseDist < pulseWidth)
-                (1f - pulseDist / pulseWidth) * 0.35f * heightScale else 0f
+                (1f - pulseDist / pulseWidth) * 0.15f * heightScale else 0f
 
             for (gx in 0 until gridWidth) {
                 val nx = gx * noiseScale / gridWidth
@@ -588,7 +585,7 @@ class FluxWireframeTerrainGenerator : Generator {
                     val dz = gzNorm - eruptZ[e]
                     val d2 = dx * dx + dz * dz
                     if (d2 < 0.02f) {
-                        heightVal += eruptActive[e] * heightScale * 1.2f * exp((-d2 * 80f).toDouble()).toFloat()
+                        heightVal += eruptActive[e] * heightScale * 0.5f * exp((-d2 * 80f).toDouble()).toFloat()
                     }
                 }
 
@@ -601,6 +598,8 @@ class FluxWireframeTerrainGenerator : Generator {
                     heightVal += audioBass * 0.3f * exp((-dist * dist * 20f).toDouble()).toFloat()
                 }
 
+                // Clamp to prevent extreme projection artifacts
+                heightVal = heightVal.coerceIn(-1.0f, 1.8f)
                 heights[rowOffset + gx] = heightVal
                 if (heightVal < minH) minH = heightVal
                 if (heightVal > maxH) maxH = heightVal
@@ -624,7 +623,7 @@ class FluxWireframeTerrainGenerator : Generator {
             // Glitch: rows near the energy pulse wave get horizontal displacement
             val pulseDist = abs(gzNorm - (1f - pulseProgress))
             val glitchShift = if (pulseDist < pulseWidth * 1.5f)
-                sin(gz * 17f + t * 30f) * 0.02f * (1f - pulseDist / (pulseWidth * 1.5f)) else 0f
+                sin(gz * 17f + t * 4f) * 0.006f * (1f - pulseDist / (pulseWidth * 1.5f)) else 0f
 
             for (gx in 0 until gridWidth) {
                 val idx = rowOffset + gx
@@ -648,7 +647,6 @@ class FluxWireframeTerrainGenerator : Generator {
         paint.strokeCap = Paint.Cap.ROUND
 
         val isGlow = scanlineMode == "glow"
-        val isNeon = scene == "neon"
 
         // Android Canvas does not have shadowBlur like HTML Canvas.
         // We simulate glow with BlurMaskFilter for glow mode.
@@ -684,10 +682,33 @@ class FluxWireframeTerrainGenerator : Generator {
         for (gz in gridDepth - 1 downTo 0) {
             val rowOffset = gz * gridWidth
             val depthT = gz.toFloat() / (gridDepth - 1) // 0=closest, 1=farthest
-            val fogAlpha = 0.1f + 0.9f * (1f - depthT) * (1f - depthT)
 
-            // Neon mode: closer rows glow brighter
-            val neonBoost = if (isNeon) (1f - depthT) * 0.4f else 0f
+            // Scene-specific fog / alpha curves
+            val fogAlpha: Float
+            val lineBoost: Float
+            when (scene) {
+                "neon" -> {
+                    // Neon: bright everywhere, minimal distance fade
+                    fogAlpha = 0.5f + 0.5f * (1f - depthT)
+                    lineBoost = (1f - depthT) * 1.0f
+                }
+                "void" -> {
+                    // Void: aggressive distance cutoff, stark minimalist
+                    val d = 1f - depthT
+                    fogAlpha = d * d * d // cubic falloff -- back rows vanish quickly
+                    lineBoost = 0f
+                }
+                "starfield" -> {
+                    // Starfield: cool-toned, moderate fade, slight glow
+                    fogAlpha = 0.15f + 0.85f * (1f - depthT) * (1f - depthT)
+                    lineBoost = (1f - depthT) * 0.15f
+                }
+                else -> {
+                    // Synthwave: standard warm fog
+                    fogAlpha = 0.1f + 0.9f * (1f - depthT) * (1f - depthT)
+                    lineBoost = 0f
+                }
+            }
 
             val rowColor: Int
             val rowColorOpaque: Int
@@ -755,7 +776,7 @@ class FluxWireframeTerrainGenerator : Generator {
 
             } else {
                 // ── Wireframe / Glow mode ────────────────────────────────
-                val lw = baseLineWidth * (1f + neonBoost)
+                val lw = baseLineWidth * (1f + lineBoost)
                 paint.style = Paint.Style.STROKE
                 paint.maskFilter = glowFilter
 
@@ -799,14 +820,15 @@ class FluxWireframeTerrainGenerator : Generator {
                     canvas.drawPath(path, paint)
                 }
 
-                // Vertical connectors
+                // Vertical connectors (no glow filter — prevents blurry artifacts)
                 if (gz > 0) {
                     val prevRowOffset = (gz - 1) * gridWidth
                     val vertStep = when (quality) {
-                        Quality.DRAFT -> 5; Quality.ULTRA -> 2; else -> 3
+                        Quality.DRAFT -> 5; Quality.ULTRA -> 3; else -> 4
                     }
+                    paint.maskFilter = null
                     paint.strokeWidth = baseLineWidth * 0.4f
-                    paint.alpha = (fogAlpha * 0.4f * 255f).toInt().coerceIn(0, 255)
+                    paint.alpha = (fogAlpha * 0.3f * 255f).toInt().coerceIn(0, 255)
                     paint.color = (paint.color and 0x00FFFFFF) or (paint.alpha shl 24)
 
                     path.reset()
@@ -820,12 +842,74 @@ class FluxWireframeTerrainGenerator : Generator {
                     }
                     canvas.drawPath(path, paint)
                     paint.alpha = 255
+                    paint.maskFilter = glowFilter
                 }
             }
         }
 
         // Reset mask filter
         paint.maskFilter = null
+
+        // ── 8b. Neon scene: perspective grid floor overlay ─────────────
+        if (scene == "neon") {
+            paint.style = Paint.Style.STROKE
+            paint.strokeWidth = 1f
+            val gc = rawColors[0]
+            val pv = perspectiveVal * zoomPulse
+
+            // Horizontal grid lines (depth slices)
+            for (i in 0 until 25) {
+                val zNorm = i.toFloat() / 24f
+                val wz = zNorm * 2f
+                val denom = wz + pv
+                val sy = horizonY + wz * 0.5f * pv * h * 0.5f / denom
+                val alpha = (0.25f * (1f - zNorm) * (1f - zNorm) * 255f).toInt().coerceIn(0, 255)
+                paint.color = Color.argb(alpha, gc[0], gc[1], gc[2])
+                canvas.drawLine(0f, sy, w, sy, paint)
+            }
+
+            // Vertical grid lines converging at vanishing point
+            val vanishX = w * 0.5f
+            for (i in 0 until 15) {
+                val frac = (i - 7f) / 7f
+                val topX = vanishX + frac * w * 0.02f
+                val botX = vanishX + frac * w * 0.9f
+                val alpha = ((1f - abs(frac) * 0.5f) * 0.2f * 255f).toInt().coerceIn(0, 255)
+                paint.color = Color.argb(alpha, gc[0], gc[1], gc[2])
+                canvas.drawLine(topX, horizonY, botX, h, paint)
+            }
+        }
+
+        // ── 8c. Starfield scene: nebula color wash ─────────────────────
+        if (scene == "starfield") {
+            val nc1 = rawColors[0]
+            val nc2 = rawColors[min(2, nColors - 1)]
+            val nebPhase = t * 0.15f
+            val neb1X = w * (0.3f + 0.15f * sin(nebPhase))
+            val neb1Y = horizonY * 0.4f
+            val neb2X = w * (0.7f + 0.1f * sin(nebPhase * 1.3f + 2f))
+            val neb2Y = horizonY * 0.6f
+
+            paint.style = Paint.Style.FILL
+            paint.xfermode = PorterDuffXfermode(PorterDuff.Mode.ADD)
+
+            paint.shader = RadialGradient(
+                neb1X, neb1Y, w * 0.3f,
+                intArrayOf(Color.argb(18, nc1[0], nc1[1], nc1[2]), Color.argb(0, 0, 0, 0)),
+                null, Shader.TileMode.CLAMP
+            )
+            canvas.drawRect(0f, 0f, w, horizonY, paint)
+
+            paint.shader = RadialGradient(
+                neb2X, neb2Y, w * 0.25f,
+                intArrayOf(Color.argb(14, nc2[0], nc2[1], nc2[2]), Color.argb(0, 0, 0, 0)),
+                null, Shader.TileMode.CLAMP
+            )
+            canvas.drawRect(0f, 0f, w, horizonY, paint)
+
+            paint.shader = null
+            paint.xfermode = null
+        }
 
         // ── 9. Energy pulse wave glow band ───────────────────────────────
         run {
