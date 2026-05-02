@@ -337,8 +337,14 @@ class MainViewModel @Inject constructor(
 
         val newSeed = if (s.seedLocked) s.seed else secureRandom.nextInt(1_000_000)
         val newPalette = if ("palette" in s.lockedParams) s.palette
-            else if (rng.random() < 0.3f) CuratedPalettes.random()
-            else CuratedPalettes.bright[rng.integer(0, CuratedPalettes.bright.size - 1)]
+            else {
+                val pool = buildList {
+                    if (rng.random() < 0.3f) addAll(CuratedPalettes.all)
+                    else addAll(CuratedPalettes.bright)
+                    addAll(s.customPalettes)
+                }
+                pool[rng.integer(0, pool.size - 1)]
+            }
 
         val familyDefaults = FAMILY_DEFAULT_PARAMS[gen.family].orEmpty()
         val newParams = s.params.toMutableMap()
@@ -392,8 +398,14 @@ class MainViewModel @Inject constructor(
         val s = _state.value
         val newSeed = secureRandom.nextInt(1_000_000)
         val newPalette = if ("palette" in s.lockedParams) s.palette
-            else if (rng.random() < 0.3f) CuratedPalettes.random()
-            else CuratedPalettes.bright[rng.integer(0, CuratedPalettes.bright.size - 1)]
+            else {
+                val pool = buildList {
+                    if (rng.random() < 0.3f) addAll(CuratedPalettes.all)
+                    else addAll(CuratedPalettes.bright)
+                    addAll(s.customPalettes)
+                }
+                pool[rng.integer(0, pool.size - 1)]
+            }
 
         val familyDefaults = FAMILY_DEFAULT_PARAMS[gen.family].orEmpty()
         val newParams = mutableMapOf<String, Any>()

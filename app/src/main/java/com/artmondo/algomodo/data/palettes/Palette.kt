@@ -75,7 +75,12 @@ object CuratedPalettes {
         Palette("Rainbow", listOf("#FF0000", "#FF8800", "#FFEE00", "#00CC44", "#3366FF")),
         Palette("Contrast", listOf("#000000", "#FFFFFF", "#FF0000", "#FFFF00", "#0000FF")),
         Palette("Earth", listOf("#5C3D2E", "#A0522D", "#C89B7B", "#D4A76A", "#F5DEB3")),
-        Palette("Nature", listOf("#2E7D32", "#66BB6A", "#AED581", "#81D4FA", "#FFCC80"))
+        Palette("Nature", listOf("#2E7D32", "#66BB6A", "#AED581", "#81D4FA", "#FFCC80")),
+        Palette("Sakura", listOf("#3D0C11", "#A3344A", "#E8758F", "#F2B5C8", "#FBE8EE")),
+        Palette("Cyber", listOf("#0A0A2A", "#1B03A3", "#7209B7", "#F72585", "#4CC9F0")),
+        Palette("Autumn", listOf("#582F0E", "#7F4F24", "#B08968", "#DDA15E", "#FEFAE0")),
+        Palette("Mint", listOf("#064E3B", "#059669", "#34D399", "#A7F3D0", "#ECFDF5")),
+        Palette("Infrared", listOf("#0F0F0F", "#3D0066", "#8B0000", "#FF4500", "#FFD700"))
     )
 
     // Display-only placeholder for "Random" in the palette list
