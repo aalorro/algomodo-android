@@ -61,9 +61,14 @@ object GifExporter {
 
         try {
             // Render and encode forward frames
+            // Offset time by a tiny epsilon so frame 0 is never exactly 0.
+            // Generators use `time > 0f` to detect animation mode — without this,
+            // frame 0 renders as a static image (full res, full iterations, no
+            // animation effects), causing a quality/color mismatch with all
+            // subsequent frames and a wrong GIF palette.
             for (i in 0 until totalFrames) {
                 if (cancelled.get()) throw ExportCancelledException()
-                val time = i.toFloat() / fps
+                val time = i.toFloat() / fps + 1e-4f
                 canvas.drawColor(android.graphics.Color.BLACK)
                 generator.renderCanvas(canvas, bitmap, params, seed, palette, quality, time)
                 bitmap.getPixels(reusablePixels, 0, bmpWidth, 0, 0, bmpWidth, bmpHeight)
@@ -76,7 +81,7 @@ object GifExporter {
             if (doBoomerang) {
                 for (i in (totalFrames - 2) downTo 1) {
                     if (cancelled.get()) throw ExportCancelledException()
-                    val time = i.toFloat() / fps
+                    val time = i.toFloat() / fps + 1e-4f
                     canvas.drawColor(android.graphics.Color.BLACK)
                     generator.renderCanvas(canvas, bitmap, params, seed, palette, quality, time)
                     bitmap.getPixels(reusablePixels, 0, bmpWidth, 0, 0, bmpWidth, bmpHeight)

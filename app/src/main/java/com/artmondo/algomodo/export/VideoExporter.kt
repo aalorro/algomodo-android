@@ -100,7 +100,7 @@ object VideoExporter {
             for (frameIdx in 0 until totalFrames) {
                 if (cancelled.get()) { encodeCancelled = true; break }
 
-                val time = timeOffsetSec + frameIdx.toFloat() / fps
+                val time = timeOffsetSec + frameIdx.toFloat() / fps + 1e-4f
 
                 bitmapCanvas.drawColor(android.graphics.Color.BLACK)
                 generator.renderCanvas(bitmapCanvas, bitmap, params, seed, palette, quality, time)
