@@ -69,7 +69,7 @@ class LyapunovGenerator : Generator {
             "Center of the viewport along the B parameter axis",
             0f, 4f, 0.05f, 3.0f),
         Parameter.NumberParam("Zoom", "zoom", ParamGroup.COMPOSITION,
-            "Zoom into the fractal", 0.5f, 20f, 0.5f, 2f),
+            "Zoom into the fractal", 0.5f, 8f, 0.5f, 2f),
         Parameter.NumberParam("Warmup", "warmup", ParamGroup.GEOMETRY,
             "Transient iterations before measuring", 50f, 500f, 50f, 100f),
         Parameter.NumberParam("Iterations", "iterations", ParamGroup.GEOMETRY,
@@ -162,9 +162,17 @@ class LyapunovGenerator : Generator {
         aMin = max(0.0, aMin); aMax = min(4.0, aMax)
         bMin = max(0.0, bMin); bMax = min(4.0, bMax)
 
-        // Adaptive resolution during animation
-        val renderW = if (isAnim) (w * 4 / 5).coerceAtLeast(w / 2) else w
-        val renderH = if (isAnim) (h * 4 / 5).coerceAtLeast(h / 2) else h
+        // Animation: reduced resolution, upscaled. Static non-DRAFT: 1.5× SSAA for smooth edges.
+        val renderW: Int
+        val renderH: Int
+        if (isAnim) {
+            renderW = (w * 4 / 5).coerceAtLeast(w / 2)
+            renderH = (h * 4 / 5).coerceAtLeast(h / 2)
+        } else if (quality == Quality.DRAFT) {
+            renderW = w; renderH = h
+        } else {
+            renderW = w * 3 / 2; renderH = h * 3 / 2
+        }
 
         val pxSizeX = (aMax - aMin) / renderW
         val pxSizeY = (bMax - bMin) / renderH
@@ -329,8 +337,8 @@ class LyapunovGenerator : Generator {
         }
         threads.forEach { it.join() }
 
-        // Bilinear upscale for animation, direct copy for static
-        if (renderW < w) {
+        // Bilinear scale (up for animation, down for SSAA), or direct copy
+        if (renderW != w || renderH != h) {
             var sb = smallBmp
             if (sb == null || smallW != renderW || smallH != renderH) {
                 sb?.recycle()
