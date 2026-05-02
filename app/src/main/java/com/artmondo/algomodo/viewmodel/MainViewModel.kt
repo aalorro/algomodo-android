@@ -177,13 +177,15 @@ class MainViewModel @Inject constructor(
     fun undo() {
         if (undoStack.isEmpty()) return
         val s = _state.value
-        val gen = s.generator ?: return
-        if (redoStack.size >= 50) redoStack.removeFirst()
-        redoStack.addLast(
-            HistorySnapshot(s.params, s.palette, s.seed, gen.id, s.familyId, s.postFX)
-        )
+        // Save current state to redo stack (even if generator is null, e.g. after clear)
+        if (s.generator != null) {
+            if (redoStack.size >= 50) redoStack.removeFirst()
+            redoStack.addLast(
+                HistorySnapshot(s.params, s.palette, s.seed, s.generator.id, s.familyId, s.postFX)
+            )
+        }
         val snapshot = undoStack.removeLast()
-        val restoredGen = GeneratorRegistry.get(snapshot.selectedGeneratorId) ?: gen
+        val restoredGen = GeneratorRegistry.get(snapshot.selectedGeneratorId)
         _state.update {
             it.copy(
                 generator = restoredGen,
@@ -437,6 +439,7 @@ class MainViewModel @Inject constructor(
     }
 
     fun clearCanvas() {
+        pushHistory()
         _state.update {
             it.copy(
                 generator = null,
