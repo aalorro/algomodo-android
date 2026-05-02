@@ -380,29 +380,37 @@ class FlowingParticlesGenerator : Generator {
             var vx = cos(angle) * baseSpeed
             var vy = sin(angle) * baseSpeed
 
+            // Pattern forces override curl flow (curl becomes texture, not primary)
             when (patternId) {
                 PATTERN_SWIRL -> {
                     val dx = sim.px[i] - halfW; val dy = sim.py[i] - halfH
-                    val dist = sqrt(dx * dx + dy * dy) + 1f
-                    val str = baseSpeed * 0.6f / (1f + dist * 0.001f)
-                    vx += -dy / dist * str
-                    vy += dx / dist * str
+                    val dist = sqrt(dx * dx + dy * dy).coerceAtLeast(1f)
+                    val spd = baseSpeed * 1.5f
+                    // 80% tangential (CCW) + 20% inward pull = spiral
+                    vx = (-dy / dist * 0.8f - dx / dist * 0.2f) * spd + vx * 0.2f
+                    vy = (dx / dist * 0.8f - dy / dist * 0.2f) * spd + vy * 0.2f
                 }
                 PATTERN_SPLIT -> {
                     val dy = sim.py[i] - halfH
-                    vy += if (dy > 0) baseSpeed * 0.4f else -baseSpeed * 0.4f
-                    vx *= 1.3f
+                    val sign = if (dy >= 0f) 1f else -1f
+                    // Strong vertical divergence from center
+                    vy = sign * baseSpeed * 1.5f + vy * 0.15f
+                    vx *= 0.3f // curl provides horizontal variation
                 }
                 PATTERN_GRAVITY -> {
-                    vy += baseSpeed * 0.5f
-                    vx += noise.noise2D(sim.px[i] * 0.003f, stepTime * 0.02f) * baseSpeed * 0.8f
+                    // Strong downward cascade with horizontal noise drift
+                    vx = noise.noise2D(sim.px[i] * 0.003f, stepTime * 0.02f) *
+                            baseSpeed * 0.8f + vx * 0.15f
+                    vy = baseSpeed * 2f + vy * 0.1f
                 }
                 PATTERN_PULSE_WAVE -> {
                     val dx = sim.px[i] - halfW; val dy = sim.py[i] - halfH
-                    val dist = sqrt(dx * dx + dy * dy) + 1f
-                    val wave = sin(dist * 0.02f - stepTime * 0.08f) * baseSpeed * 0.7f
-                    vx += (dx / dist) * wave
-                    vy += (dy / dist) * wave
+                    val dist = sqrt(dx * dx + dy * dy).coerceAtLeast(1f)
+                    val wave = sin(dist * 0.025f - stepTime * 0.12f) * baseSpeed * 2f
+                    val nx = dx / dist; val ny = dy / dist
+                    // Radial waves: push out then pull in
+                    vx = nx * wave + vx * 0.15f
+                    vy = ny * wave + vy * 0.15f
                 }
                 PATTERN_HIGHWAY -> {
                     val lane = (sim.py[i] / h * 6f).toInt()
