@@ -99,12 +99,6 @@ class LyapunovGenerator : Generator {
 
     private val filterPaint = Paint(Paint.FILTER_BITMAP_FLAG)
 
-    // Reusable buffers — avoids per-frame allocation / GC pressure
-    @Volatile private var renderBuf: IntArray? = null
-    @Volatile private var smallBmp: Bitmap? = null
-    private var smallW = 0
-    private var smallH = 0
-
     override fun renderCanvas(
         canvas: Canvas,
         bitmap: Bitmap,
@@ -204,12 +198,7 @@ class LyapunovGenerator : Generator {
         // Pre-tile sequence for generic path
         val seqTiled = if (!isAB) IntArray(totalIter) { seq[it % seqLen] } else null
 
-        val totalPx = renderW * renderH
-        var renderPixels = renderBuf
-        if (renderPixels == null || renderPixels.size < totalPx) {
-            renderPixels = IntArray(totalPx)
-            renderBuf = renderPixels
-        }
+        val renderPixels = IntArray(renderW * renderH)
 
         val isStability = colorMode == "stability"
         val isMagnitude = colorMode == "magnitude"
@@ -339,14 +328,10 @@ class LyapunovGenerator : Generator {
 
         // Bilinear scale (up for animation, down for SSAA), or direct copy
         if (renderW != w || renderH != h) {
-            var sb = smallBmp
-            if (sb == null || smallW != renderW || smallH != renderH) {
-                sb?.recycle()
-                sb = Bitmap.createBitmap(renderW, renderH, Bitmap.Config.ARGB_8888)
-                smallBmp = sb; smallW = renderW; smallH = renderH
-            }
+            val sb = Bitmap.createBitmap(renderW, renderH, Bitmap.Config.ARGB_8888)
             sb.setPixels(renderPixels, 0, renderW, 0, 0, renderW, renderH)
             canvas.drawBitmap(sb, null, Rect(0, 0, w, h), filterPaint)
+            sb.recycle()
         } else {
             bitmap.setPixels(renderPixels, 0, w, 0, 0, w, h)
             canvas.drawBitmap(bitmap, 0f, 0f, null)

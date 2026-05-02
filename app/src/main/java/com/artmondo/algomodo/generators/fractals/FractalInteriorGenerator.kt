@@ -2,7 +2,10 @@ package com.artmondo.algomodo.generators.fractals
 
 import android.graphics.Bitmap
 import android.graphics.Canvas
+import android.graphics.Paint
+import android.graphics.Rect
 import com.artmondo.algomodo.data.palettes.Palette
+import java.util.concurrent.atomic.AtomicBoolean
 import com.artmondo.algomodo.generators.Generator
 import com.artmondo.algomodo.generators.ParamGroup
 import com.artmondo.algomodo.generators.Parameter
@@ -67,9 +70,7 @@ class FractalInteriorGenerator : Generator {
         "animSpeed" to 1f
     )
 
-    @Volatile private var cancelled = false
-    @Volatile private var reusePixels: IntArray? = null
-    @Volatile private var reuseUpscale: IntArray? = null
+    private val filterPaint = Paint(Paint.FILTER_BITMAP_FLAG)
 
     companion object {
         private const val VAR_MANDELBROT = 0
@@ -117,7 +118,9 @@ class FractalInteriorGenerator : Generator {
         quality: Quality,
         time: Float
     ) {
-        cancelled = false
+        // Local cancel flag — prevents data races when live canvas and export
+        // render concurrently on the same generator singleton.
+        val cancelled = AtomicBoolean(false)
 
         val w = bitmap.width
         val h = bitmap.height
@@ -210,11 +213,8 @@ class FractalInteriorGenerator : Generator {
         // For point trap, track squared distance in inner loop (avoid sqrt per iter)
         val pointTrapSq = needsTrap && trapType == TRAP_POINT
 
-        // Reusable pixel array — eliminates per-frame GC
         val pixelCount = renderW * renderH
-        val rp = reusePixels
-        val renderPixels = if (rp != null && rp.size >= pixelCount) rp
-            else IntArray(pixelCount).also { reusePixels = it }
+        val renderPixels = IntArray(pixelCount)
 
         val trapScale = 3.0 / trapRadius.coerceAtLeast(0.01)
         val fastIters = if (isDraft) 10 else 20
@@ -234,7 +234,7 @@ class FractalInteriorGenerator : Generator {
                 val multOut = if (needsRing) DoubleArray(2) else null
 
                 for (py in y0 until y1) {
-                    if (cancelled) return@Thread
+                    if (cancelled.get()) return@Thread
 
                     val rawY = (py * invH - 0.5) * rangeY
                     val rowOff = py * renderW
@@ -509,37 +509,27 @@ class FractalInteriorGenerator : Generator {
         try {
             threads.forEach { it.join() }
         } catch (_: InterruptedException) {
-            cancelled = true
+            cancelled.set(true)
             threads.forEach { it.interrupt() }
             Thread.currentThread().interrupt()
             return
         }
         if (Thread.currentThread().isInterrupted) {
-            cancelled = true
+            cancelled.set(true)
             threads.forEach { it.interrupt() }
             return
         }
 
         if (renderW < w) {
-            // Reusable upscale buffer
-            val totalPx = w * h
-            val ru = reuseUpscale
-            val pixels = if (ru != null && ru.size >= totalPx) ru
-                else IntArray(totalPx).also { reuseUpscale = it }
-            val xMap = IntArray(w) { (it * renderW / w).coerceAtMost(renderW - 1) }
-            for (py in 0 until h) {
-                val sy = (py * renderH / h).coerceAtMost(renderH - 1)
-                val srcOff = sy * renderW
-                val dstOff = py * w
-                for (px in 0 until w) {
-                    pixels[dstOff + px] = renderPixels[srcOff + xMap[px]]
-                }
-            }
-            bitmap.setPixels(pixels, 0, w, 0, 0, w, h)
+            // Bilinear upscale via Bitmap — avoids nearest-neighbor blockiness
+            val smallBmp = Bitmap.createBitmap(renderW, renderH, Bitmap.Config.ARGB_8888)
+            smallBmp.setPixels(renderPixels, 0, renderW, 0, 0, renderW, renderH)
+            canvas.drawBitmap(smallBmp, null, Rect(0, 0, w, h), filterPaint)
+            smallBmp.recycle()
         } else {
             bitmap.setPixels(renderPixels, 0, w, 0, 0, w, h)
+            canvas.drawBitmap(bitmap, 0f, 0f, null)
         }
-        canvas.drawBitmap(bitmap, 0f, 0f, null)
     }
 
     /** Exterior color for escaped pixels — extracted to avoid code duplication. */
