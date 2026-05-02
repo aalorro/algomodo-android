@@ -455,9 +455,9 @@ class FlowingParticlesGenerator : Generator {
         w: Float, h: Float, baseSpeed: Float
     ) {
         val twoPi = 2f * PI.toFloat()
-        val allCircles = sim.shape[0] == 0 && sim.objectType == "circle"
-        // Pre-set style for circle-only mode (avoids per-particle style changes)
-        if (allCircles) paint.style = Paint.Style.FILL
+        paint.style = Paint.Style.FILL  // All shapes use FILL (lines are filled rects)
+        val allCircles = sim.objectType == "circle"
+        val allLines = sim.objectType == "line"
 
         for (i in 0 until sim.count) {
             if (sim.age[i] < 2) continue // skip freshly respawned
@@ -500,9 +500,22 @@ class FlowingParticlesGenerator : Generator {
                         else Color.argb(alpha, Color.red(c), Color.green(c), Color.blue(c))
 
             if (allCircles) {
-                // Fast path: circles only — skip atan2 + drawShape overhead
                 paint.color = color
                 oc.drawCircle(sim.px[i], sim.py[i], sz, paint)
+            } else if (allLines) {
+                // Fast path: filled rectangles instead of stroked lines
+                paint.color = color
+                val angle = atan2(sim.vy[i], sim.vx[i])
+                val cosA = cos(angle); val sinA = sin(angle)
+                val hl = sz * 2f
+                val hw = (sz * 0.22f).coerceAtLeast(0.25f)
+                path.reset()
+                path.moveTo(sim.px[i] - cosA * hl + sinA * hw, sim.py[i] - sinA * hl - cosA * hw)
+                path.lineTo(sim.px[i] + cosA * hl + sinA * hw, sim.py[i] + sinA * hl - cosA * hw)
+                path.lineTo(sim.px[i] + cosA * hl - sinA * hw, sim.py[i] + sinA * hl + cosA * hw)
+                path.lineTo(sim.px[i] - cosA * hl - sinA * hw, sim.py[i] - sinA * hl + cosA * hw)
+                path.close()
+                oc.drawPath(path, paint)
             } else {
                 val flowAngle = atan2(sim.vy[i], sim.vx[i])
                 drawShape(oc, paint, path, sim.px[i], sim.py[i], sz, flowAngle, sim.shape[i], color)
@@ -517,12 +530,8 @@ class FlowingParticlesGenerator : Generator {
     ) {
         paint.color = color
         when (shapeIdx) {
-            0 -> {
-                paint.style = Paint.Style.FILL
-                canvas.drawCircle(x, y, size, paint)
-            }
+            0 -> canvas.drawCircle(x, y, size, paint)
             1 -> {
-                paint.style = Paint.Style.FILL
                 val a = angle + PI.toFloat() * 0.25f
                 val cosA = cos(a); val sinA = sin(a)
                 path.reset()
@@ -534,7 +543,6 @@ class FlowingParticlesGenerator : Generator {
                 canvas.drawPath(path, paint)
             }
             2 -> {
-                paint.style = Paint.Style.FILL
                 val cosA = cos(angle); val sinA = sin(angle)
                 val tipLen = size * 1.8f; val backLen = size; val hw = size * 0.9f
                 path.reset()
@@ -545,12 +553,17 @@ class FlowingParticlesGenerator : Generator {
                 canvas.drawPath(path, paint)
             }
             3 -> {
-                paint.style = Paint.Style.STROKE
-                paint.strokeWidth = (size * 0.45f).coerceAtLeast(0.5f)
-                paint.strokeCap = Paint.Cap.ROUND
-                val dx = cos(angle) * size * 2f
-                val dy = sin(angle) * size * 2f
-                canvas.drawLine(x - dx, y - dy, x + dx, y + dy, paint)
+                // Filled rectangle instead of stroked line — eliminates STROKE/ROUND cap overhead
+                val cosA = cos(angle); val sinA = sin(angle)
+                val hl = size * 2f
+                val hw = (size * 0.22f).coerceAtLeast(0.25f)
+                path.reset()
+                path.moveTo(x - cosA * hl + sinA * hw, y - sinA * hl - cosA * hw)
+                path.lineTo(x + cosA * hl + sinA * hw, y + sinA * hl - cosA * hw)
+                path.lineTo(x + cosA * hl - sinA * hw, y + sinA * hl + cosA * hw)
+                path.lineTo(x - cosA * hl - sinA * hw, y - sinA * hl + cosA * hw)
+                path.close()
+                canvas.drawPath(path, paint)
             }
         }
     }
