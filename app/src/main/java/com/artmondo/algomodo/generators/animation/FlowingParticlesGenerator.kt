@@ -20,11 +20,8 @@ import kotlin.math.*
  * A precomputed 72×72 grid stores sin/cos of curl angles from 2-octave FBM
  * simplex noise. Each particle samples the grid via bilinear interpolation,
  * giving O(1) flow direction lookups. Trails come from offscreen accumulation
- * with semi-transparent fading.
- *
- * 6 flow patterns (flow, swirl, split, gravity, pulse-wave, highway),
- * 5 color modes (angle, speed, zone, stripes, pulse), turbulence jitter,
- * and rhythmic pulse modulation.
+ * with semi-transparent fading. Particles respawn at random positions when
+ * they exceed their max age, keeping the canvas populated.
  */
 class FlowingParticlesGenerator : Generator {
 
@@ -60,12 +57,7 @@ class FlowingParticlesGenerator : Generator {
         Parameter.NumberParam(
             name = "Particles", key = "particleCount", group = ParamGroup.COMPOSITION,
             help = "Number of flowing particles",
-            min = 100f, max = 5000f, step = 100f, default = 2000f
-        ),
-        Parameter.NumberParam(
-            name = "Attractors", key = "attractorCount", group = ParamGroup.COMPOSITION,
-            help = "Glowing bodies that orbit and warp the flow field",
-            min = 0f, max = 6f, step = 1f, default = 0f
+            min = 100f, max = 2500f, step = 100f, default = 2000f
         ),
         Parameter.NumberParam(
             name = "Flow Scale", key = "flowScale", group = ParamGroup.GEOMETRY,
@@ -124,7 +116,6 @@ class FlowingParticlesGenerator : Generator {
 
     override fun getDefaultParams(): Map<String, Any> = mapOf(
         "particleCount" to 2000f,
-        "attractorCount" to 0f,
         "flowScale" to 2f,
         "objectType" to "circle",
         "flowSpeed" to 2f,
@@ -146,11 +137,6 @@ class FlowingParticlesGenerator : Generator {
     // ---- Particle state cache ----
     @Volatile private var simCache: SimCache? = null
 
-    // ---- Attractor data cache ----
-    private var attrData: AttrData? = null
-    private var attrCacheSeed = -1
-    private var attrCacheCount = -1
-
     // ---- Offscreen accumulation bitmap ----
     @Volatile private var offBitmap: Bitmap? = null
     private var offW = 0
@@ -171,21 +157,9 @@ class FlowingParticlesGenerator : Generator {
         val vx: FloatArray,
         val vy: FloatArray,
         val shape: IntArray,
-        val sizeMult: FloatArray
-    )
-
-    private class AttrData(
-        val count: Int,
-        val baseX: FloatArray,
-        val baseY: FloatArray,
-        val orbitR: FloatArray,
-        val orbitSpeed: FloatArray,
-        val phase: FloatArray,
-        val strength: FloatArray,
-        val radius: FloatArray,
-        val colorIdx: IntArray,
-        val curX: FloatArray,
-        val curY: FloatArray
+        val sizeMult: FloatArray,
+        val age: IntArray,             // per-particle step age
+        val maxAge: IntArray           // respawn after this many steps
     )
 
     override fun renderCanvas(
@@ -214,7 +188,6 @@ class FlowingParticlesGenerator : Generator {
         val particleSize = (params["particleSize"] as? Number)?.toFloat() ?: 3f
         val sizeVariance = (params["sizeVariance"] as? Number)?.toFloat() ?: 0.3f
         val trailLength = (params["trailLength"] as? Number)?.toFloat() ?: 0.5f
-        val attractorCount = (params["attractorCount"] as? Number)?.toInt() ?: 0
         val objectType = (params["objectType"] as? String) ?: "circle"
         val pattern = (params["pattern"] as? String) ?: "flow"
         val colorMode = (params["colorMode"] as? String) ?: "angle"
@@ -253,15 +226,6 @@ class FlowingParticlesGenerator : Generator {
         val sinA = fieldSinA!!
         val cosA = fieldCosA!!
 
-        // ---- Build/cache attractor data ----
-        val attr: AttrData
-        if (attrCacheSeed != seed || attrCacheCount != attractorCount) {
-            attr = buildAttractors(seed, attractorCount, w, h, min(w, h), nColors)
-            attrData = attr; attrCacheSeed = seed; attrCacheCount = attractorCount
-        } else {
-            attr = attrData!!
-        }
-
         // ---- Offscreen bitmap management ----
         var off = offBitmap
         var needClear = false
@@ -273,10 +237,8 @@ class FlowingParticlesGenerator : Generator {
         }
         val oc = Canvas(off)
 
-        // ---- Drawing paint ----
-        val paint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
-            style = Paint.Style.FILL
-        }
+        // ---- Drawing paint (no anti-alias for speed) ----
+        val paint = Paint().apply { style = Paint.Style.FILL }
 
         // ---- Resolve particle state ----
         val cached = simCache
@@ -297,7 +259,7 @@ class FlowingParticlesGenerator : Generator {
                 val t = (sim.stepCount + s) * dt
                 if (fadeAlpha > 0) oc.drawColor(Color.argb(fadeAlpha, 0, 0, 0))
                 advanceOneStep(sim, t, baseSpeed, patternId, turbulence, noise,
-                    halfW, halfH, w, h, sinA, cosA, attr)
+                    halfW, halfH, w, h, sinA, cosA, fixedShape, sizeVariance, nColors)
                 drawAllParticles(oc, sim, paint, shapePath, colors, nColors, colorId,
                     particleSize, pulse, t, w, h, baseSpeed)
             }
@@ -310,7 +272,8 @@ class FlowingParticlesGenerator : Generator {
                 w = w, h = h, stepCount = 0,
                 px = FloatArray(count), py = FloatArray(count),
                 vx = FloatArray(count), vy = FloatArray(count),
-                shape = IntArray(count), sizeMult = FloatArray(count)
+                shape = IntArray(count), sizeMult = FloatArray(count),
+                age = IntArray(count), maxAge = IntArray(count)
             )
 
             // Grid+jitter initialization for uniform coverage
@@ -326,13 +289,14 @@ class FlowingParticlesGenerator : Generator {
                 sim.py[i] = row * cellH + rng.random() * cellH
                 sim.shape[i] = if (fixedShape >= 0) fixedShape else (rng.random() * 4f).toInt().coerceIn(0, 3)
                 sim.sizeMult[i] = 1f - sizeVariance * 0.5f + rng.random() * sizeVariance
+                sim.maxAge[i] = 200 + (rng.random() * 400f).toInt()
             }
 
             // Coarse skip to near the warmup window (no drawing)
             val warmupStart = (totalSteps - WARMUP).coerceAtLeast(0)
             for (s in 0 until warmupStart) {
                 advanceOneStep(sim, s * dt, baseSpeed, patternId, turbulence, noise,
-                    halfW, halfH, w, h, sinA, cosA, attr)
+                    halfW, halfH, w, h, sinA, cosA, fixedShape, sizeVariance, nColors)
             }
 
             // Clear offscreen and draw warmup frames
@@ -341,7 +305,7 @@ class FlowingParticlesGenerator : Generator {
                 val t = s * dt
                 if (fadeAlpha > 0) oc.drawColor(Color.argb(fadeAlpha, 0, 0, 0))
                 advanceOneStep(sim, t, baseSpeed, patternId, turbulence, noise,
-                    halfW, halfH, w, h, sinA, cosA, attr)
+                    halfW, halfH, w, h, sinA, cosA, fixedShape, sizeVariance, nColors)
                 drawAllParticles(oc, sim, paint, shapePath, colors, nColors, colorId,
                     particleSize, pulse, t, w, h, baseSpeed)
             }
@@ -352,12 +316,6 @@ class FlowingParticlesGenerator : Generator {
 
         // ---- Copy offscreen to output canvas ----
         canvas.drawBitmap(off, 0f, 0f, null)
-
-        // ---- Draw attractor glows on top (not accumulated in offscreen) ----
-        if (attr.count > 0) {
-            updateAttractorPositions(attr, totalSteps * dt)
-            drawAttractorGlows(canvas, paint, attr, colors, min(w, h))
-        }
     }
 
     // ──────────────────────────── Flow field ────────────────────────────
@@ -389,7 +347,7 @@ class FlowingParticlesGenerator : Generator {
         fieldSinA = sa; fieldCosA = ca
     }
 
-    private fun sampleAngle(
+    private inline fun sampleAngle(
         sinA: FloatArray, cosA: FloatArray,
         px: Float, py: Float, w: Float, h: Float, timeDrift: Float
     ): Float {
@@ -406,67 +364,16 @@ class FlowingParticlesGenerator : Generator {
         return atan2(s, c) + timeDrift
     }
 
-    // ──────────────────────────── Attractors ────────────────────────────
-
-    private fun buildAttractors(
-        seed: Int, count: Int, w: Float, h: Float, dim: Float, nColors: Int
-    ): AttrData {
-        val rng = SeededRNG(seed + 99991)
-        val data = AttrData(
-            count = count,
-            baseX = FloatArray(count), baseY = FloatArray(count),
-            orbitR = FloatArray(count), orbitSpeed = FloatArray(count),
-            phase = FloatArray(count), strength = FloatArray(count),
-            radius = FloatArray(count), colorIdx = IntArray(count),
-            curX = FloatArray(count), curY = FloatArray(count)
-        )
-        for (i in 0 until count) {
-            data.baseX[i] = w * (0.2f + rng.random() * 0.6f)
-            data.baseY[i] = h * (0.2f + rng.random() * 0.6f)
-            data.orbitR[i] = dim * (0.04f + rng.random() * 0.10f)
-            data.orbitSpeed[i] = (0.3f + rng.random() * 0.8f) * if (rng.random() > 0.5f) 1f else -1f
-            data.phase[i] = rng.random() * 2f * PI.toFloat()
-            data.strength[i] = 0.6f + rng.random() * 1.6f
-            data.radius[i] = dim * (0.1f + rng.random() * 0.12f)
-            data.colorIdx[i] = (rng.random() * nColors).toInt().coerceIn(0, nColors - 1)
-        }
-        return data
-    }
-
-    private fun updateAttractorPositions(attr: AttrData, time: Float) {
-        for (i in 0 until attr.count) {
-            val p = attr.phase[i] + time * attr.orbitSpeed[i] * 0.01f
-            attr.curX[i] = attr.baseX[i] + cos(p) * attr.orbitR[i]
-            attr.curY[i] = attr.baseY[i] + sin(p) * attr.orbitR[i]
-        }
-    }
-
-    private fun drawAttractorGlows(
-        canvas: Canvas, paint: Paint, attr: AttrData, colors: List<Int>, dim: Float
-    ) {
-        paint.style = Paint.Style.FILL
-        for (i in 0 until attr.count) {
-            val c = colors[attr.colorIdx[i] % colors.size]
-            val cr = Color.red(c); val cg = Color.green(c); val cb = Color.blue(c)
-            for (ring in 4 downTo 1) {
-                paint.color = Color.argb((14 * ring).coerceAtMost(255), cr, cg, cb)
-                canvas.drawCircle(attr.curX[i], attr.curY[i], attr.radius[i] * ring * 0.35f, paint)
-            }
-            paint.color = Color.argb(234, 255, 255, 255)
-            canvas.drawCircle(attr.curX[i], attr.curY[i], attr.radius[i] * 0.12f, paint)
-        }
-    }
-
     // ──────────────────────────── Particle simulation ────────────────────
 
     private fun advanceOneStep(
         sim: SimCache, stepTime: Float, baseSpeed: Float,
         patternId: Int, turbulence: Float, noise: SimplexNoise,
         halfW: Float, halfH: Float, w: Float, h: Float,
-        sinA: FloatArray, cosA: FloatArray, attr: AttrData
+        sinA: FloatArray, cosA: FloatArray,
+        fixedShape: Int, sizeVariance: Float, nColors: Int
     ) {
         val timeDrift = stepTime * 0.1f
-        if (attr.count > 0) updateAttractorPositions(attr, stepTime)
 
         for (i in 0 until sim.count) {
             val angle = sampleAngle(sinA, cosA, sim.px[i], sim.py[i], w, h, timeDrift)
@@ -517,23 +424,25 @@ class FlowingParticlesGenerator : Generator {
 
             sim.vx[i] = vx
             sim.vy[i] = vy
+            sim.px[i] += vx
+            sim.py[i] += vy
 
-            for (a in 0 until attr.count) {
-                val dx = attr.curX[a] - sim.px[i]
-                val dy = attr.curY[a] - sim.py[i]
-                val dist = sqrt(dx * dx + dy * dy)
-                if (dist < attr.radius[a] && dist > 1f) {
-                    val force = attr.strength[a] * (1f - dist / attr.radius[a]) * baseSpeed * 0.4f
-                    sim.vx[i] += (dx / dist) * force
-                    sim.vy[i] += (dy / dist) * force
-                }
-            }
-
-            sim.px[i] += sim.vx[i]
-            sim.py[i] += sim.vy[i]
-
+            // Toroidal wrap
             if (sim.px[i] < 0f) sim.px[i] += w; if (sim.px[i] >= w) sim.px[i] -= w
             if (sim.py[i] < 0f) sim.py[i] += h; if (sim.py[i] >= h) sim.py[i] -= h
+
+            sim.age[i]++
+
+            // Respawn when max age exceeded — keeps canvas uniformly populated
+            if (sim.age[i] > sim.maxAge[i]) {
+                sim.px[i] = (Math.random() * w).toFloat()
+                sim.py[i] = (Math.random() * h).toFloat()
+                sim.vx[i] = 0f; sim.vy[i] = 0f
+                sim.age[i] = 0
+                sim.maxAge[i] = 200 + (Math.random() * 400).toInt()
+                sim.shape[i] = if (fixedShape >= 0) fixedShape else (Math.random() * 4).toInt().coerceIn(0, 3)
+                sim.sizeMult[i] = 1f - sizeVariance * 0.5f + (Math.random() * sizeVariance).toFloat()
+            }
         }
     }
 
@@ -546,7 +455,13 @@ class FlowingParticlesGenerator : Generator {
         w: Float, h: Float, baseSpeed: Float
     ) {
         val twoPi = 2f * PI.toFloat()
+        val allCircles = sim.shape[0] == 0 && sim.objectType == "circle"
+        // Pre-set style for circle-only mode (avoids per-particle style changes)
+        if (allCircles) paint.style = Paint.Style.FILL
+
         for (i in 0 until sim.count) {
+            if (sim.age[i] < 2) continue // skip freshly respawned
+
             val colorIdx = when (colorId) {
                 COLOR_SPEED -> {
                     val spd = sqrt(sim.vx[i] * sim.vx[i] + sim.vy[i] * sim.vy[i])
@@ -581,10 +496,17 @@ class FlowingParticlesGenerator : Generator {
             }
 
             val c = colors[colorIdx.coerceIn(0, nColors - 1)]
-            val color = Color.argb(alpha, Color.red(c), Color.green(c), Color.blue(c))
-            val flowAngle = atan2(sim.vy[i], sim.vx[i])
+            val color = if (alpha == 255) c or 0xFF000000.toInt()
+                        else Color.argb(alpha, Color.red(c), Color.green(c), Color.blue(c))
 
-            drawShape(oc, paint, path, sim.px[i], sim.py[i], sz, flowAngle, sim.shape[i], color)
+            if (allCircles) {
+                // Fast path: circles only — skip atan2 + drawShape overhead
+                paint.color = color
+                oc.drawCircle(sim.px[i], sim.py[i], sz, paint)
+            } else {
+                val flowAngle = atan2(sim.vy[i], sim.vx[i])
+                drawShape(oc, paint, path, sim.px[i], sim.py[i], sz, flowAngle, sim.shape[i], color)
+            }
         }
     }
 
@@ -595,23 +517,23 @@ class FlowingParticlesGenerator : Generator {
     ) {
         paint.color = color
         when (shapeIdx) {
-            0 -> { // circle
+            0 -> {
                 paint.style = Paint.Style.FILL
                 canvas.drawCircle(x, y, size, paint)
             }
-            1 -> { // square rotated to face velocity
+            1 -> {
                 paint.style = Paint.Style.FILL
                 val a = angle + PI.toFloat() * 0.25f
                 val cosA = cos(a); val sinA = sin(a)
                 path.reset()
-                path.moveTo(x + cosA * size - sinA * (-size), y + sinA * size + cosA * (-size))
+                path.moveTo(x + cosA * size + sinA * size, y + sinA * size - cosA * size)
                 path.lineTo(x + cosA * size - sinA * size, y + sinA * size + cosA * size)
-                path.lineTo(x + cosA * (-size) - sinA * size, y + sinA * (-size) + cosA * size)
-                path.lineTo(x + cosA * (-size) - sinA * (-size), y + sinA * (-size) + cosA * (-size))
+                path.lineTo(x - cosA * size - sinA * size, y - sinA * size + cosA * size)
+                path.lineTo(x - cosA * size + sinA * size, y - sinA * size - cosA * size)
                 path.close()
                 canvas.drawPath(path, paint)
             }
-            2 -> { // triangle pointing in flow direction
+            2 -> {
                 paint.style = Paint.Style.FILL
                 val cosA = cos(angle); val sinA = sin(angle)
                 val tipLen = size * 1.8f; val backLen = size; val hw = size * 0.9f
@@ -622,7 +544,7 @@ class FlowingParticlesGenerator : Generator {
                 path.close()
                 canvas.drawPath(path, paint)
             }
-            3 -> { // line segment aligned to velocity
+            3 -> {
                 paint.style = Paint.Style.STROKE
                 paint.strokeWidth = (size * 0.45f).coerceAtLeast(0.5f)
                 paint.strokeCap = Paint.Cap.ROUND
@@ -635,7 +557,6 @@ class FlowingParticlesGenerator : Generator {
 
     override fun estimateCost(params: Map<String, Any>, quality: Quality): Float {
         val count = (params["particleCount"] as? Number)?.toFloat() ?: 2000f
-        val attractors = (params["attractorCount"] as? Number)?.toFloat() ?: 0f
-        return ((count * 2f + attractors * 50f) / 10000f).coerceIn(0.2f, 1f)
+        return (count / 5000f).coerceIn(0.2f, 1f)
     }
 }
