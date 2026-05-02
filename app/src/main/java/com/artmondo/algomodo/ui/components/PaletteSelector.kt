@@ -107,11 +107,27 @@ fun PaletteSelector(
                 )
             }
             item {
-                val displayPalette = if (selectedPalette.name == "Random") selectedPalette else CuratedPalettes.randomPlaceholder
+                val displayPalette = if (selectedPalette.name == "RAND 5") selectedPalette else CuratedPalettes.randomPlaceholder
                 PaletteChip(
                     palette = displayPalette,
-                    isSelected = selectedPalette.name == "Random",
+                    isSelected = selectedPalette.name == "RAND 5",
                     onClick = { onSelectPalette(CuratedPalettes.random()) }
+                )
+            }
+            item {
+                val displayPalette = if (selectedPalette.name == "RAND 8") selectedPalette else CuratedPalettes.random8Placeholder
+                PaletteChip(
+                    palette = displayPalette,
+                    isSelected = selectedPalette.name == "RAND 8",
+                    onClick = { onSelectPalette(CuratedPalettes.random8()) }
+                )
+            }
+            item {
+                val displayPalette = if (selectedPalette.name == "RAND 10") selectedPalette else CuratedPalettes.random10Placeholder
+                PaletteChip(
+                    palette = displayPalette,
+                    isSelected = selectedPalette.name == "RAND 10",
+                    onClick = { onSelectPalette(CuratedPalettes.random10()) }
                 )
             }
         }
@@ -183,11 +199,27 @@ fun HorizontalPaletteStrip(
                 )
             }
             item {
-                val displayPalette = if (selectedPalette.name == "Random") selectedPalette else CuratedPalettes.randomPlaceholder
+                val displayPalette = if (selectedPalette.name == "RAND 5") selectedPalette else CuratedPalettes.randomPlaceholder
                 PaletteChip(
                     palette = displayPalette,
-                    isSelected = selectedPalette.name == "Random",
+                    isSelected = selectedPalette.name == "RAND 5",
                     onClick = { onSelectPalette(CuratedPalettes.random()) }
+                )
+            }
+            item {
+                val displayPalette = if (selectedPalette.name == "RAND 8") selectedPalette else CuratedPalettes.random8Placeholder
+                PaletteChip(
+                    palette = displayPalette,
+                    isSelected = selectedPalette.name == "RAND 8",
+                    onClick = { onSelectPalette(CuratedPalettes.random8()) }
+                )
+            }
+            item {
+                val displayPalette = if (selectedPalette.name == "RAND 10") selectedPalette else CuratedPalettes.random10Placeholder
+                PaletteChip(
+                    palette = displayPalette,
+                    isSelected = selectedPalette.name == "RAND 10",
+                    onClick = { onSelectPalette(CuratedPalettes.random10()) }
                 )
             }
         }
@@ -258,11 +290,27 @@ fun VerticalPaletteSelector(
                 )
             }
             item {
-                val displayPalette = if (selectedPalette.name == "Random") selectedPalette else CuratedPalettes.randomPlaceholder
+                val displayPalette = if (selectedPalette.name == "RAND 5") selectedPalette else CuratedPalettes.randomPlaceholder
                 VerticalPaletteChip(
                     palette = displayPalette,
-                    isSelected = selectedPalette.name == "Random",
+                    isSelected = selectedPalette.name == "RAND 5",
                     onClick = { onSelectPalette(CuratedPalettes.random()) }
+                )
+            }
+            item {
+                val displayPalette = if (selectedPalette.name == "RAND 8") selectedPalette else CuratedPalettes.random8Placeholder
+                VerticalPaletteChip(
+                    palette = displayPalette,
+                    isSelected = selectedPalette.name == "RAND 8",
+                    onClick = { onSelectPalette(CuratedPalettes.random8()) }
+                )
+            }
+            item {
+                val displayPalette = if (selectedPalette.name == "RAND 10") selectedPalette else CuratedPalettes.random10Placeholder
+                VerticalPaletteChip(
+                    palette = displayPalette,
+                    isSelected = selectedPalette.name == "RAND 10",
+                    onClick = { onSelectPalette(CuratedPalettes.random10()) }
                 )
             }
         }
