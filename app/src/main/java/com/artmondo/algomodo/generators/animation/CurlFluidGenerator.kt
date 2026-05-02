@@ -63,7 +63,7 @@ class CurlFluidGenerator : Generator {
     override val parameterSchema = listOf(
         Parameter.NumberParam(
             name = "Particle Count", key = "particleCount", group = ParamGroup.COMPOSITION,
-            help = null, min = 500f, max = 10000f, step = 500f, default = 4000f
+            help = null, min = 500f, max = 4000f, step = 500f, default = 4000f
         ),
         Parameter.NumberParam(
             name = "Noise Scale", key = "noiseScale", group = ParamGroup.COMPOSITION,
