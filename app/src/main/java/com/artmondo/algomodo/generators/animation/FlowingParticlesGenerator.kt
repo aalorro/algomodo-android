@@ -134,16 +134,18 @@ class FlowingParticlesGenerator : Generator {
     private var fieldSeed = -1
     private var fieldScale = -1f
 
-    // ---- Particle state cache ----
-    @Volatile private var simCache: SimCache? = null
+    // ---- Dimension-keyed render state cache (thread-safe for concurrent live + export) ----
+    private val stateCache = object : LinkedHashMap<Long, RenderState>(4, 0.75f, true) {
+        override fun removeEldestEntry(eldest: MutableMap.MutableEntry<Long, RenderState>?): Boolean {
+            if (size > 3) { eldest?.value?.offBitmap?.recycle(); return true }
+            return false
+        }
+    }
 
-    // ---- Offscreen accumulation bitmap ----
-    @Volatile private var offBitmap: Bitmap? = null
-    private var offW = 0
-    private var offH = 0
-
-    // Reusable Path for shape drawing
-    private val shapePath = Path()
+    private class RenderState(
+        var sim: SimCache? = null,
+        var offBitmap: Bitmap? = null
+    )
 
     private class SimCache(
         val seed: Int,
@@ -226,22 +228,29 @@ class FlowingParticlesGenerator : Generator {
         val sinA = fieldSinA!!
         val cosA = fieldCosA!!
 
-        // ---- Offscreen bitmap management ----
-        var off = offBitmap
+        // ---- Dimension-keyed render state (safe for concurrent live + export) ----
+        val dimKey = (wi.toLong() shl 32) or hi.toLong()
+        val state: RenderState
+        synchronized(stateCache) {
+            state = stateCache.getOrPut(dimKey) { RenderState() }
+        }
+
+        var off = state.offBitmap
         var needClear = false
-        if (off == null || offW != wi || offH != hi) {
+        if (off == null || off.isRecycled || off.width != wi || off.height != hi) {
             off?.recycle()
             off = Bitmap.createBitmap(wi, hi, Bitmap.Config.ARGB_8888)
-            offBitmap = off; offW = wi; offH = hi
+            state.offBitmap = off
             needClear = true
         }
         val oc = Canvas(off)
 
-        // ---- Drawing paint (no anti-alias for speed) ----
+        // ---- Drawing paint and path (local — Path is not thread-safe) ----
         val paint = Paint().apply { style = Paint.Style.FILL }
+        val path = Path()
 
         // ---- Resolve particle state ----
-        val cached = simCache
+        val cached = state.sim
         val sim: SimCache
 
         if (!needClear && cached != null &&
@@ -260,7 +269,7 @@ class FlowingParticlesGenerator : Generator {
                 if (fadeAlpha > 0) oc.drawColor(Color.argb(fadeAlpha, 0, 0, 0))
                 advanceOneStep(sim, t, baseSpeed, patternId, turbulence, noise,
                     halfW, halfH, w, h, sinA, cosA, fixedShape, sizeVariance, nColors)
-                drawAllParticles(oc, sim, paint, shapePath, colors, nColors, colorId,
+                drawAllParticles(oc, sim, paint, path, colors, nColors, colorId,
                     particleSize, pulse, t, w, h, baseSpeed)
             }
             sim.stepCount = totalSteps
@@ -306,13 +315,13 @@ class FlowingParticlesGenerator : Generator {
                 if (fadeAlpha > 0) oc.drawColor(Color.argb(fadeAlpha, 0, 0, 0))
                 advanceOneStep(sim, t, baseSpeed, patternId, turbulence, noise,
                     halfW, halfH, w, h, sinA, cosA, fixedShape, sizeVariance, nColors)
-                drawAllParticles(oc, sim, paint, shapePath, colors, nColors, colorId,
+                drawAllParticles(oc, sim, paint, path, colors, nColors, colorId,
                     particleSize, pulse, t, w, h, baseSpeed)
             }
             sim.stepCount = totalSteps
         }
 
-        simCache = sim
+        state.sim = sim
 
         // ---- Copy offscreen to output canvas ----
         canvas.drawBitmap(off, 0f, 0f, null)

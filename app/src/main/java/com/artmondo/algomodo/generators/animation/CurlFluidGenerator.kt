@@ -113,23 +113,24 @@ class CurlFluidGenerator : Generator {
         "colorMode" to "palette"
     )
 
-    // ---- Simulation cache ----
-    @Volatile private var simCache: SimCache? = null
+    // ---- Dimension-keyed render state cache (thread-safe for concurrent live + export) ----
+    private val stateCache = object : LinkedHashMap<Long, RenderState>(4, 0.75f, true) {
+        override fun removeEldestEntry(eldest: MutableMap.MutableEntry<Long, RenderState>?): Boolean {
+            if (size > 3) { eldest?.value?.offBitmap?.recycle(); return true }
+            return false
+        }
+    }
 
-    // Reusable grid arrays to avoid per-frame allocation
-    private var gridNoise: FloatArray? = null
-    private var gridCurlX: FloatArray? = null
-    private var gridCurlY: FloatArray? = null
-    private var gridTurbX: FloatArray? = null
-    private var gridTurbY: FloatArray? = null
-
-    // Offscreen accumulation bitmap (persistent across frames)
-    @Volatile private var offBitmap: Bitmap? = null
-    private var offW = 0
-    private var offH = 0
-
-    // Reusable line buffer for segment drawing
-    private var lineBuf: FloatArray? = null
+    private class RenderState(
+        var sim: SimCache? = null,
+        var offBitmap: Bitmap? = null,
+        var gridNoise: FloatArray? = null,
+        var gridCurlX: FloatArray? = null,
+        var gridCurlY: FloatArray? = null,
+        var gridTurbX: FloatArray? = null,
+        var gridTurbY: FloatArray? = null,
+        var lineBuf: FloatArray? = null
+    )
 
     private class SimCache(
         val seed: Int,
@@ -200,14 +201,19 @@ class CurlFluidGenerator : Generator {
         val fadeAlpha = (trailDecay * 255f).toInt().coerceIn(1, 51)
         val segAlpha = 178 // ~0.7 opacity, matching web version
 
-        // ---- Offscreen bitmap management ----
-        var off = offBitmap
+        // ---- Dimension-keyed render state (safe for concurrent live + export) ----
+        val dimKey = (wi.toLong() shl 32) or hi.toLong()
+        val state: RenderState
+        synchronized(stateCache) {
+            state = stateCache.getOrPut(dimKey) { RenderState() }
+        }
+
+        var off = state.offBitmap
         var needClear = false
-        if (off == null || offW != wi || offH != hi) {
+        if (off == null || off.isRecycled || off.width != wi || off.height != hi) {
             off?.recycle()
             off = Bitmap.createBitmap(wi, hi, Bitmap.Config.ARGB_8888)
-            offBitmap = off
-            offW = wi; offH = hi
+            state.offBitmap = off
             needClear = true
         }
         val oc = Canvas(off)
@@ -230,15 +236,15 @@ class CurlFluidGenerator : Generator {
 
         val noiseSz = noiseW * noiseH
         val curlSz = gw1 * gh1
-        val nv = if (gridNoise?.size == noiseSz) gridNoise!! else FloatArray(noiseSz).also { gridNoise = it }
-        val cx = if (gridCurlX?.size == curlSz) gridCurlX!! else FloatArray(curlSz).also { gridCurlX = it }
-        val cy = if (gridCurlY?.size == curlSz) gridCurlY!! else FloatArray(curlSz).also { gridCurlY = it }
+        val nv = if (state.gridNoise?.size == noiseSz) state.gridNoise!! else FloatArray(noiseSz).also { state.gridNoise = it }
+        val cx = if (state.gridCurlX?.size == curlSz) state.gridCurlX!! else FloatArray(curlSz).also { state.gridCurlX = it }
+        val cy = if (state.gridCurlY?.size == curlSz) state.gridCurlY!! else FloatArray(curlSz).also { state.gridCurlY = it }
 
         val turbX: FloatArray?
         val turbY: FloatArray?
         if (moveId == MOVE_TURBULENT) {
-            turbX = if (gridTurbX?.size == curlSz) gridTurbX!! else FloatArray(curlSz).also { gridTurbX = it }
-            turbY = if (gridTurbY?.size == curlSz) gridTurbY!! else FloatArray(curlSz).also { gridTurbY = it }
+            turbX = if (state.gridTurbX?.size == curlSz) state.gridTurbX!! else FloatArray(curlSz).also { state.gridTurbX = it }
+            turbY = if (state.gridTurbY?.size == curlSz) state.gridTurbY!! else FloatArray(curlSz).also { state.gridTurbY = it }
         } else {
             turbX = null; turbY = null
         }
@@ -253,14 +259,14 @@ class CurlFluidGenerator : Generator {
 
         // Ensure line buffer is big enough (4 floats per particle segment)
         val bufSize = particleCount * 4
-        val buf = if (lineBuf != null && lineBuf!!.size >= bufSize) lineBuf!!
-                  else FloatArray(bufSize).also { lineBuf = it }
+        val buf = if (state.lineBuf != null && state.lineBuf!!.size >= bufSize) state.lineBuf!!
+                  else FloatArray(bufSize).also { state.lineBuf = it }
 
         // Number of drawback frames for cold-start visual buildup
         val drawbackFrames = (4.6f / trailDecay).toInt().coerceIn(60, 300)
 
         // ---- Resolve simulation state ----
-        val cached = simCache
+        val cached = state.sim
         val sim: SimCache
 
         if (!needClear && cached != null &&
@@ -357,7 +363,7 @@ class CurlFluidGenerator : Generator {
             sim.stepCount = totalSteps
         }
 
-        simCache = sim
+        state.sim = sim
 
         // ---- Copy offscreen to output canvas ----
         canvas.drawBitmap(off, 0f, 0f, null)
