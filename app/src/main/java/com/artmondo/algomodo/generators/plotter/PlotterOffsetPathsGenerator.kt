@@ -262,12 +262,12 @@ class PlotterOffsetPathsGenerator : Generator {
         val invMaxDist = 1f / maxDist
         val needsAngle = styleId == STYLE_DASHED || styleId == STYLE_TAPERED
 
-        // Adaptive resolution: 3/8 for animation, 1/2 for draft static
+        // Adaptive resolution: 3/5 for animation, 1/2 for draft static
         val isAnim = time > 0f
         val rw: Int; val rh: Int
         if (isAnim) {
-            rw = (w * 3 / 8).coerceAtLeast(w / 3)
-            rh = (h * 3 / 8).coerceAtLeast(h / 3)
+            rw = (w * 3 / 5).coerceAtLeast(w / 2)
+            rh = (h * 3 / 5).coerceAtLeast(h / 2)
         } else if (quality == Quality.DRAFT) {
             rw = (w + 1) shr 1
             rh = (h + 1) shr 1
