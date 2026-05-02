@@ -109,36 +109,55 @@ class PlotterOffsetPathsGenerator : Generator {
         private const val TYPE_STAR = 3
         private const val TYPE_HEXAGON = 4
 
-        // Composition mode IDs
         private const val COMP_UNION = 0
         private const val COMP_SMOOTH = 1
         private const val COMP_XOR = 2
         private const val COMP_DIFF = 3
 
-        // Style IDs
         private const val STYLE_SOLID = 0
         private const val STYLE_DASHED = 1
         private const val STYLE_TAPERED = 2
         private const val STYLE_DOUBLE = 3
 
-        // Move IDs
         private const val MOVE_NONE = 0
         private const val MOVE_DRIFT = 1
         private const val MOVE_ORBIT = 2
         private const val MOVE_BREATHE = 3
         private const val MOVE_SCATTER = 4
 
-        // Triangle constants (Quilez formulation)
         private const val SQRT3 = 1.7320508075688772f
-        private const val CIRCUM = 0.8660254037844386f // sqrt(3)/2
+        private const val CIRCUM = 0.8660254037844386f
 
-        // Star5 precomputed constants (Quilez sdStar5)
         private const val STAR_RF = 0.38f
         private const val STAR_K1X = 0.809016994375f
         private const val STAR_K1Y = -0.587785252292f
         private const val STAR_BAX = STAR_RF * 0.587785252292f
         private const val STAR_BAY = STAR_RF * 0.809016994375f - 1f
         private const val STAR_BASQ = STAR_BAX * STAR_BAX + STAR_BAY * STAR_BAY
+
+        // Inline color packing — avoids Color.rgb() method call overhead in hot loop
+        private const val ALPHA_MASK = 0xFF shl 24
+
+        @Suppress("NOTHING_TO_INLINE")
+        private inline fun packRgb(r: Int, g: Int, b: Int): Int =
+            ALPHA_MASK or (r shl 16) or (g shl 8) or b
+
+        // Fast pow16 via repeated squaring (4 muls instead of general pow)
+        @Suppress("NOTHING_TO_INLINE")
+        private inline fun pow16(x: Float): Float {
+            val x2 = x * x; val x4 = x2 * x2; val x8 = x4 * x4; return x8 * x8
+        }
+
+        // Fast clamp to [0, 255]
+        @Suppress("NOTHING_TO_INLINE")
+        private inline fun clamp255(v: Float): Int {
+            val i = v.toInt()
+            return if (i < 0) 0 else if (i > 255) 255 else i
+        }
+
+        // Radial angle LUT size (256 entries covers 360°)
+        private const val ANGLE_LUT_SIZE = 256
+        private const val ANGLE_LUT_MASK = ANGLE_LUT_SIZE - 1
     }
 
     // Shape SoA data
@@ -151,8 +170,7 @@ class PlotterOffsetPathsGenerator : Generator {
         val hh = FloatArray(count)
         val cosR = FloatArray(count)
         val sinR = FloatArray(count)
-        val boundR = FloatArray(count)
-        // Base positions for movement
+        val boundRSq = FloatArray(count) // squared for fast distSq comparison
         val baseCx = FloatArray(count)
         val baseCy = FloatArray(count)
         val baseR = FloatArray(count)
@@ -223,7 +241,8 @@ class PlotterOffsetPathsGenerator : Generator {
 
         val bg = BG[background] ?: BG["cream"]!!
         val bgR = bg[0]; val bgG = bg[1]; val bgB = bg[2]
-        val bgColor = Color.rgb(bgR, bgG, bgB)
+        val bgColor = packRgb(bgR, bgG, bgB)
+        val bgRf = bgR.toFloat(); val bgGf = bgG.toFloat(); val bgBf = bgB.toFloat()
 
         val baseHalfLW = lineWidth * 0.5f
         val globalAlpha = if (isDark) 0.88f else 0.82f
@@ -240,16 +259,25 @@ class PlotterOffsetPathsGenerator : Generator {
         val isRadial = colorMode == "radial"
         val bandBase = globalAlpha * 0.5f
         val bandExtra = globalAlpha - bandBase
-        val invPI2 = 1f / (PI.toFloat() * 2f)
         val invMaxDist = 1f / maxDist
+        val needsAngle = styleId == STYLE_DASHED || styleId == STYLE_TAPERED
 
-        // Half-res during animation
+        // Adaptive resolution: 3/8 for animation, 1/2 for draft static
         val isAnim = time > 0f
-        val halfRes = isAnim || quality == Quality.DRAFT
-        val rw = if (halfRes) ((w + 1) shr 1) else w
-        val rh = if (halfRes) ((h + 1) shr 1) else h
+        val rw: Int; val rh: Int
+        if (isAnim) {
+            rw = (w * 3 / 8).coerceAtLeast(w / 3)
+            rh = (h * 3 / 8).coerceAtLeast(h / 3)
+        } else if (quality == Quality.DRAFT) {
+            rw = (w + 1) shr 1
+            rh = (h + 1) shr 1
+        } else {
+            rw = w
+            rh = h
+        }
         val scX = wf / rw
         val scY = hf / rh
+        val halfRes = rw < w
 
         // --- Place seed shapes ---
         val cols = ceil(sqrt(shapeCount.toFloat() * (wf / hf))).toInt().coerceAtLeast(1)
@@ -282,7 +310,7 @@ class PlotterOffsetPathsGenerator : Generator {
                     "triangles" -> TYPE_TRIANGLE
                     "stars" -> TYPE_STAR
                     "hexagons" -> TYPE_HEXAGON
-                    else -> { // mixed
+                    else -> {
                         val pick = rng.range(0f, 1f)
                         when {
                             pick < 0.2f -> TYPE_CIRCLE
@@ -295,7 +323,6 @@ class PlotterOffsetPathsGenerator : Generator {
                     }
                 }
 
-                // Store base positions for movement
                 shapes.baseCx[i] = shapes.cx[i]
                 shapes.baseCy[i] = shapes.cy[i]
                 shapes.baseR[i] = baseR
@@ -348,16 +375,17 @@ class PlotterOffsetPathsGenerator : Generator {
             }
         }
 
-        // --- Compute bounding radii ---
+        // --- Compute bounding radii squared (avoids sqrt in per-pixel check) ---
         for (i in 0 until numShapes) {
             val maxExtent = when (shapes.type[i]) {
                 TYPE_RECT -> sqrt(shapes.hw[i] * shapes.hw[i] + shapes.hh[i] * shapes.hh[i])
                 else -> shapes.r[i]
             }
-            shapes.boundR[i] = maxExtent + maxDist + wobbleBound
+            val br = maxExtent + maxDist + wobbleBound
+            shapes.boundRSq[i] = br * br
         }
 
-        // --- Ring color LUTs ---
+        // --- Ring color LUTs (pre-blended fill as packed int) ---
         val paletteColors = palette.colorInts()
         val colorsRgb = Array(paletteColors.size) {
             intArrayOf(Color.red(paletteColors[it]), Color.green(paletteColors[it]), Color.blue(paletteColors[it]))
@@ -368,90 +396,81 @@ class PlotterOffsetPathsGenerator : Generator {
         val ringDB = FloatArray(ringCount)
         val fillLut = IntArray(ringCount)
 
-        when (colorMode) {
-            "monochrome" -> {
-                val c = colorsRgb[0]
-                for (ri in 0 until ringCount) {
-                    ringDR[ri] = (c[0] - bgR).toFloat()
-                    ringDG[ri] = (c[1] - bgG).toFloat()
-                    ringDB[ri] = (c[2] - bgB).toFloat()
-                    val a = globalAlpha * 0.5f
-                    fillLut[ri] = Color.rgb(
-                        (bgR + ringDR[ri] * a).toInt(),
-                        (bgG + ringDG[ri] * a).toInt(),
-                        (bgB + ringDB[ri] * a).toInt()
-                    )
+        for (ri in 0 until ringCount) {
+            val cr: Int; val cg: Int; val cb: Int
+            when (colorMode) {
+                "monochrome" -> {
+                    cr = colorsRgb[0][0]; cg = colorsRgb[0][1]; cb = colorsRgb[0][2]
                 }
-            }
-            "alternating" -> {
-                val c0 = colorsRgb[0]
-                val c1 = colorsRgb[nColors - 1]
-                for (ri in 0 until ringCount) {
-                    val c = if (ri % 2 == 0) c0 else c1
-                    ringDR[ri] = (c[0] - bgR).toFloat()
-                    ringDG[ri] = (c[1] - bgG).toFloat()
-                    ringDB[ri] = (c[2] - bgB).toFloat()
-                    val a = globalAlpha * 0.5f
-                    fillLut[ri] = Color.rgb(
-                        (bgR + ringDR[ri] * a).toInt().coerceIn(0, 255),
-                        (bgG + ringDG[ri] * a).toInt().coerceIn(0, 255),
-                        (bgB + ringDB[ri] * a).toInt().coerceIn(0, 255)
-                    )
+                "alternating" -> {
+                    val c = if (ri % 2 == 0) colorsRgb[0] else colorsRgb[nColors - 1]
+                    cr = c[0]; cg = c[1]; cb = c[2]
                 }
-            }
-            "elevation" -> {
-                val maxRi = max(1, ringCount - 1).toFloat()
-                for (ri in 0 until ringCount) {
+                "elevation" -> {
+                    val maxRi = max(1, ringCount - 1).toFloat()
                     val t = ri / maxRi
                     val ci = t * (nColors - 1)
-                    val i0 = floor(ci).toInt()
+                    val i0 = ci.toInt()
                     val i1 = min(nColors - 1, i0 + 1)
                     val f = ci - i0
-                    val cr = (colorsRgb[i0][0] + (colorsRgb[i1][0] - colorsRgb[i0][0]) * f).toInt().coerceIn(0, 255)
-                    val cg = (colorsRgb[i0][1] + (colorsRgb[i1][1] - colorsRgb[i0][1]) * f).toInt().coerceIn(0, 255)
-                    val cb = (colorsRgb[i0][2] + (colorsRgb[i1][2] - colorsRgb[i0][2]) * f).toInt().coerceIn(0, 255)
-                    ringDR[ri] = (cr - bgR).toFloat()
-                    ringDG[ri] = (cg - bgG).toFloat()
-                    ringDB[ri] = (cb - bgB).toFloat()
-                    val a = globalAlpha * 0.5f
-                    fillLut[ri] = Color.rgb(
-                        (bgR + ringDR[ri] * a).toInt().coerceIn(0, 255),
-                        (bgG + ringDG[ri] * a).toInt().coerceIn(0, 255),
-                        (bgB + ringDB[ri] * a).toInt().coerceIn(0, 255)
-                    )
+                    cr = (colorsRgb[i0][0] + (colorsRgb[i1][0] - colorsRgb[i0][0]) * f).toInt()
+                    cg = (colorsRgb[i0][1] + (colorsRgb[i1][1] - colorsRgb[i0][1]) * f).toInt()
+                    cb = (colorsRgb[i0][2] + (colorsRgb[i1][2] - colorsRgb[i0][2]) * f).toInt()
                 }
-            }
-            else -> { // palette-rings (radial handled per-pixel)
-                for (ri in 0 until ringCount) {
+                else -> { // palette-rings
                     val c = colorsRgb[ri % nColors]
-                    ringDR[ri] = (c[0] - bgR).toFloat()
-                    ringDG[ri] = (c[1] - bgG).toFloat()
-                    ringDB[ri] = (c[2] - bgB).toFloat()
-                    val a = globalAlpha * 0.5f
-                    fillLut[ri] = Color.rgb(
-                        (bgR + ringDR[ri] * a).toInt().coerceIn(0, 255),
-                        (bgG + ringDG[ri] * a).toInt().coerceIn(0, 255),
-                        (bgB + ringDB[ri] * a).toInt().coerceIn(0, 255)
-                    )
+                    cr = c[0]; cg = c[1]; cb = c[2]
                 }
             }
+            ringDR[ri] = (cr - bgR).toFloat()
+            ringDG[ri] = (cg - bgG).toFloat()
+            ringDB[ri] = (cb - bgB).toFloat()
+            val a = globalAlpha * 0.5f
+            fillLut[ri] = packRgb(
+                clamp255(bgRf + ringDR[ri] * a),
+                clamp255(bgGf + ringDG[ri] * a),
+                clamp255(bgBf + ringDB[ri] * a)
+            )
+        }
+
+        // --- Pre-compute radial color LUT (avoids per-pixel atan2 for radial mode) ---
+        val radialDR: FloatArray?
+        val radialDG: FloatArray?
+        val radialDB: FloatArray?
+        val radialFill: IntArray?
+        if (isRadial) {
+            radialDR = FloatArray(ANGLE_LUT_SIZE)
+            radialDG = FloatArray(ANGLE_LUT_SIZE)
+            radialDB = FloatArray(ANGLE_LUT_SIZE)
+            radialFill = IntArray(ANGLE_LUT_SIZE)
+            for (ai in 0 until ANGLE_LUT_SIZE) {
+                val t = ai.toFloat() / ANGLE_LUT_SIZE
+                val ci = (t * nColors).toInt() % nColors
+                val c = colorsRgb[ci]
+                val dr = (c[0] - bgR).toFloat()
+                val dg = (c[1] - bgG).toFloat()
+                val db = (c[2] - bgB).toFloat()
+                radialDR[ai] = dr; radialDG[ai] = dg; radialDB[ai] = db
+                val fa = globalAlpha * 0.5f
+                radialFill[ai] = packRgb(
+                    clamp255(bgRf + dr * fa),
+                    clamp255(bgGf + dg * fa),
+                    clamp255(bgBf + db * fa)
+                )
+            }
+        } else {
+            radialDR = null; radialDG = null; radialDB = null; radialFill = null
         }
 
         // --- Pre-compute noise grid ---
         val noiseGrid: FloatArray?
-        val ngStep: Int
-        val ngW: Int
-        val ngH: Int
+        val ngW: Int; val ngH: Int; val invStep: Float
         if (wobble > 0f) {
-            ngStep = when {
-                halfRes -> 8
-                quality == Quality.DRAFT -> 8
-                quality == Quality.BALANCED -> 4
-                else -> 2
-            }
+            val ngStep = if (isAnim || quality == Quality.DRAFT) 8 else if (quality == Quality.BALANCED) 4 else 2
             ngW = (rw + ngStep - 1) / ngStep + 1
             ngH = (rh + ngStep - 1) / ngStep + 1
             noiseGrid = FloatArray(ngW * ngH)
+            invStep = 1f / ngStep
             val invW = wobbleScale / rw
             val invH = wobbleScale / rh
             for (gy in 0 until ngH) {
@@ -460,234 +479,241 @@ class PlotterOffsetPathsGenerator : Generator {
                 val rowOff = gy * ngW
                 for (gx in 0 until ngW) {
                     val pxf = (gx * ngStep).toFloat()
-                    val nx = pxf * invW + tOff
-                    noiseGrid[rowOff + gx] = noise.fbm(nx, ny, 3, 2f, 0.5f)
+                    noiseGrid[rowOff + gx] = noise.fbm(pxf * invW + tOff, ny, 3, 2f, 0.5f)
                 }
             }
         } else {
-            noiseGrid = null
-            ngStep = 1
-            ngW = 0
-            ngH = 0
+            noiseGrid = null; ngW = 0; ngH = 0; invStep = 1f
         }
 
-        // --- Per-pixel rendering ---
+        // --- Multi-threaded per-pixel rendering ---
         val pixels = IntArray(rw * rh)
         pixels.fill(bgColor)
-
-        // Height buffer for 3D relief
         val hBuf = if (render3D) FloatArray(rw * rh) else null
 
-        // Pre-extract shape arrays
+        // Extract shape arrays for tight inner loop
         val sType = shapes.type
         val sCx = shapes.cx; val sCy = shapes.cy
         val sR = shapes.r; val sHw = shapes.hw; val sHh = shapes.hh
         val sCosR = shapes.cosR; val sSinR = shapes.sinR
-        val sBoundR = shapes.boundR
+        val sBoundRSq = shapes.boundRSq
 
-        val invStep = 1f / ngStep
+        val cores = Runtime.getRuntime().availableProcessors().coerceIn(2, 8)
+        val threads = Array(cores) { threadIdx ->
+            Thread {
+                val y0 = threadIdx * rh / cores
+                val y1 = (threadIdx + 1) * rh / cores
 
-        for (py in 0 until rh) {
-            val cy = halfH + (py * scY - halfH) * invZoom
-            val pixelRowOff = py * rw
+                for (py in y0 until y1) {
+                    val cy = halfH + (py * scY - halfH) * invZoom
+                    val pixelRowOff = py * rw
 
-            // Noise row pre-compute
-            val ngy = if (noiseGrid != null) py.toFloat() * invStep else 0f
-            val nj0 = if (noiseGrid != null) ngy.toInt().coerceIn(0, ngH - 2) else 0
-            val nfy = if (noiseGrid != null) ngy - nj0 else 0f
-            val nr0 = nj0 * ngW
-            val nr1 = nr0 + ngW
+                    // Noise row pre-compute
+                    val ngy = if (noiseGrid != null) py.toFloat() * invStep else 0f
+                    val nj0 = if (noiseGrid != null) ngy.toInt().coerceIn(0, ngH - 2) else 0
+                    val nfy = if (noiseGrid != null) ngy - nj0 else 0f
+                    val nfy1 = 1f - nfy
+                    val nr0 = nj0 * ngW
+                    val nr1 = nr0 + ngW
 
-            for (px in 0 until rw) {
-                val cx = halfW + (px * scX - halfW) * invZoom
+                    for (px in 0 until rw) {
+                        val cx = halfW + (px * scX - halfW) * invZoom
 
-                // Evaluate SDF with composition mode
-                var d = Float.MAX_VALUE
-                var d2 = if (compMode == COMP_XOR) -Float.MAX_VALUE else Float.MAX_VALUE
-                var nearSi = 0
-                for (si in 0 until numShapes) {
-                    val dx = cx - sCx[si]
-                    val dy = cy - sCy[si]
-                    val distSq = dx * dx + dy * dy
+                        // Evaluate SDF with composition mode
+                        var d = Float.MAX_VALUE
+                        var d2 = if (compMode == COMP_XOR) -Float.MAX_VALUE else Float.MAX_VALUE
+                        var nearSi = 0
+                        for (si in 0 until numShapes) {
+                            val dx = cx - sCx[si]
+                            val dy = cy - sCy[si]
+                            val distSq = dx * dx + dy * dy
 
-                    // Bounding check (only for union — other modes need all shapes)
-                    if (compMode == COMP_UNION) {
-                        val br = sBoundR[si]
-                        if (distSq > br * br) continue
-                    }
+                            // Bounding check (squared — no sqrt)
+                            if (distSq > sBoundRSq[si]) continue
 
-                    // Rotate to shape-local space
-                    val lx = dx * sCosR[si] - dy * sSinR[si]
-                    val ly = dx * sSinR[si] + dy * sCosR[si]
+                            // Rotate to shape-local space
+                            val lx = dx * sCosR[si] - dy * sSinR[si]
+                            val ly = dx * sSinR[si] + dy * sCosR[si]
 
-                    val raw = when (sType[si]) {
-                        TYPE_RECT -> sdBox(lx, ly, sHw[si], sHh[si])
-                        TYPE_TRIANGLE -> sdTriangle(lx, ly, sR[si] * CIRCUM)
-                        TYPE_STAR -> sdStar5(lx, ly, sR[si])
-                        TYPE_HEXAGON -> sdHexagon(lx, ly, sR[si] * CIRCUM)
-                        else -> sqrt(distSq) - sR[si] // circle (no rotation needed)
-                    }
+                            val raw = when (sType[si]) {
+                                TYPE_RECT -> {
+                                    val qx = abs(lx) - sHw[si]
+                                    val qy = abs(ly) - sHh[si]
+                                    val ox = if (qx > 0f) qx else 0f
+                                    val oy = if (qy > 0f) qy else 0f
+                                    sqrt(ox * ox + oy * oy) + if (qx > qy) min(qx, 0f) else min(qy, 0f)
+                                }
+                                TYPE_TRIANGLE -> sdTriangle(lx, ly, sR[si] * CIRCUM)
+                                TYPE_STAR -> sdStar5(lx, ly, sR[si])
+                                TYPE_HEXAGON -> sdHexagon(lx, ly, sR[si] * CIRCUM)
+                                else -> sqrt(distSq) - sR[si]
+                            }
 
-                    when (compMode) {
-                        COMP_XOR -> {
-                            if (raw < d) { nearSi = si; d = raw }
-                            if (raw > d2) d2 = raw
+                            when (compMode) {
+                                COMP_XOR -> {
+                                    if (raw < d) { nearSi = si; d = raw }
+                                    if (raw > d2) d2 = raw
+                                }
+                                COMP_DIFF -> {
+                                    if (raw < d) { d2 = d; d = raw; nearSi = si }
+                                    else if (raw < d2) d2 = raw
+                                }
+                                COMP_SMOOTH -> {
+                                    if (raw < d) nearSi = si
+                                    val absDiff = abs(d - raw)
+                                    if (absDiff < smoothK) {
+                                        val hh = (smoothK - absDiff) / smoothK
+                                        d = min(d, raw) - hh * hh * smoothK * 0.25f
+                                    } else {
+                                        d = min(d, raw)
+                                    }
+                                }
+                                else -> {
+                                    if (raw < d) { d = raw; nearSi = si }
+                                }
+                            }
                         }
-                        COMP_DIFF -> {
-                            if (raw < d) { d2 = d; d = raw; nearSi = si }
-                            else if (raw < d2) d2 = raw
+
+                        // Composition post-processing
+                        if (compMode == COMP_XOR) d = max(d, -d2)
+                        else if (compMode == COMP_DIFF) d = abs(d - d2)
+
+                        // Coarse bounds check before noise
+                        if (d < -wobbleBound) {
+                            if (hBuf != null) hBuf[pixelRowOff + px] = 1f
+                            continue
                         }
-                        COMP_SMOOTH -> {
-                            if (raw < d) nearSi = si
-                            d = smin(d, raw, smoothK)
+                        if (d >= maxDist + wobbleBound) continue
+
+                        // Apply wobble via bilinear interpolation
+                        if (noiseGrid != null) {
+                            val ngx = px.toFloat() * invStep
+                            val ni0 = ngx.toInt().coerceIn(0, ngW - 2)
+                            val nfx = ngx - ni0
+                            val nfx1 = 1f - nfx
+                            d += (nfy1 * (nfx1 * noiseGrid[nr0 + ni0] + nfx * noiseGrid[nr0 + ni0 + 1]) +
+                                  nfy  * (nfx1 * noiseGrid[nr1 + ni0] + nfx * noiseGrid[nr1 + ni0 + 1])) * wobbleFactor
                         }
-                        else -> { // union
-                            if (raw < d) { d = raw; nearSi = si }
+
+                        // Store height for 3D relief
+                        if (hBuf != null) {
+                            if (d < 0f) {
+                                hBuf[pixelRowOff + px] = 1f
+                            } else if (d < maxDist) {
+                                val ringPhase = (d * invSpacing) % 1f
+                                val tri = 1f - 2f * abs(ringPhase - 0.5f)
+                                hBuf[pixelRowOff + px] = (1f - d * invMaxDist) + tri * 0.15f
+                            }
+                        }
+
+                        if (d < 0f || d >= maxDist) continue
+
+                        // Ring detection
+                        val ringIdxF = d * invSpacing
+                        val ringIdx = ringIdxF.toInt()
+                        if (ringIdx >= ringCount) continue
+                        val frac = ringIdxF - ringIdx
+                        var distFromEdge = (if (frac < 0.5f) frac else 1f - frac) * spacing
+
+                        // Style effects
+                        var effHalfLW = baseHalfLW
+                        if (styleId == STYLE_DOUBLE) {
+                            distFromEdge = abs(distFromEdge - doubleDelta)
+                            effHalfLW = baseHalfLW * 0.5f
+                        } else if (needsAngle) {
+                            val angle = atan2(cy - sCy[nearSi], cx - sCx[nearSi])
+                            if (styleId == STYLE_DASHED) {
+                                if (sin(angle * 6f + ringIdx * 0.8f) < 0f) continue
+                            } else {
+                                effHalfLW = baseHalfLW * (0.3f + 0.7f * (0.5f + 0.5f * sin(angle + ringIdx * 0.3f)))
+                            }
+                        }
+
+                        val edgeThreshold = effHalfLW + 1f
+
+                        // Color lookup
+                        val dr: Float; val dg: Float; val db: Float
+                        val fillPx: Int
+                        if (radialDR != null) {
+                            // Radial: use angle LUT (cheap integer ops instead of atan2)
+                            val adx = cx - halfW; val ady = cy - halfH
+                            val angle = atan2(ady, adx)
+                            val ai = (((angle + PI.toFloat()) * (ANGLE_LUT_SIZE / (2f * PI.toFloat()))).toInt()) and ANGLE_LUT_MASK
+                            dr = radialDR[ai]; dg = radialDG!![ai]; db = radialDB!![ai]
+                            fillPx = radialFill!![ai]
+                        } else {
+                            dr = ringDR[ringIdx]; dg = ringDG[ringIdx]; db = ringDB[ringIdx]
+                            fillPx = fillLut[ringIdx]
+                        }
+
+                        if (fillBands) {
+                            if (distFromEdge < edgeThreshold) {
+                                val lineAlpha = if (edgeThreshold - distFromEdge < 1f) edgeThreshold - distFromEdge else 1f
+                                val fa = bandBase + bandExtra * lineAlpha
+                                pixels[pixelRowOff + px] = packRgb(
+                                    clamp255(bgRf + dr * fa),
+                                    clamp255(bgGf + dg * fa),
+                                    clamp255(bgBf + db * fa)
+                                )
+                            } else {
+                                pixels[pixelRowOff + px] = fillPx
+                            }
+                        } else {
+                            if (distFromEdge > edgeThreshold) continue
+                            val raw = edgeThreshold - distFromEdge
+                            val alpha = (if (raw < 1f) raw else 1f) * globalAlpha
+                            pixels[pixelRowOff + px] = packRgb(
+                                clamp255(bgRf + dr * alpha),
+                                clamp255(bgGf + dg * alpha),
+                                clamp255(bgBf + db * alpha)
+                            )
                         }
                     }
                 }
-
-                // Composition post-processing
-                when (compMode) {
-                    COMP_XOR -> d = max(d, -d2)
-                    COMP_DIFF -> d = abs(d - d2)
-                }
-
-                // Coarse bounds check before noise
-                if (d < -wobbleBound) {
-                    if (hBuf != null) hBuf[pixelRowOff + px] = 1f
-                    continue
-                }
-                if (d >= maxDist + wobbleBound) continue
-
-                // Apply wobble via bilinear interpolation
-                if (noiseGrid != null) {
-                    val ngx = px.toFloat() * invStep
-                    val ni0 = ngx.toInt().coerceIn(0, ngW - 2)
-                    val nfx = ngx - ni0
-                    val n00 = noiseGrid[nr0 + ni0]
-                    val n10 = noiseGrid[nr0 + ni0 + 1]
-                    val n01 = noiseGrid[nr1 + ni0]
-                    val n11 = noiseGrid[nr1 + ni0 + 1]
-                    val wn = (1f - nfy) * ((1f - nfx) * n00 + nfx * n10) +
-                             nfy * ((1f - nfx) * n01 + nfx * n11)
-                    d += wn * wobbleFactor
-                }
-
-                // Store height for 3D relief
-                if (hBuf != null) {
-                    if (d < 0f) {
-                        hBuf[pixelRowOff + px] = 1f
-                    } else if (d < maxDist) {
-                        val ringPhase = (d * invSpacing) % 1f
-                        val tri = 1f - 2f * abs(ringPhase - 0.5f)
-                        hBuf[pixelRowOff + px] = (1f - d * invMaxDist) + tri * 0.15f
-                    }
-                }
-
-                // Final bounds
-                if (d < 0f || d >= maxDist) continue
-
-                // Ring detection
-                val ringIdxF = d * invSpacing
-                val ringIdx = ringIdxF.toInt()
-                if (ringIdx >= ringCount) continue
-                val frac = ringIdxF - ringIdx
-                var distFromEdge = (if (frac < 0.5f) frac else 1f - frac) * spacing
-
-                // Style effects
-                var effHalfLW = baseHalfLW
-                when (styleId) {
-                    STYLE_DOUBLE -> {
-                        distFromEdge = abs(distFromEdge - doubleDelta)
-                        effHalfLW = baseHalfLW * 0.5f
-                    }
-                    STYLE_DASHED, STYLE_TAPERED -> {
-                        val angle = atan2(cy - sCy[nearSi], cx - sCx[nearSi])
-                        if (styleId == STYLE_DASHED) {
-                            if (sin(angle * 6f + ringIdx * 0.8f) < 0f) continue
-                        } else { // tapered
-                            effHalfLW = baseHalfLW * (0.3f + 0.7f * (0.5f + 0.5f * sin(angle + ringIdx * 0.3f)))
-                        }
-                    }
-                }
-
-                // Color lookup
-                val dr: Float; val dg: Float; val db: Float
-                var fillPx: Int
-                if (isRadial) {
-                    val ca = atan2(cy - halfH, cx - halfW)
-                    val t = (ca + PI.toFloat()) * invPI2
-                    val ci = (t * nColors).toInt() % nColors
-                    val c = colorsRgb[ci]
-                    dr = (c[0] - bgR).toFloat()
-                    dg = (c[1] - bgG).toFloat()
-                    db = (c[2] - bgB).toFloat()
-                    val fa = globalAlpha * 0.5f
-                    fillPx = Color.rgb(
-                        (bgR + dr * fa).toInt().coerceIn(0, 255),
-                        (bgG + dg * fa).toInt().coerceIn(0, 255),
-                        (bgB + db * fa).toInt().coerceIn(0, 255)
-                    )
-                } else {
-                    dr = ringDR[ringIdx]; dg = ringDG[ringIdx]; db = ringDB[ringIdx]
-                    fillPx = fillLut[ringIdx]
-                }
-
-                val edgeThreshold = effHalfLW + 1f
-                if (fillBands) {
-                    if (distFromEdge < edgeThreshold) {
-                        val lineAlpha = min(edgeThreshold - distFromEdge, 1f)
-                        val fa = bandBase + bandExtra * lineAlpha
-                        pixels[pixelRowOff + px] = Color.rgb(
-                            (bgR + dr * fa).toInt().coerceIn(0, 255),
-                            (bgG + dg * fa).toInt().coerceIn(0, 255),
-                            (bgB + db * fa).toInt().coerceIn(0, 255)
-                        )
-                    } else {
-                        pixels[pixelRowOff + px] = fillPx
-                    }
-                } else {
-                    if (distFromEdge > edgeThreshold) continue
-                    val alpha = min(edgeThreshold - distFromEdge, 1f) * globalAlpha
-                    pixels[pixelRowOff + px] = Color.rgb(
-                        (bgR + dr * alpha).toInt().coerceIn(0, 255),
-                        (bgG + dg * alpha).toInt().coerceIn(0, 255),
-                        (bgB + db * alpha).toInt().coerceIn(0, 255)
-                    )
-                }
-            }
+            }.also { it.start() }
         }
+        threads.forEach { it.join() }
 
-        // --- 3D relief post-pass (Phong lighting) ---
+        // --- 3D relief post-pass (Phong lighting) — also multi-threaded ---
         if (render3D && hBuf != null) {
             val hs = 25f
             val nlx = -0.508f; val nly = -0.609f; val nlz = 0.609f
             val ambient = 0.3f
-            for (py in 0 until rh) {
-                for (px in 0 until rw) {
-                    val idx = py * rw + px
-                    val hv = hBuf[idx]
-                    val hr = if (px + 1 < rw) hBuf[idx + 1] else hv
-                    val hd = if (py + 1 < rh) hBuf[idx + rw] else hv
-                    val dhdx = (hr - hv) * hs
-                    val dhdy = (hd - hv) * hs
-                    val nLen = 1f / sqrt(dhdx * dhdx + dhdy * dhdy + 1f)
-                    val nx = -dhdx * nLen
-                    val ny = -dhdy * nLen
-                    val nz = nLen
-                    val dotNL = nx * nlx + ny * nly + nz * nlz
-                    val brightness = ambient + max(0f, dotNL) * (1f - ambient)
-                    val rz = 2f * dotNL * nz - nlz
-                    val spec255 = if (rz > 0f) 0.25f * rz.pow(16f) * 255f else 0f
+            val diffScale = 1f - ambient
+            val threads3D = Array(cores) { threadIdx ->
+                Thread {
+                    val y0 = threadIdx * rh / cores
+                    val y1 = (threadIdx + 1) * rh / cores
+                    for (py in y0 until y1) {
+                        val rowOff = py * rw
+                        val nextRow = if (py + 1 < rh) rowOff + rw else rowOff
+                        for (px in 0 until rw) {
+                            val idx = rowOff + px
+                            val hv = hBuf[idx]
+                            val hr = if (px + 1 < rw) hBuf[idx + 1] else hv
+                            val hd = hBuf[nextRow + px]
+                            val dhdx = (hr - hv) * hs
+                            val dhdy = (hd - hv) * hs
+                            val nLen = 1f / sqrt(dhdx * dhdx + dhdy * dhdy + 1f)
+                            val nx = -dhdx * nLen
+                            val ny = -dhdy * nLen
+                            val nz = nLen
+                            val dotNL = nx * nlx + ny * nly + nz * nlz
+                            val brightness = ambient + (if (dotNL > 0f) dotNL else 0f) * diffScale
+                            val rz = 2f * dotNL * nz - nlz
+                            val spec255 = if (rz > 0f) 0.25f * pow16(rz) * 255f else 0f
 
-                    val c = pixels[idx]
-                    val cr = min(255f, (Color.red(c) * brightness + spec255)).toInt()
-                    val cg = min(255f, (Color.green(c) * brightness + spec255)).toInt()
-                    val cb = min(255f, (Color.blue(c) * brightness + spec255)).toInt()
-                    pixels[idx] = Color.rgb(cr, cg, cb)
-                }
+                            val c = pixels[idx]
+                            pixels[idx] = packRgb(
+                                min(255, ((c ushr 16 and 0xFF) * brightness + spec255).toInt()),
+                                min(255, ((c ushr 8 and 0xFF) * brightness + spec255).toInt()),
+                                min(255, ((c and 0xFF) * brightness + spec255).toInt())
+                            )
+                        }
+                    }
+                }.also { it.start() }
             }
+            threads3D.forEach { it.join() }
         }
 
         // --- Output ---
@@ -702,14 +728,7 @@ class PlotterOffsetPathsGenerator : Generator {
         }
     }
 
-    // ── Quilez SDF primitives ──
-
-    private fun sdBox(px: Float, py: Float, hw: Float, hh: Float): Float {
-        val qx = abs(px) - hw
-        val qy = abs(py) - hh
-        val ox = max(qx, 0f); val oy = max(qy, 0f)
-        return sqrt(ox * ox + oy * oy) + min(max(qx, qy), 0f)
-    }
+    // ── Quilez SDF primitives (inlined where possible, private for JIT) ──
 
     private fun sdTriangle(px: Float, py: Float, r: Float): Float {
         var qx = abs(px) - r
@@ -719,7 +738,8 @@ class PlotterOffsetPathsGenerator : Generator {
             qy = (-SQRT3 * qx - qy) * 0.5f
             qx = tx
         }
-        qx -= qx.coerceIn(-2f * r, 0f)
+        val clamp = if (qx < -2f * r) -2f * r else if (qx > 0f) 0f else qx
+        qx -= clamp
         val len = sqrt(qx * qx + qy * qy)
         return if (qy > 0f) -len else len
     }
@@ -730,7 +750,8 @@ class PlotterOffsetPathsGenerator : Generator {
         val dot = 2f * min(-0.866025404f * qx + 0.5f * qy, 0f)
         qx -= dot * -0.866025404f
         qy -= dot * 0.5f
-        qx -= qx.coerceIn(-0.577350269f * r, 0.577350269f * r)
+        val cl = 0.577350269f * r
+        qx -= if (qx < -cl) -cl else if (qx > cl) cl else qx
         qy -= r
         val len = sqrt(qx * qx + qy * qy)
         return if (qy >= 0f) len else -len
@@ -745,17 +766,13 @@ class PlotterOffsetPathsGenerator : Generator {
         if (d2 > 0f) { qx += 2f * d2 * STAR_K1X; qy -= 2f * d2 * STAR_K1Y }
         qx = abs(qx)
         qy -= r
-        val h = ((qx * STAR_BAX + qy * STAR_BAY) / STAR_BASQ).coerceIn(0f, r)
+        val rawH = (qx * STAR_BAX + qy * STAR_BAY) / STAR_BASQ
+        val h = if (rawH < 0f) 0f else if (rawH > r) r else rawH
         val ex = qx - STAR_BAX * h
         val ey = qy - STAR_BAY * h
         val len = sqrt(ex * ex + ey * ey)
         val cross = qy * STAR_BAX - qx * STAR_BAY
         return if (cross >= 0f) len else -len
-    }
-
-    private fun smin(a: Float, b: Float, k: Float): Float {
-        val h = max(k - abs(a - b), 0f) / k
-        return min(a, b) - h * h * k * 0.25f
     }
 
     override fun estimateCost(params: Map<String, Any>, quality: Quality): Float {
