@@ -138,8 +138,8 @@ class HelixGenerator : Generator {
         val bpDensity = ((params["bpDensity"] as? Number)?.toInt() ?: 10).coerceIn(2, 20)
         val variant = (params["variant"] as? String) ?: "classic"
         val baseR = ((params["radius"] as? Number)?.toFloat() ?: 0.18f) * minDim
-        val sw = ((params["strandWidth"] as? Number)?.toFloat() ?: 3f) * (minDim / 600f)
-        val bw = ((params["bpWidth"] as? Number)?.toFloat() ?: 1.5f) * (minDim / 600f)
+        val strandWidth = ((params["strandWidth"] as? Number)?.toFloat() ?: 3f) * (minDim / 400f)
+        val bpWidth = ((params["bpWidth"] as? Number)?.toFloat() ?: 1.5f) * (minDim / 400f)
         val breathing = (params["breathing"] as? Number)?.toFloat() ?: 0f
         val mutNoise = (params["mutationNoise"] as? Number)?.toFloat() ?: 0f
         val scAmpParam = if (variant == "supercoil")
@@ -169,11 +169,14 @@ class HelixGenerator : Generator {
         val isZdna = variant == "zdna"
         val omegaDir = if (isZdna) -omega else omega
 
-        // Phase: animate rotation
-        val phase = if (time > 0f) time * animSpeed * animAmp * audioSpeedMul * PI.toFloat() * 2f else 0f
+        // Phase: animate rotation (static render uses seed-based offset for variety)
+        val phase = if (time > 0f)
+            time * animSpeed * animAmp * audioSpeedMul * PI.toFloat() * 2f
+        else
+            SeededRNG(seed).random() * PI.toFloat() * 2f
 
         // Sampling resolution
-        val totalBp = (turns * bpDensity).toInt()
+        val totalBp = (turns * bpDensity).toInt().coerceAtLeast(2)
         val strandSegments = totalBp * 6
 
         // Palette colors
@@ -185,25 +188,29 @@ class HelixGenerator : Generator {
         val codonHues = FloatArray(totalBp) { codonRng.random() * 360f }
 
         // ── Helper: strand position + depth ─────────────────────────
+        // Normalized y from 0..totalHeight for noise sampling
         fun strandPos(y: Float, strandIdx: Int): Pair<Float, Float> {
             val strandPhase = (strandIdx.toFloat() / nStrands) * PI.toFloat() * 2f
-            val angle = omegaDir * y + strandPhase + phase
+            val angle = omegaDir * (y - yStart) + strandPhase + phase
 
             var r = baseR * audioRadius
             if (mutNoise > 0f) {
-                val nv = noise.noise2D(y * 0.003f, strandIdx * 100f + seed * 0.01f)
-                r *= 1f + nv * mutNoise * 0.4f
+                // Use normalized y for noise so frequency is canvas-independent
+                val ny = (y - yStart) / totalHeight
+                val nv = noise.noise2D(ny * 8f + seed * 0.1f, strandIdx * 17f)
+                r *= 1f + nv * mutNoise * 0.6f
             }
 
             var jitter = 0f
             if (isZdna) {
-                jitter = noise.noise2D(y * 0.01f, strandIdx * 50f) * minDim * 0.01f
+                val ny = (y - yStart) / totalHeight
+                jitter = noise.noise2D(ny * 20f, strandIdx * 50f + seed * 0.3f) * baseR * 0.25f
             }
 
             var scX = 0f
             if (scAmpParam > 0f) {
                 val scOmega = omega * 0.15f
-                scX = sin(scOmega * y + phase * 0.3f) * scAmpParam
+                scX = sin(scOmega * (y - yStart) + phase * 0.3f) * scAmpParam
             }
 
             val x = cx + scX + cos(angle) * r + jitter
@@ -215,7 +222,23 @@ class HelixGenerator : Generator {
         fun getColor(strandIdx: Int, depth: Float, bpIdx: Int): Int {
             return when (colorMode) {
                 "strand" -> colors[strandIdx % nc]
-                "depth", "palette" -> {
+                "depth" -> {
+                    // Brightness based on depth: back = dark, front = bright
+                    val t = (depth + 1f) * 0.5f // 0..1
+                    val baseColor = colors[strandIdx % nc]
+                    val brightness = 0.3f + 0.7f * t
+                    Color.rgb(
+                        (Color.red(baseColor) * brightness).toInt().coerceIn(0, 255),
+                        (Color.green(baseColor) * brightness).toInt().coerceIn(0, 255),
+                        (Color.blue(baseColor) * brightness).toInt().coerceIn(0, 255)
+                    )
+                }
+                "codon" -> {
+                    val codonGroup = bpIdx / 3
+                    val hue = codonHues[(codonGroup % codonHues.size).coerceAtLeast(0)]
+                    hslToColor(hue, 0.7f, 0.55f)
+                }
+                else -> { // "palette" - lerp through palette by depth
                     val t = (depth + 1f) * 0.5f
                     val ci = ((t * (nc - 1)).toInt()).coerceIn(0, nc - 2)
                     val ci2 = ci + 1
@@ -226,17 +249,14 @@ class HelixGenerator : Generator {
                     val bb = (Color.blue(c1) + (Color.blue(c2) - Color.blue(c1)) * f).toInt()
                     Color.rgb(rr.coerceIn(0, 255), gg.coerceIn(0, 255), bb.coerceIn(0, 255))
                 }
-                "codon" -> {
-                    val codonGroup = bpIdx / 3
-                    val hue = codonHues[codonGroup % codonHues.size]
-                    hslToColor(hue, 0.6f, 0.5f)
-                }
-                else -> colors[0]
             }
         }
 
         // ── Collect segments for depth sort ──────────────────────────
         val segs = ArrayList<Segment>(strandSegments * nStrands + totalBp * nStrands)
+
+        // Ribbon half-width: scale by strandWidth param for visible difference
+        val ribbonHalfWidth = strandWidth * 2.5f
 
         // Build strand segments
         val yStep = totalHeight / strandSegments
@@ -248,38 +268,47 @@ class HelixGenerator : Generator {
 
                 if (j > 0) {
                     val avgDepth = (prevD + depth) * 0.5f
-                    val alphaDepth = 0.35f + 0.65f * ((avgDepth + 1f) * 0.5f)
-                    val widthMod = 0.5f + 0.5f * ((avgDepth + 1f) * 0.5f)
+                    val alphaDepth = 0.3f + 0.7f * ((avgDepth + 1f) * 0.5f)
+                    val widthMod = 0.4f + 0.6f * ((avgDepth + 1f) * 0.5f)
                     val bpIdx = j / 6
                     val color = getColor(si, avgDepth, bpIdx)
 
                     when (variant) {
                         "particle" -> {
-                            segs.add(Segment(
-                                kind = KIND_STRAND, x1 = x, y1 = yPos, x2 = x, y2 = yPos,
-                                depth = depth, alpha = alphaDepth,
-                                width = 0f, radius = sw * widthMod * 1.5f, color = color
-                            ))
+                            // Only emit every 3rd segment to avoid over-density
+                            if (j % 3 == 0) {
+                                segs.add(Segment(
+                                    kind = KIND_PARTICLE, x1 = x, y1 = yPos, x2 = x, y2 = yPos,
+                                    depth = depth, alpha = alphaDepth,
+                                    width = 0f, radius = strandWidth * widthMod * 1.2f, color = color
+                                ))
+                            }
                         }
                         "ribbon" -> {
-                            val angle = omegaDir * yPos + (si.toFloat() / nStrands) * PI.toFloat() * 2f + phase
-                            val perpX = -sin(angle) * sw * widthMod * 2f
-                            val prevAngle = omegaDir * prevY + (si.toFloat() / nStrands) * PI.toFloat() * 2f + phase
-                            val prevPerpX = -sin(prevAngle) * sw * ((prevD + 1f) * 0.25f + 0.5f) * 2f
+                            // Ribbon: quad with perpendicular offset based on depth
+                            val angle = omegaDir * (yPos - yStart) + (si.toFloat() / nStrands) * PI.toFloat() * 2f + phase
+                            val perpX = -sin(angle) * ribbonHalfWidth * widthMod
+                            val prevAngle = omegaDir * (prevY - yStart) + (si.toFloat() / nStrands) * PI.toFloat() * 2f + phase
+                            val prevWidthMod = 0.4f + 0.6f * ((prevD + 1f) * 0.5f)
+                            val prevPerpX = -sin(prevAngle) * ribbonHalfWidth * prevWidthMod
 
                             segs.add(Segment(
-                                kind = KIND_RIBBON, x1 = prevX - prevPerpX, y1 = prevY,
+                                kind = KIND_RIBBON,
+                                x1 = prevX - prevPerpX, y1 = prevY,
                                 x2 = x - perpX, y2 = yPos,
                                 x3 = x + perpX, y3 = yPos,
                                 x4 = prevX + prevPerpX, y4 = prevY,
-                                depth = avgDepth, alpha = alphaDepth, width = 0f, color = color
+                                depth = avgDepth, alpha = alphaDepth * 0.85f,
+                                width = 0f, color = color
                             ))
                         }
                         else -> {
+                            // Classic / zdna / supercoil: line segments
                             segs.add(Segment(
-                                kind = KIND_STRAND, x1 = prevX, y1 = prevY, x2 = x, y2 = yPos,
+                                kind = KIND_STRAND,
+                                x1 = prevX, y1 = prevY, x2 = x, y2 = yPos,
                                 depth = avgDepth, alpha = alphaDepth,
-                                width = sw * widthMod, color = color
+                                width = strandWidth * widthMod, color = color
                             ))
                         }
                     }
@@ -288,19 +317,24 @@ class HelixGenerator : Generator {
             }
         }
 
-        // Build base-pair rungs (between adjacent strands)
+        // ── Build base-pair rungs (between adjacent strands) ────────
         if (variant != "particle") {
             for (bp in 0 until totalBp) {
                 val yBp = yStart + (bp.toFloat() / totalBp) * totalHeight
 
+                // Breathing: oscillate base-pair length even in static mode
                 var breathScale = 1f
-                if (audioBreath > 0f && time > 0f) {
-                    val breathT = sin(bp * 0.7f + time * 3f * animSpeed) * audioBreath
-                    breathScale = 1f + breathT * 0.5f
+                if (audioBreath > 0f) {
+                    val breathT = if (time > 0f)
+                        sin(bp * 0.7f + time * 3f * animSpeed) * audioBreath
+                    else
+                        sin(bp * 1.2f + seed * 0.1f) * audioBreath
+                    breathScale = 1f + breathT * 0.6f
                 }
 
                 for (si in 0 until nStrands) {
                     val nextSi = (si + 1) % nStrands
+                    // For 2 strands, only connect strand 0 → strand 1
                     if (nStrands == 2 && si > 0) continue
 
                     val (axRaw, depthA) = strandPos(yBp, si)
@@ -312,14 +346,15 @@ class HelixGenerator : Generator {
 
                     val sortKey = min(depthA, depthB)
                     val edgeFade = 1f - abs(depthA)
-                    val alpha = 0.2f + 0.8f * edgeFade.coerceAtLeast(0f)
+                    val alpha = (0.15f + 0.85f * edgeFade.coerceAtLeast(0f))
 
                     val color = getColor(0, sortKey, bp)
 
                     segs.add(Segment(
                         kind = KIND_BP, x1 = ax, y1 = yBp, x2 = bx, y2 = yBp,
                         depth = sortKey, alpha = alpha,
-                        width = bw * (0.5f + 0.5f * edgeFade.coerceAtLeast(0f)), color = color
+                        width = bpWidth * (0.4f + 0.6f * edgeFade.coerceAtLeast(0f)),
+                        color = color
                     ))
                 }
             }
@@ -343,12 +378,12 @@ class HelixGenerator : Generator {
             paint.color = seg.color
             paint.alpha = a
 
-            when {
-                variant == "particle" && seg.kind == KIND_STRAND && seg.radius > 0f -> {
+            when (seg.kind) {
+                KIND_PARTICLE -> {
                     paint.style = Paint.Style.FILL
                     canvas.drawCircle(seg.x1, seg.y1, seg.radius, paint)
                 }
-                seg.kind == KIND_RIBBON -> {
+                KIND_RIBBON -> {
                     paint.style = Paint.Style.FILL
                     path.reset()
                     path.moveTo(seg.x1, seg.y1)
@@ -399,6 +434,7 @@ class HelixGenerator : Generator {
         private const val KIND_STRAND = 0
         private const val KIND_BP = 1
         private const val KIND_RIBBON = 2
+        private const val KIND_PARTICLE = 3
     }
 
     private class Segment(
