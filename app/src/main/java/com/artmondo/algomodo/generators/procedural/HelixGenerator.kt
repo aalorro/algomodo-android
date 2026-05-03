@@ -56,61 +56,61 @@ class HelixGenerator : Generator {
         ),
         Parameter.SelectParam(
             name = "Variant", key = "variant", group = ParamGroup.COMPOSITION,
-            help = "classic = strands + base-pairs, particle = dots, ribbon = filled bands, zdna = left-handed + jitter, supercoil = helical wrapping",
+            help = "classic = strands + rungs | particle = dots only | ribbon = wide filled bands | zdna = left-handed with jitter | supercoil = helical wrapping path",
             options = listOf("classic", "particle", "ribbon", "zdna", "supercoil"),
             default = "classic"
         ),
         // Geometry
         Parameter.NumberParam(
             name = "Radius", key = "radius", group = ParamGroup.GEOMETRY,
-            help = "Helix radius relative to canvas width",
+            help = "Helix radius. Affects all variants.",
             min = 0.05f, max = 0.4f, step = 0.01f, default = 0.18f
         ),
         Parameter.NumberParam(
             name = "Strand width", key = "strandWidth", group = ParamGroup.GEOMETRY,
-            help = "Line thickness for strands",
+            help = "Stroke thickness (classic/zdna/supercoil), dot size (particle), band width (ribbon)",
             min = 1f, max = 8f, step = 0.5f, default = 3f
         ),
         Parameter.NumberParam(
             name = "Base-pair width", key = "bpWidth", group = ParamGroup.GEOMETRY,
-            help = "Line thickness for base-pair rungs",
+            help = "Rung thickness. Applies to classic, zdna, ribbon, supercoil. No effect on particle.",
             min = 0.5f, max = 4f, step = 0.5f, default = 1.5f
         ),
         // Flow/Motion
         Parameter.NumberParam(
             name = "Breathing", key = "breathing", group = ParamGroup.FLOW_MOTION,
-            help = "Base-pair length oscillation (denaturation)",
+            help = "Rungs expand/contract like DNA denaturation. Applies to classic, zdna, ribbon, supercoil.",
             min = 0f, max = 1f, step = 0.05f, default = 0f
         ),
         Parameter.NumberParam(
             name = "Mutation noise", key = "mutationNoise", group = ParamGroup.FLOW_MOTION,
-            help = "Perlin noise on radius — wobble and bulge",
+            help = "Noise wobble on helix radius — organic bulges. Affects all variants.",
             min = 0f, max = 1f, step = 0.05f, default = 0f
         ),
         Parameter.NumberParam(
             name = "Supercoil amplitude", key = "supercoilAmp", group = ParamGroup.FLOW_MOTION,
-            help = "Amplitude of outer helical path (supercoil variant)",
+            help = "Outer sine-wave path amplitude. Only affects supercoil variant.",
             min = 0f, max = 0.3f, step = 0.01f, default = 0.08f
         ),
         Parameter.NumberParam(
             name = "Anim speed", key = "animSpeed", group = ParamGroup.FLOW_MOTION,
-            help = "Animation rotation speed",
+            help = "Rotation speed when animated. Affects all variants.",
             min = 0.1f, max = 1f, step = 0.1f, default = 0.5f
         ),
         Parameter.NumberParam(
             name = "Anim amplitude", key = "animAmp", group = ParamGroup.FLOW_MOTION,
-            help = "Animation amplitude",
+            help = "Rotation range multiplier. Affects all variants.",
             min = 0.1f, max = 2f, step = 0.1f, default = 1f
         ),
         Parameter.NumberParam(
             name = "Audio Reactivity", key = "reactivity", group = ParamGroup.FLOW_MOTION,
-            help = "Audio reactivity multiplier",
+            help = "Bass → radius pulse, mid → breathing, high → speed. Affects all variants.",
             min = 0f, max = 2f, step = 0.1f, default = 1f
         ),
         // Color
         Parameter.SelectParam(
             name = "Color mode", key = "colorMode", group = ParamGroup.COLOR,
-            help = "palette = lerp by depth, codon = groups of 3 by amino acid hue, depth = front/back shade, strand = distinct color per strand",
+            help = "palette = gradient by depth | codon = amino-acid hue groups | depth = brightness by depth | strand = one color per strand",
             options = listOf("palette", "codon", "depth", "strand"),
             default = "palette"
         )
