@@ -134,17 +134,14 @@ class FlowingParticlesGenerator : Generator {
     private var fieldSeed = -1
     private var fieldScale = -1f
 
-    // ---- Dimension-keyed render state cache (thread-safe for concurrent live + export) ----
-    private val stateCache = object : LinkedHashMap<Long, RenderState>(4, 0.75f, true) {
-        override fun removeEldestEntry(eldest: MutableMap.MutableEntry<Long, RenderState>?): Boolean {
-            if (size > 3) { eldest?.value?.offBitmap?.recycle(); return true }
-            return false
-        }
-    }
+    // ---- Thread-local render state (isolates live canvas from export thread) ----
+    private val threadState = ThreadLocal<RenderState>()
 
     private class RenderState(
         var sim: SimCache? = null,
-        var offBitmap: Bitmap? = null
+        var offBitmap: Bitmap? = null,
+        var offW: Int = 0,
+        var offH: Int = 0
     )
 
     private class SimCache(
@@ -228,19 +225,16 @@ class FlowingParticlesGenerator : Generator {
         val sinA = fieldSinA!!
         val cosA = fieldCosA!!
 
-        // ---- Dimension-keyed render state (safe for concurrent live + export) ----
-        val dimKey = (wi.toLong() shl 32) or hi.toLong()
-        val state: RenderState
-        synchronized(stateCache) {
-            state = stateCache.getOrPut(dimKey) { RenderState() }
-        }
+        // ---- Thread-local render state (isolates live canvas from export thread) ----
+        val state = threadState.get() ?: RenderState().also { threadState.set(it) }
 
         var off = state.offBitmap
         var needClear = false
-        if (off == null || off.isRecycled || off.width != wi || off.height != hi) {
+        if (off == null || off.isRecycled || state.offW != wi || state.offH != hi) {
             off?.recycle()
             off = Bitmap.createBitmap(wi, hi, Bitmap.Config.ARGB_8888)
             state.offBitmap = off
+            state.offW = wi; state.offH = hi
             needClear = true
         }
         val oc = Canvas(off)
