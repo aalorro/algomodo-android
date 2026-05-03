@@ -53,8 +53,10 @@ object GifExporter {
         val baos = ByteArrayOutputStream()
         val encoder = AnimatedGifEncoder()
         encoder.start(baos)
+        // 0 = loop forever, -1 = omit Netscape extension (play once)
         encoder.setRepeat(if (boomerang || endless) 0 else -1)
         encoder.setDelay(frameDelay)
+        encoder.setLooping(boomerang || endless)
 
         val totalOutputFrames = if (doBoomerang)
             totalFrames + (totalFrames - 2) else totalFrames
@@ -73,7 +75,8 @@ object GifExporter {
                 generator.renderCanvas(canvas, bitmap, params, seed, palette, quality, time)
                 bitmap.getPixels(reusablePixels, 0, bmpWidth, 0, 0, bmpWidth, bmpHeight)
 
-                encoder.addFrame(bitmap, reusablePixels)
+                val isLast = !doBoomerang && i == totalFrames - 1
+                encoder.addFrame(bitmap, reusablePixels, isLast)
                 onProgress(i.toFloat() / totalOutputFrames * 0.9f)
             }
 
@@ -86,7 +89,8 @@ object GifExporter {
                     generator.renderCanvas(canvas, bitmap, params, seed, palette, quality, time)
                     bitmap.getPixels(reusablePixels, 0, bmpWidth, 0, 0, bmpWidth, bmpHeight)
 
-                    encoder.addFrame(bitmap, reusablePixels)
+                    val isLast = i == 1
+                    encoder.addFrame(bitmap, reusablePixels, isLast)
                     val progress = (totalFrames + (totalFrames - 2 - i)).toFloat()
                     onProgress(progress / totalOutputFrames * 0.9f)
                 }
@@ -156,10 +160,12 @@ class AnimatedGifEncoder {
     private var height = 0
     private var repeat = -1
     private var delay = 0 // centiseconds
+    private var looping = false // whether the GIF should loop seamlessly
     private var started = false
     private var out: OutputStream? = null
     private var firstFrame = true
     private var sizeSet = false
+    private var frameCount = 0
 
     // --- Quantization buffers (pre-allocated, reused across frames) ---
 
@@ -210,6 +216,7 @@ class AnimatedGifEncoder {
 
     fun setDelay(ms: Int) { delay = ms / 10 }
     fun setRepeat(iter: Int) { repeat = iter }
+    fun setLooping(loop: Boolean) { looping = loop }
 
     fun start(os: OutputStream): Boolean {
         out = os
@@ -222,14 +229,15 @@ class AnimatedGifEncoder {
         firstFrame = true
         sizeSet = false
         paletteBuilt = false
+        frameCount = 0
         prevIndexedPixels = null
         colorToIndex.fill(-1)
         return true
     }
 
-    fun addFrame(im: Bitmap): Boolean = addFrame(im, null)
+    fun addFrame(im: Bitmap): Boolean = addFrame(im, null, false)
 
-    fun addFrame(im: Bitmap, existingPixels: IntArray?): Boolean {
+    fun addFrame(im: Bitmap, existingPixels: IntArray?, isLastFrame: Boolean = false): Boolean {
         if (!started) return false
         try {
             if (!sizeSet) {
@@ -251,11 +259,19 @@ class AnimatedGifEncoder {
                 writePalette()
                 if (repeat >= 0) writeNetscapeExt()
                 // First frame: encode full, disposal=1 (do not dispose)
-                writeGraphicCtrlExt(-1)
+                writeGraphicCtrlExt(-1, disposal = 1)
                 writeImageDesc(0, 0, width, height)
                 writePixelsLZW(indexedPixels!!, indexedPixels!!.size)
                 savePrevFrame()
                 firstFrame = false
+            } else if (isLastFrame && looping) {
+                // Last frame of a looping GIF: use disposal=2 (restore to background)
+                // so the canvas is clean when looping back to frame 0.
+                // Write as full frame to avoid delta artifacts at loop boundary.
+                writeGraphicCtrlExt(-1, disposal = 2)
+                writeImageDesc(0, 0, width, height)
+                writePixelsLZW(indexedPixels!!, indexedPixels!!.size)
+                savePrevFrame()
             } else {
                 writeDeltaFrame()
             }
@@ -639,15 +655,16 @@ class AnimatedGifEncoder {
     /**
      * Write Graphic Control Extension.
      * @param transparentIdx palette index for transparency, or -1 for no transparency.
-     * All frames use disposal=1 (do not dispose) so delta frames overlay correctly.
+     * @param disposal disposal method: 1=do not dispose, 2=restore to background.
      */
-    private fun writeGraphicCtrlExt(transparentIdx: Int) {
+    private fun writeGraphicCtrlExt(transparentIdx: Int, disposal: Int = 1) {
         out?.write(0x21) // extension
         out?.write(0xF9) // GCE label
         out?.write(4)    // data block size
-        // packed: disposal=1 (bits 4-2 = 001), user input=0 (bit 1),
+        // packed: disposal (bits 4-2), user input=0 (bit 1),
         // transparent flag (bit 0) = 1 if transparentIdx >= 0
-        val packed = if (transparentIdx >= 0) 0x05 else 0x04
+        val transparentFlag = if (transparentIdx >= 0) 1 else 0
+        val packed = (disposal shl 2) or transparentFlag
         out?.write(packed)
         writeShort(delay)
         out?.write(if (transparentIdx >= 0) transparentIdx else 0)
