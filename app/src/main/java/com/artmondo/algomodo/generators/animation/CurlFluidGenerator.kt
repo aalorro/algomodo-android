@@ -272,12 +272,11 @@ class CurlFluidGenerator : Generator {
             cached.moveId == moveId &&
             cached.w == w &&
             cached.h == h &&
-            totalSteps >= cached.stepCount &&
-            totalSteps - cached.stepCount < 120
+            abs(totalSteps - cached.stepCount) < 120
         ) {
-            // ---- Incremental update: advance + draw new frames to offscreen ----
+            // ---- Incremental update (or reuse if sim is already ahead) ----
             sim = cached
-            val stepsNeeded = totalSteps - sim.stepCount
+            val stepsNeeded = (totalSteps - sim.stepCount).coerceAtLeast(0)
             for (s in 0 until stepsNeeded) {
                 val noiseT = (sim.stepCount + s) * dt * evolution
                 buildCurlGrid(noise, nv, cx, cy, noiseW, noiseH, gw1, gh1, cellW, cellH, nsOverDim, noiseT, speed)
@@ -290,7 +289,7 @@ class CurlFluidGenerator : Generator {
                 drawSegments(oc, sim, paint, buf, palette, colors, nColors, colorMode,
                     segAlpha, cx, cy, gw1, invCellW, invCellH, gridW, gridH, nv, noiseW, noiseH, speed, w, h)
             }
-            sim.stepCount = totalSteps
+            if (stepsNeeded > 0) sim.stepCount = totalSteps
         } else {
             // ---- Cold start: rebuild simulation + offscreen ----
             sim = SimCache(
@@ -323,8 +322,12 @@ class CurlFluidGenerator : Generator {
                 sim.colorIdx[i] = (rng.random() * nColors).toInt().coerceIn(0, nColors - 1)
             }
 
+            // Always simulate at least drawbackFrames so the off bitmap has visible
+            // content even when totalSteps is very small (e.g. first GIF/MP4 frame).
+            val effectiveSteps = totalSteps.coerceAtLeast(drawbackFrames)
+
             // Coarse skip to near the drawback window (advance only, no drawing)
-            val drawStart = (totalSteps - drawbackFrames).coerceAtLeast(0)
+            val drawStart = (effectiveSteps - drawbackFrames).coerceAtLeast(0)
             val coarseStep = 8
             var step = 0
             while (step < drawStart) {
@@ -342,7 +345,7 @@ class CurlFluidGenerator : Generator {
             off.eraseColor(Color.rgb(BG_R, BG_G, BG_B))
 
             // Fine steps with drawing — build up the accumulated trail texture
-            for (s in step until totalSteps) {
+            for (s in step until effectiveSteps) {
                 val noiseT = s * dt * evolution
                 buildCurlGrid(noise, nv, cx, cy, noiseW, noiseH, gw1, gh1, cellW, cellH, nsOverDim, noiseT, speed)
                 if (turbX != null && turbY != null) {
@@ -354,7 +357,7 @@ class CurlFluidGenerator : Generator {
                 drawSegments(oc, sim, paint, buf, palette, colors, nColors, colorMode,
                     segAlpha, cx, cy, gw1, invCellW, invCellH, gridW, gridH, nv, noiseW, noiseH, speed, w, h)
             }
-            sim.stepCount = totalSteps
+            sim.stepCount = effectiveSteps
         }
 
         state.sim = sim

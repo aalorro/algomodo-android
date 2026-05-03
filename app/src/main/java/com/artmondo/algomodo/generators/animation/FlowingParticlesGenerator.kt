@@ -252,12 +252,11 @@ class FlowingParticlesGenerator : Generator {
             cached.objectType == objectType &&
             cached.sizeVariance == sizeVariance &&
             cached.w == w && cached.h == h &&
-            totalSteps >= cached.stepCount &&
-            totalSteps - cached.stepCount < 120
+            abs(totalSteps - cached.stepCount) < 120
         ) {
-            // ---- Incremental update ----
+            // ---- Incremental update (or reuse if sim is already ahead) ----
             sim = cached
-            val stepsNeeded = totalSteps - sim.stepCount
+            val stepsNeeded = (totalSteps - sim.stepCount).coerceAtLeast(0)
             for (s in 0 until stepsNeeded) {
                 val t = (sim.stepCount + s) * dt
                 if (fadeAlpha > 0) oc.drawColor(Color.argb(fadeAlpha, 0, 0, 0))
@@ -266,7 +265,7 @@ class FlowingParticlesGenerator : Generator {
                 drawAllParticles(oc, sim, paint, path, colors, nColors, colorId,
                     particleSize, pulse, t, w, h, baseSpeed)
             }
-            sim.stepCount = totalSteps
+            if (stepsNeeded > 0) sim.stepCount = totalSteps
         } else {
             // ---- Cold start ----
             sim = SimCache(
@@ -295,8 +294,12 @@ class FlowingParticlesGenerator : Generator {
                 sim.maxAge[i] = 200 + (rng.random() * 400f).toInt()
             }
 
+            // Always simulate at least WARMUP steps so the off bitmap has visible
+            // content even when totalSteps is very small (e.g. first GIF/MP4 frame).
+            val effectiveSteps = totalSteps.coerceAtLeast(WARMUP)
+            val warmupStart = (effectiveSteps - WARMUP).coerceAtLeast(0)
+
             // Coarse skip to near the warmup window (no drawing)
-            val warmupStart = (totalSteps - WARMUP).coerceAtLeast(0)
             for (s in 0 until warmupStart) {
                 advanceOneStep(sim, s * dt, baseSpeed, patternId, turbulence, noise,
                     halfW, halfH, w, h, sinA, cosA, fixedShape, sizeVariance, nColors)
@@ -304,7 +307,7 @@ class FlowingParticlesGenerator : Generator {
 
             // Clear offscreen and draw warmup frames
             off.eraseColor(Color.BLACK)
-            for (s in warmupStart until totalSteps) {
+            for (s in warmupStart until effectiveSteps) {
                 val t = s * dt
                 if (fadeAlpha > 0) oc.drawColor(Color.argb(fadeAlpha, 0, 0, 0))
                 advanceOneStep(sim, t, baseSpeed, patternId, turbulence, noise,
@@ -312,7 +315,7 @@ class FlowingParticlesGenerator : Generator {
                 drawAllParticles(oc, sim, paint, path, colors, nColors, colorId,
                     particleSize, pulse, t, w, h, baseSpeed)
             }
-            sim.stepCount = totalSteps
+            sim.stepCount = effectiveSteps
         }
 
         state.sim = sim
