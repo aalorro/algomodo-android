@@ -312,7 +312,7 @@ fun MainScreen(
                             quality = state.quality,
                             aspectRatio = state.aspectRatio,
                             postFX = state.postFX,
-                            isAnimating = state.isAnimating,
+                            isAnimating = state.isAnimating && !exportState.isExporting,
                             animationFps = state.animationFps,
                             showFps = state.showFps,
                             renderTrigger = state.renderTrigger,
