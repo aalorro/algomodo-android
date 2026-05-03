@@ -18,6 +18,19 @@ fun ChangelogDialog(onDismiss: () -> Unit) {
         text = {
             Text(
                 text = """
+v1.9.1 (Android)
+New Generator:
+- Helix (Procedural): DNA-inspired multi-strand helix with 5 variants (classic, particle, ribbon, zdna, supercoil), depth-sorted pseudo-3D, 4 color modes, breathing, mutation noise, and audio reactivity
+
+Improvements:
+- Generator selection now randomizes params/seed/palette (unique first render every time)
+- Parameter help text now visible below each control
+- GIF loop: accumulation generators pre-warm for seamless looping
+
+Bug Fixes:
+- Fixed "recycled bitmap" crash when exporting GIF/MP4 from Flowing Particles and Curl Fluid
+- Keyboard now dismisses when tapping outside text fields
+
 v1.9.0 (Android)
 New Generators (5):
 - Fractal Interior: interior coloring of Mandelbrot/Julia/Newton/Tricorn/Burning Ship with orbit trap, period detection, multiplier, and interior distance modes

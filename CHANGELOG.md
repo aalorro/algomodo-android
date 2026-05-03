@@ -2,6 +2,20 @@
 
 All notable changes to Algomodo will be documented in this file.
 
+## [1.9.1] - Android
+
+### New Generators (1)
+- Helix (Procedural): DNA-inspired multi-strand helix with depth-sorted pseudo-3D, 5 variants (classic, particle, ribbon, zdna, supercoil), 4 color modes, breathing/mutation noise, and audio reactivity
+
+### Improvements
+- Generator selection now randomizes parameters, seed, and palette instead of always showing the same default render
+- Parameter help text now displayed below each control in the Params tab
+- GIF loop export: accumulation-based generators (Flowing Particles, Curl Fluid) pre-warm for seamless looping without visible reset at loop boundary
+
+### Bug Fixes
+- Fixed "trying to use a recycled bitmap" crash when exporting GIF/MP4 from Flowing Particles and Curl Fluid (thread-local state isolation prevents live canvas and export thread from sharing mutable bitmaps)
+- Fixed keyboard appearing randomly — tapping anywhere outside a text field now dismisses the keyboard
+
 ## [1.9.0] - Android
 
 ### New Generators (5)

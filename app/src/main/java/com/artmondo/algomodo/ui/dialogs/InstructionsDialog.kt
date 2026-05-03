@@ -25,7 +25,7 @@ fun InstructionsDialog(onDismiss: () -> Unit) {
             ) {
                 HelpSection("What is Algomodo?") {
                     "Algomodo is an algorithmic art generator that runs entirely on your device. Nothing is uploaded — all processing happens locally.\n\n" +
-                    "Choose a family from the Generators tab, then pick a style to generate art. There are 139 generators across 12 families: Animation, Cellular, Flux, Fractals, Geometry, Graphs, Image, Noise, Plotter, Procedural, Text, and Voronoi."
+                    "Choose a family from the Generators tab, then pick a style to generate art. There are 140 generators across 12 families: Animation, Cellular, Flux, Fractals, Geometry, Graphs, Image, Noise, Plotter, Procedural, Text, and Voronoi."
                 }
                 HelpSection("What is a Seed?") {
                     "A seed is a number that controls the randomness in your artwork. The same seed with the same parameters and palette will always produce the exact same result, every time. This means you can share a seed number with someone else and they will see the identical artwork.\n\n" +
@@ -39,7 +39,7 @@ fun InstructionsDialog(onDismiss: () -> Unit) {
                     "RELOAD: Re-renders the artwork from scratch with the exact same settings. Use this to replay an animation that has reached a stop state or to force a fresh redraw after PostFX changes."
                 }
                 HelpSection("The Four Tabs") {
-                    "Generators: Browse 12 families, select from 139 generators. Swipe left and right through the family tabs to reveal the generators in each family. Use the search bar to quickly filter by name or family.\n\n" +
+                    "Generators: Browse 12 families, select from 140 generators. Swipe left and right through the family tabs to reveal the generators in each family. Use the search bar to quickly filter by name or family.\n\n" +
                     "Params: The main control panel. Every generator has its own set of parameters — sliders for numbers, chips for modes, toggles for booleans, and text fields for custom input. Lock individual parameters with the lock icon to keep them fixed during randomization.\n\n" +
                     "Export: Download your artwork as PNG, JPG, SVG, GIF, or MP4. Export/import recipes that save every setting so the artwork can be recreated exactly. Export/import presets to share between devices or with the web app.\n\n" +
                     "Settings: Theme (light/dark), quality (Draft/Balanced/High), animation FPS, touch interaction, and PostFX (Grain, Vignette, Dither, Posterize)."
@@ -52,7 +52,7 @@ fun InstructionsDialog(onDismiss: () -> Unit) {
                     "The Text family creates typographic art from characters and words. Each generator has an optional custom text field — type your own characters, words, or sentences. Leave it empty to use the default random content. In the Poem Layout generator, separate lines with the | character."
                 }
                 HelpSection("Audio Reactivity") {
-                    "The Flux and Procedural families are fully audio-reactive. The Flux family contains 12 TouchDesigner-inspired generators: Perlin Flow, Simplex Warp, Feedback Loop, Pixel Sort Feedback, Metaballs 2D, Wireframe Terrain, Waveform Stacker, Signal Rings, Displacement Map, Domain Repetition, Instanced Scatter, and Trail System. The Procedural family contains 9 audio-reactive generators: Feedback Systems, Warp, Field + Particle Motion, Instanced Geometry, Audio-Reactive, SDF Raymarch, Displacement, Edge + Glow, and Particle Advection. Some generators in the Plotter, Graphs, and Geometry families also support audio reactivity to a certain extent.\n\n" +
+                    "The Flux and Procedural families are fully audio-reactive. The Flux family contains 12 TouchDesigner-inspired generators: Perlin Flow, Simplex Warp, Feedback Loop, Pixel Sort Feedback, Metaballs 2D, Wireframe Terrain, Waveform Stacker, Signal Rings, Displacement Map, Domain Repetition, Instanced Scatter, and Trail System. The Procedural family contains 10 audio-reactive generators: Feedback Systems, Warp, Field + Particle Motion, Instanced Geometry, Audio-Reactive, SDF Raymarch, Displacement, Edge + Glow, Particle Advection, and Helix. Some generators in the Plotter, Graphs, and Geometry families also support audio reactivity to a certain extent.\n\n" +
                     "To use audio reactivity, load an audio file (MP3, WAV, OGG) via the audio section. When animation is playing, the audio plays in sync and the generators react to bass, mid, and high frequency energy in real time.\n\n" +
                     "• Use the Audio Reactivity slider (in Flow/Motion) to control how strongly the generator responds to the audio.\n" +
                     "• The seek slider lets you scrub to any point in the track.\n" +
