@@ -103,6 +103,10 @@ interface Generator {
     val supportsVector: Boolean
     val supportsAnimation: Boolean
 
+    /** True for accumulation-based generators that need a warmup cycle before
+     *  GIF looping to avoid a visible reset at the loop boundary. */
+    val needsLoopWarmup: Boolean get() = false
+
     fun getDefaultParams(): Map<String, Any>
 
     fun renderCanvas(

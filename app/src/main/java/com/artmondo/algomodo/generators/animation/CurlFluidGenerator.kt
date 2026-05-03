@@ -47,6 +47,7 @@ class CurlFluidGenerator : Generator {
         "offscreen accumulation with semi-transparent overlay fading."
     override val supportsVector = false
     override val supportsAnimation = true
+    override val needsLoopWarmup = true
 
     companion object {
         private const val MOVE_CURL = 0

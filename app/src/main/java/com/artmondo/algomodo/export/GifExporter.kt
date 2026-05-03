@@ -59,6 +59,15 @@ object GifExporter {
         val totalOutputFrames = if (doBoomerang)
             totalFrames + (totalFrames - 2) else totalFrames
 
+        // For accumulation-based generators (e.g. FlowingParticles, CurlFluid)
+        // that build up trails over time: when exporting a looping GIF, offset time
+        // by the full duration so the sim is already at steady-state density.
+        // This prevents a visible "reset" at the loop boundary.
+        // Only for endless loop — boomerang plays forward then backward and the
+        // build-up/fade effect is part of the intended visual.
+        val timeOffset = if (endless && !boomerang && generator.needsLoopWarmup)
+            durationSeconds.toFloat() else 0f
+
         try {
             // Render and encode forward frames
             // Offset time by a tiny epsilon so frame 0 is never exactly 0.
@@ -68,7 +77,7 @@ object GifExporter {
             // subsequent frames and a wrong GIF palette.
             for (i in 0 until totalFrames) {
                 if (cancelled.get()) throw ExportCancelledException()
-                val time = i.toFloat() / fps + 1e-4f
+                val time = i.toFloat() / fps + 1e-4f + timeOffset
                 canvas.drawColor(android.graphics.Color.BLACK)
                 generator.renderCanvas(canvas, bitmap, params, seed, palette, quality, time)
                 bitmap.getPixels(reusablePixels, 0, bmpWidth, 0, 0, bmpWidth, bmpHeight)
@@ -81,7 +90,7 @@ object GifExporter {
             if (doBoomerang) {
                 for (i in (totalFrames - 2) downTo 1) {
                     if (cancelled.get()) throw ExportCancelledException()
-                    val time = i.toFloat() / fps + 1e-4f
+                    val time = i.toFloat() / fps + 1e-4f + timeOffset
                     canvas.drawColor(android.graphics.Color.BLACK)
                     generator.renderCanvas(canvas, bitmap, params, seed, palette, quality, time)
                     bitmap.getPixels(reusablePixels, 0, bmpWidth, 0, 0, bmpWidth, bmpHeight)

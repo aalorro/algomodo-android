@@ -36,6 +36,7 @@ class FlowingParticlesGenerator : Generator {
         "Patterns add swirl, split, gravity, pulse-wave, and highway behaviors."
     override val supportsVector = false
     override val supportsAnimation = true
+    override val needsLoopWarmup = true
 
     companion object {
         private const val GRID = 72
