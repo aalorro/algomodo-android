@@ -56,61 +56,61 @@ class HelixGenerator : Generator {
         ),
         Parameter.SelectParam(
             name = "Variant", key = "variant", group = ParamGroup.COMPOSITION,
-            help = "classic = strands + rungs | particle = dots only | ribbon = wide filled bands | zdna = left-handed with jitter | supercoil = helical wrapping path",
+            help = "Rendering style — classic: strands + rungs | particle: dots only | ribbon: wide filled bands | zdna: left-handed with jitter | supercoil: helical wrapping path",
             options = listOf("classic", "particle", "ribbon", "zdna", "supercoil"),
             default = "classic"
         ),
         // Geometry
         Parameter.NumberParam(
-            name = "Radius", key = "radius", group = ParamGroup.GEOMETRY,
-            help = "Helix radius. Affects all variants.",
+            name = "Radius [all]", key = "radius", group = ParamGroup.GEOMETRY,
+            help = "Helix radius relative to canvas",
             min = 0.05f, max = 0.4f, step = 0.01f, default = 0.18f
         ),
         Parameter.NumberParam(
-            name = "Strand width", key = "strandWidth", group = ParamGroup.GEOMETRY,
-            help = "Stroke thickness (classic/zdna/supercoil), dot size (particle), band width (ribbon)",
+            name = "Strand width [all]", key = "strandWidth", group = ParamGroup.GEOMETRY,
+            help = "Stroke (classic/zdna/supercoil) · dot size (particle) · band width (ribbon)",
             min = 1f, max = 8f, step = 0.5f, default = 3f
         ),
         Parameter.NumberParam(
-            name = "Base-pair width", key = "bpWidth", group = ParamGroup.GEOMETRY,
-            help = "Rung thickness. Applies to classic, zdna, ribbon, supercoil. No effect on particle.",
+            name = "Base-pair width [classic/zdna/ribbon/supercoil]", key = "bpWidth", group = ParamGroup.GEOMETRY,
+            help = "Rung thickness — no effect on particle",
             min = 0.5f, max = 4f, step = 0.5f, default = 1.5f
         ),
         // Flow/Motion
         Parameter.NumberParam(
-            name = "Breathing", key = "breathing", group = ParamGroup.FLOW_MOTION,
-            help = "Rungs expand/contract like DNA denaturation. Applies to classic, zdna, ribbon, supercoil.",
+            name = "Breathing [classic/zdna/ribbon/supercoil]", key = "breathing", group = ParamGroup.FLOW_MOTION,
+            help = "Rungs expand/contract — DNA denaturation effect",
             min = 0f, max = 1f, step = 0.05f, default = 0f
         ),
         Parameter.NumberParam(
-            name = "Mutation noise", key = "mutationNoise", group = ParamGroup.FLOW_MOTION,
-            help = "Noise wobble on helix radius — organic bulges. Affects all variants.",
+            name = "Mutation noise [all]", key = "mutationNoise", group = ParamGroup.FLOW_MOTION,
+            help = "Noise wobble on radius — organic bulges",
             min = 0f, max = 1f, step = 0.05f, default = 0f
         ),
         Parameter.NumberParam(
-            name = "Supercoil amplitude", key = "supercoilAmp", group = ParamGroup.FLOW_MOTION,
-            help = "Outer sine-wave path amplitude. Only affects supercoil variant.",
+            name = "Supercoil amp [supercoil only]", key = "supercoilAmp", group = ParamGroup.FLOW_MOTION,
+            help = "Outer sine-wave path amplitude",
             min = 0f, max = 0.3f, step = 0.01f, default = 0.08f
         ),
         Parameter.NumberParam(
-            name = "Anim speed", key = "animSpeed", group = ParamGroup.FLOW_MOTION,
-            help = "Rotation speed when animated. Affects all variants.",
+            name = "Anim speed [all]", key = "animSpeed", group = ParamGroup.FLOW_MOTION,
+            help = "Rotation speed when animated",
             min = 0.1f, max = 1f, step = 0.1f, default = 0.5f
         ),
         Parameter.NumberParam(
-            name = "Anim amplitude", key = "animAmp", group = ParamGroup.FLOW_MOTION,
-            help = "Rotation range multiplier. Affects all variants.",
+            name = "Anim amplitude [all]", key = "animAmp", group = ParamGroup.FLOW_MOTION,
+            help = "Rotation range multiplier",
             min = 0.1f, max = 2f, step = 0.1f, default = 1f
         ),
         Parameter.NumberParam(
-            name = "Audio Reactivity", key = "reactivity", group = ParamGroup.FLOW_MOTION,
-            help = "Bass → radius pulse, mid → breathing, high → speed. Affects all variants.",
+            name = "Audio Reactivity [all]", key = "reactivity", group = ParamGroup.FLOW_MOTION,
+            help = "Bass → radius · mid → breathing · high → speed",
             min = 0f, max = 2f, step = 0.1f, default = 1f
         ),
         // Color
         Parameter.SelectParam(
             name = "Color mode", key = "colorMode", group = ParamGroup.COLOR,
-            help = "palette = gradient by depth | codon = amino-acid hue groups | depth = brightness by depth | strand = one color per strand",
+            help = "palette: gradient by depth | codon: amino-acid hue groups | depth: brightness by depth | strand: one color per strand",
             options = listOf("palette", "codon", "depth", "strand"),
             default = "palette"
         )

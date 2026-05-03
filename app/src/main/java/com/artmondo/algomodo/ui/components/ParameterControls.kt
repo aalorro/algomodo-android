@@ -120,6 +120,13 @@ private fun NumberControl(
                 color = MaterialTheme.colorScheme.primary
             )
         }
+        if (!param.help.isNullOrEmpty()) {
+            Text(
+                param.help,
+                style = MaterialTheme.typography.labelSmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant
+            )
+        }
         Slider(
             value = currentValue,
             onValueChange = { newVal ->
@@ -146,7 +153,16 @@ private fun BooleanControl(
         horizontalArrangement = Arrangement.SpaceBetween,
         verticalAlignment = Alignment.CenterVertically
     ) {
-        Text(param.name, style = MaterialTheme.typography.bodySmall)
+        Column(modifier = Modifier.weight(1f)) {
+            Text(param.name, style = MaterialTheme.typography.bodySmall)
+            if (!param.help.isNullOrEmpty()) {
+                Text(
+                    param.help,
+                    style = MaterialTheme.typography.labelSmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                )
+            }
+        }
         Switch(
             checked = currentValue,
             onCheckedChange = { onValueChange(it) }
@@ -165,6 +181,13 @@ private fun SelectControl(
 
     Column {
         Text(param.name, style = MaterialTheme.typography.bodySmall)
+        if (!param.help.isNullOrEmpty()) {
+            Text(
+                param.help,
+                style = MaterialTheme.typography.labelSmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant
+            )
+        }
         FlowRow(horizontalArrangement = Arrangement.spacedBy(4.dp)) {
             param.options.forEach { option ->
                 FilterChip(
