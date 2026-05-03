@@ -228,14 +228,55 @@ class MainViewModel @Inject constructor(
 
     fun selectGenerator(generator: Generator) {
         pushHistory()
+        val rng = SeededRNG(secureRandom.nextInt())
+        val newSeed = secureRandom.nextInt(1_000_000)
+        val s = _state.value
+
+        val newPalette = if ("palette" in s.lockedParams) s.palette
+            else {
+                val pool = buildList {
+                    if (rng.random() < 0.3f) addAll(CuratedPalettes.all)
+                    else addAll(CuratedPalettes.bright)
+                    addAll(s.customPalettes)
+                }
+                pool[rng.integer(0, pool.size - 1)]
+            }
+
+        val familyDefaults = FAMILY_DEFAULT_PARAMS[generator.family].orEmpty()
+        val newParams = mutableMapOf<String, Any>()
+        for (param in generator.parameterSchema) {
+            when (param) {
+                is Parameter.NumberParam -> {
+                    if (param.key in ALWAYS_DEFAULT_PARAMS || param.key in familyDefaults) {
+                        newParams[param.key] = param.default
+                    } else {
+                        newParams[param.key] = safeRandomStep(param, rng)
+                    }
+                }
+                is Parameter.BooleanParam -> {
+                    newParams[param.key] = rng.boolean()
+                }
+                is Parameter.SelectParam -> {
+                    if (param.key in ALWAYS_DEFAULT_PARAMS || param.key in familyDefaults) {
+                        newParams[param.key] = param.default
+                    } else {
+                        val choices = param.options.filter { it != "none" }.ifEmpty { param.options }
+                        newParams[param.key] = rng.pick(choices)
+                    }
+                }
+                is Parameter.TextParam -> newParams[param.key] = param.default
+                is Parameter.ColorParam -> newParams[param.key] = param.default
+            }
+        }
+
         _state.update {
-            // Preserve the Favorites virtual family when user picks from it;
-            // otherwise switch to the generator's real family.
             val newFamilyId = if (it.familyId == FAVORITES_FAMILY_ID) it.familyId else generator.family
             it.copy(
                 generator = generator,
                 familyId = newFamilyId,
-                params = generator.getDefaultParams(),
+                seed = newSeed,
+                palette = newPalette,
+                params = newParams,
                 renderTrigger = it.renderTrigger + 1
             )
         }
