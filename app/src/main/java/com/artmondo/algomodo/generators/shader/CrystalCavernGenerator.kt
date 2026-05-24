@@ -62,9 +62,19 @@ class CrystalCavernGenerator : Generator {
         seed: Int, palette: Palette, quality: Quality, time: Float
     ) {
         val w = bitmap.width; val h = bitmap.height
-        val cfg = getQualityConfig(quality, "medium", time > 0f)
-        val renderW = (w * cfg.scale).toInt().coerceAtLeast(60)
-        val renderH = (h * cfg.scale).toInt().coerceAtLeast(60)
+        val animating = time > 0f
+
+        // Higher resolution, fewer steps — bounding sphere handles misses cheaply
+        val cfg = when (quality) {
+            Quality.DRAFT -> if (animating) RenderConfig(0.38f, 40, 0.004f, 25f)
+                             else RenderConfig(0.50f, 64, 0.002f, 40f)
+            Quality.BALANCED -> if (animating) RenderConfig(0.50f, 48, 0.003f, 28f)
+                                else RenderConfig(0.68f, 80, 0.001f, 50f)
+            Quality.ULTRA -> if (animating) RenderConfig(0.62f, 60, 0.002f, 35f)
+                             else RenderConfig(0.85f, 128, 0.0005f, 60f)
+        }
+        val renderW = (w * cfg.scale).toInt().coerceAtLeast(100)
+        val renderH = (h * cfg.scale).toInt().coerceAtLeast(100)
 
         val camDist = extractFloat(params, "cameraDistance", 4f)
         val fov = extractFloat(params, "fov", 60f)
@@ -88,57 +98,107 @@ class CrystalCavernGenerator : Generator {
 
         val colors = palette.colorInts()
         val nColors = colors.size
+        val colR = IntArray(nColors) { Color.red(colors[it]) }
+        val colG = IntArray(nColors) { Color.green(colors[it]) }
+        val colB = IntArray(nColors) { Color.blue(colors[it]) }
         val shininess = 10f + (1f - roughness) * 120f
         val specAmt = (1f - roughness) * 0.9f
 
-        // Voronoi-based crystal SDF
-        val sceneSDF: SceneSDF = { px, py, pz ->
-            voronoiCrystalSDF(px, py, pz, cellScale, sharpness, seed)
-        }
+        // Palette-derived sky
+        val lastC = colors[nColors - 1]; val firstC = colors[0]
+        val skyTopR = Color.red(lastC) / 255f * 0.12f
+        val skyTopG = Color.green(lastC) / 255f * 0.12f
+        val skyTopB = Color.blue(lastC) / 255f * 0.12f
+        val skyBotR = Color.red(firstC) / 255f * 0.15f
+        val skyBotG = Color.green(firstC) / 255f * 0.15f
+        val skyBotB = Color.blue(firstC) / 255f * 0.15f
+
+        val boundR = 2.5f
+        val invCellScale = 1f / cellScale
+        val halfCellScale = cellScale * 0.5f
+        val maxSteps = cfg.maxSteps
+        val epsilon = cfg.epsilon
+        val maxDist = cfg.maxDist
+        val normalEps = if (animating) epsilon * 5f else epsilon * 2.5f
+        val seedConst = seed * 1013904223
 
         val pixels = IntArray(renderW * renderH)
         val invW = 2f / renderW; val invH = 2f / renderH
 
-        renderMultithreaded(renderW, renderH, pixels) { y0, y1, rd, normal, tm, mr ->
-            val sky = FloatArray(3)
+        renderMultithreaded(renderW, renderH, pixels) { y0, y1, rd, normal, tm, _ ->
             for (py in y0 until y1) {
                 val v = 1f - py * invH
                 for (px in 0 until renderW) {
                     val u = px * invW - 1f
                     getRayDir(rd, u, v, cam)
-                    rayMarch(mr, ro[0], ro[1], ro[2], rd[0], rd[1], rd[2], sceneSDF, cfg.maxSteps, cfg.epsilon, cfg.maxDist)
 
-                    if (mr.hit) {
-                        calcNormal(normal, mr.px, mr.py, mr.pz, sceneSDF, cfg.epsilon * 2f)
-                        val vx = ro[0] - mr.px; val vy = ro[1] - mr.py; val vz = ro[2] - mr.pz
-                        val vLen = vec3Length(vx, vy, vz).let { if (it == 0f) 1f else it }
+                    // Bounding sphere early-out
+                    val bDot = ro[0] * rd[0] + ro[1] * rd[1] + ro[2] * rd[2]
+                    val cDist = ro[0] * ro[0] + ro[1] * ro[1] + ro[2] * ro[2] - boundR * boundR
+                    val disc = bDot * bDot - cDist
+                    if (disc < 0f) {
+                        val skyT = rd[1] * 0.5f + 0.5f
+                        toneMapACES(tm, skyBotR + (skyTopR - skyBotR) * skyT, skyBotG + (skyTopG - skyBotG) * skyT, skyBotB + (skyTopB - skyBotB) * skyT, exposure)
+                        pixels[py * renderW + px] = Color.rgb(tm[0].toInt().coerceIn(0, 255), tm[1].toInt().coerceIn(0, 255), tm[2].toInt().coerceIn(0, 255))
+                        continue
+                    }
+
+                    val tEntry = maxOf(0f, -bDot - sqrt(disc))
+                    var marchT = tEntry
+                    var hit = false
+                    var hitX = 0f; var hitY = 0f; var hitZ = 0f
+                    var stepsTaken = 0
+
+                    while (stepsTaken < maxSteps) {
+                        hitX = ro[0] + rd[0] * marchT
+                        hitY = ro[1] + rd[1] * marchT
+                        hitZ = ro[2] + rd[2] * marchT
+                        val d = crystalSDF(hitX, hitY, hitZ, invCellScale, sharpness, halfCellScale, seedConst)
+                        if (d < epsilon) { hit = true; break }
+                        marchT += d * 1.3f
+                        if (marchT > maxDist) break
+                        stepsTaken++
+                    }
+
+                    if (hit) {
+                        // Forward-diff normal + get cellId from center evaluation
+                        val ncResult = crystalSDFWithCell(hitX, hitY, hitZ, invCellScale, sharpness, halfCellScale, seedConst)
+                        val nc = ncResult[0]; val cellId = ncResult[1].toInt()
+                        val nx = crystalSDF(hitX + normalEps, hitY, hitZ, invCellScale, sharpness, halfCellScale, seedConst) - nc
+                        val ny = crystalSDF(hitX, hitY + normalEps, hitZ, invCellScale, sharpness, halfCellScale, seedConst) - nc
+                        val nz = crystalSDF(hitX, hitY, hitZ + normalEps, invCellScale, sharpness, halfCellScale, seedConst) - nc
+                        val nLen = sqrt(nx * nx + ny * ny + nz * nz).let { if (it == 0f) 1f else it }
+                        normal[0] = nx / nLen; normal[1] = ny / nLen; normal[2] = nz / nLen
+
+                        val vx = ro[0] - hitX; val vy = ro[1] - hitY; val vz = ro[2] - hitZ
+                        val vLen = sqrt(vx * vx + vy * vy + vz * vz).let { if (it == 0f) 1f else it }
                         val nvx = vx / vLen; val nvy = vy / vLen; val nvz = vz / vLen
 
-                        // Color from cell position hash
-                        val cellId = voronoiCellId(mr.px, mr.py, mr.pz, cellScale, seed)
-                        val colorT = (cellId % nColors).toFloat() / nColors
-                        val ci = (colorT * (nColors - 1)).toInt().coerceIn(0, nColors - 1)
-                        val cr = Color.red(colors[ci]) / 255f
-                        val cg = Color.green(colors[ci]) / 255f
-                        val cb = Color.blue(colors[ci]) / 255f
+                        // Color from cell ID
+                        val ci = (abs(cellId) % nColors)
+                        val cr = colR[ci] / 255f
+                        val cg = colG[ci] / 255f
+                        val cb = colB[ci] / 255f
 
                         val shade = phongShade(normal[0], normal[1], normal[2], nvx, nvy, nvz, ld[0], ld[1], ld[2], 0.1f, 0.55f, specAmt, shininess)
-                        val ao = ambientOcclusion(mr.px, mr.py, mr.pz, normal[0], normal[1], normal[2], sceneSDF, 4)
+                        // Step-count AO (free)
+                        val ao = (1f - (stepsTaken.toFloat() / maxSteps) * 0.5f).coerceIn(0.5f, 1f)
 
                         // Rim glow
                         val NdotV = maxOf(0f, normal[0] * nvx + normal[1] * nvy + normal[2] * nvz)
-                        val fresnel = (1f - NdotV).pow(3) * rimGlow
-                        val rimC = colors[(ci + nColors / 2) % nColors]
+                        val oneMinusNdV = 1f - NdotV
+                        val fresnel = oneMinusNdV * oneMinusNdV * oneMinusNdV * rimGlow
+                        val rimIdx = (ci + nColors / 2) % nColors
 
-                        val r = cr * shade * ao + Color.red(rimC) / 255f * fresnel
-                        val g = cg * shade * ao + Color.green(rimC) / 255f * fresnel
-                        val b = cb * shade * ao + Color.blue(rimC) / 255f * fresnel
+                        val r = cr * shade * ao + colR[rimIdx] / 255f * fresnel
+                        val g = cg * shade * ao + colG[rimIdx] / 255f * fresnel
+                        val b = cb * shade * ao + colB[rimIdx] / 255f * fresnel
 
                         toneMapACES(tm, r, g, b, exposure)
                         pixels[py * renderW + px] = Color.rgb(tm[0].toInt().coerceIn(0, 255), tm[1].toInt().coerceIn(0, 255), tm[2].toInt().coerceIn(0, 255))
                     } else {
-                        skyGradient(sky, rd[1], 0.03f, 0.02f, 0.08f, 0.06f, 0.04f, 0.1f)
-                        toneMapACES(tm, sky[0], sky[1], sky[2], exposure)
+                        val skyT = rd[1] * 0.5f + 0.5f
+                        toneMapACES(tm, skyBotR + (skyTopR - skyBotR) * skyT, skyBotG + (skyTopG - skyBotG) * skyT, skyBotB + (skyTopB - skyBotB) * skyT, exposure)
                         pixels[py * renderW + px] = Color.rgb(tm[0].toInt().coerceIn(0, 255), tm[1].toInt().coerceIn(0, 255), tm[2].toInt().coerceIn(0, 255))
                     }
                 }
@@ -151,60 +211,70 @@ class CrystalCavernGenerator : Generator {
     override fun estimateCost(params: Map<String, Any>, quality: Quality): Float = 0.6f
 
     companion object {
-        private fun hashCell(ix: Int, iy: Int, iz: Int, seed: Int): FloatArray {
-            var h = ix * 374761393 + iy * 668265263 + iz * 1274126177 + seed * 1013904223
-            h = ((h xor (h ushr 13)) * 1103515245)
-            val x = ((h ushr 0) and 0xFF) / 255f
-            h = ((h xor (h ushr 17)) * 1103515245)
-            val y = ((h ushr 0) and 0xFF) / 255f
-            h = ((h xor (h ushr 11)) * 1103515245)
-            val z = ((h ushr 0) and 0xFF) / 255f
-            return floatArrayOf(x, y, z)
+        // Zero-allocation hash returning one component at a time
+        private fun hashX(ix: Int, iy: Int, iz: Int, seedC: Int): Float {
+            val h = ((ix * 374761393 + iy * 668265263 + iz * 1274126177 + seedC) xor 0x5bd1e995) * 1103515245
+            return ((h ushr 8) and 0xFF) / 255f
+        }
+        private fun hashY(ix: Int, iy: Int, iz: Int, seedC: Int): Float {
+            val h = (((ix * 374761393 + iy * 668265263 + iz * 1274126177 + seedC) xor 0x5bd1e995) * 1103515245 xor 0x27d4eb2d) * 1103515245
+            return ((h ushr 8) and 0xFF) / 255f
+        }
+        private fun hashZ(ix: Int, iy: Int, iz: Int, seedC: Int): Float {
+            val h = (((ix * 374761393 + iy * 668265263 + iz * 1274126177 + seedC) xor 0x85ebca6b.toInt()) * 1103515245 xor 0xc2b2ae35.toInt()) * 1103515245
+            return ((h ushr 8) and 0xFF) / 255f
         }
 
-        fun voronoiCrystalSDF(px: Float, py: Float, pz: Float, cellScale: Float, sharpness: Float, seed: Int): Float {
-            val sx = px / cellScale; val sy = py / cellScale; val sz = pz / cellScale
+        // Fast SDF without allocation
+        fun crystalSDF(px: Float, py: Float, pz: Float, invCellScale: Float, sharpness: Float, halfCellScale: Float, seedC: Int): Float {
+            val sx = px * invCellScale; val sy = py * invCellScale; val sz = pz * invCellScale
             val ix = floor(sx).toInt(); val iy = floor(sy).toInt(); val iz = floor(sz).toInt()
             val fx = sx - ix; val fy = sy - iy; val fz = sz - iz
 
-            var d1 = Float.MAX_VALUE; var d2 = Float.MAX_VALUE
+            var d1sq = Float.MAX_VALUE; var d2sq = Float.MAX_VALUE
 
-            for (dx in -1..1) for (dy in -1..1) for (dz in -1..1) {
-                val offset = hashCell(ix + dx, iy + dy, iz + dz, seed)
-                val vx = dx.toFloat() + offset[0] - fx
-                val vy = dy.toFloat() + offset[1] - fy
-                val vz = dz.toFloat() + offset[2] - fz
-                val dist = sqrt(vx * vx + vy * vy + vz * vz)
-                if (dist < d1) { d2 = d1; d1 = dist }
-                else if (dist < d2) { d2 = dist }
+            for (ddx in -1..1) for (ddy in -1..1) for (ddz in -1..1) {
+                val cx = ix + ddx; val cy = iy + ddy; val cz = iz + ddz
+                val vx = ddx + hashX(cx, cy, cz, seedC) - fx
+                val vy = ddy + hashY(cx, cy, cz, seedC) - fy
+                val vz = ddz + hashZ(cx, cy, cz, seedC) - fz
+                val distSq = vx * vx + vy * vy + vz * vz
+                if (distSq < d1sq) { d2sq = d1sq; d1sq = distSq }
+                else if (distSq < d2sq) { d2sq = distSq }
             }
 
-            // Crystal SDF: ridge distance (d2-d1) forms crystal edges, bounded by sphere
-            val crystal = (d2 - d1) * sharpness - 0.1f
-            val bound = vec3Length(px, py, pz) - 2f
-            return maxOf(crystal, bound) * cellScale * 0.5f
+            // Use sqrt only on final d1/d2 (not per-neighbor)
+            val crystal = (sqrt(d2sq) - sqrt(d1sq)) * sharpness - 0.1f
+            val bound = sqrt(px * px + py * py + pz * pz) - 2f
+            return maxOf(crystal, bound) * halfCellScale
         }
 
-        fun voronoiCellId(px: Float, py: Float, pz: Float, cellScale: Float, seed: Int): Int {
-            val sx = px / cellScale; val sy = py / cellScale; val sz = pz / cellScale
+        // SDF + cellId in one pass (avoids separate voronoiCellId search)
+        fun crystalSDFWithCell(px: Float, py: Float, pz: Float, invCellScale: Float, sharpness: Float, halfCellScale: Float, seedC: Int): FloatArray {
+            val sx = px * invCellScale; val sy = py * invCellScale; val sz = pz * invCellScale
             val ix = floor(sx).toInt(); val iy = floor(sy).toInt(); val iz = floor(sz).toInt()
             val fx = sx - ix; val fy = sy - iy; val fz = sz - iz
 
-            var minDist = Float.MAX_VALUE
-            var bestIx = 0; var bestIy = 0; var bestIz = 0
+            var d1sq = Float.MAX_VALUE; var d2sq = Float.MAX_VALUE
+            var bestCx = 0; var bestCy = 0; var bestCz = 0
 
-            for (dx in -1..1) for (dy in -1..1) for (dz in -1..1) {
-                val offset = hashCell(ix + dx, iy + dy, iz + dz, seed)
-                val vx = dx.toFloat() + offset[0] - fx
-                val vy = dy.toFloat() + offset[1] - fy
-                val vz = dz.toFloat() + offset[2] - fz
-                val dist = vx * vx + vy * vy + vz * vz
-                if (dist < minDist) {
-                    minDist = dist
-                    bestIx = ix + dx; bestIy = iy + dy; bestIz = iz + dz
-                }
+            for (ddx in -1..1) for (ddy in -1..1) for (ddz in -1..1) {
+                val cx = ix + ddx; val cy = iy + ddy; val cz = iz + ddz
+                val vx = ddx + hashX(cx, cy, cz, seedC) - fx
+                val vy = ddy + hashY(cx, cy, cz, seedC) - fy
+                val vz = ddz + hashZ(cx, cy, cz, seedC) - fz
+                val distSq = vx * vx + vy * vy + vz * vz
+                if (distSq < d1sq) {
+                    d2sq = d1sq; d1sq = distSq
+                    bestCx = cx; bestCy = cy; bestCz = cz
+                } else if (distSq < d2sq) { d2sq = distSq }
             }
-            return abs(bestIx * 374761393 + bestIy * 668265263 + bestIz * 1274126177 + seed)
+
+            val crystal = (sqrt(d2sq) - sqrt(d1sq)) * sharpness - 0.1f
+            val bound = sqrt(px * px + py * py + pz * pz) - 2f
+            val sdf = maxOf(crystal, bound) * halfCellScale
+            val cellId = abs(bestCx * 374761393 + bestCy * 668265263 + bestCz * 1274126177 + seedC).toFloat()
+            return floatArrayOf(sdf, cellId)
         }
     }
 }
