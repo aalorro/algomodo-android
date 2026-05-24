@@ -348,7 +348,10 @@ class MainViewModel @Inject constructor(
     // Select params that should always keep their default during randomize/surpriseMe
     private val ALWAYS_DEFAULT_PARAMS = setOf("fill", "centerX", "centerY")
     // Params that keep their default only for specific families
-    private val FAMILY_DEFAULT_PARAMS = mapOf("fractals" to setOf("zoom"))
+    private val FAMILY_DEFAULT_PARAMS = mapOf(
+        "fractals" to setOf("zoom"),
+        "shader" to setOf("cameraDistance", "fov")
+    )
 
     /**
      * Randomize a NumberParam to a safe range — avoids the bottom 15% of
