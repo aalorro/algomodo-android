@@ -37,6 +37,8 @@ The app is a generative art tool built around the `Generator` interface (`genera
 
 **140 generators** across 12 families: `animation/`, `cellular/`, `flux/`, `fractals/`, `geometry/`, `graphs/`, `image/`, `noise/`, `plotter/`, `procedural/`, `text/`, `voronoi/`.
 
+Note: A `shader/` family of 13 CPU ray-marched 3D scenes was added in 1.9.1 and removed shortly after — CPU ray marching could not achieve interactive frame rates on mobile, and the existing CPU `Generator.renderCanvas()` interface has no GPU path. Future GPU-based generators would require a separate render pipeline.
+
 `GeneratorRegistry` (`core/registry/`) is a singleton that indexes all generators by ID and family. It is populated during `AlgoApp.onCreate()`.
 
 ### Data Layer

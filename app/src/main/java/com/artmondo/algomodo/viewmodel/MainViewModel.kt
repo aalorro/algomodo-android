@@ -349,8 +349,7 @@ class MainViewModel @Inject constructor(
     private val ALWAYS_DEFAULT_PARAMS = setOf("fill", "centerX", "centerY")
     // Params that keep their default only for specific families
     private val FAMILY_DEFAULT_PARAMS = mapOf(
-        "fractals" to setOf("zoom"),
-        "shader" to setOf("cameraDistance", "fov")
+        "fractals" to setOf("zoom")
     )
 
     /**
