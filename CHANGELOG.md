@@ -2,6 +2,21 @@
 
 All notable changes to Algomodo will be documented in this file.
 
+## [2.0.0] - Android
+
+### New Generator Families (2)
+- **Pixel Art** (12 generators): low-resolution generators rendered with nearest-neighbor upscaling — Pixel Automata, Pixel City, Pixel Diffusion, Pixel Dither, Pixel Flow Field, Pixel Harmonograph, Pixel Maze, Pixel Portraits, Pixel Symmetry, Pixel Terrain, Pixel Voronoi, Pixel Worm
+- **Physics** (12 generators): simulation-based generators — Boids, Brownian Motion, Cloth Sim, Electric Field, Fluid Dynamics, Magnetic Field, N-Body, Nuclear, Pendulum Systems, Gravity Packing (physics variant), Spring Networks, Wave Propagation
+
+### Improvements
+- Total generator count now 164 across 14 families
+- CrystalCavernGenerator: zero-alloc hashing, bounding sphere early-out, step-count AO
+- Apollonian Spheres and Caustic Pool: higher fps and resolution
+- CausticPoolGenerator: unified stencil, floor styles, higher resolution
+
+### Removed
+- Shader family (13 CPU ray-marched 3D generators): could not achieve interactive fps on mobile
+
 ## [1.9.1] - Android
 
 ### New Generators (1)
