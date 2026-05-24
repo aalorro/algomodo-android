@@ -35,7 +35,7 @@ Single-module Android app (`com.artmondo.algomodo`) using **MVVM + Jetpack Compo
 
 The app is a generative art tool built around the `Generator` interface (`generators/Generator.kt`). Each generator implements `renderCanvas()` for bitmap output and optionally `renderVector()` for SVG output. Generators declare their parameters via `parameterSchema` (sealed class `Parameter` with Number, Boolean, Select, Color, Text variants) and are organized into families.
 
-**152 generators** across 13 families: `animation/`, `cellular/`, `flux/`, `fractals/`, `geometry/`, `graphs/`, `image/`, `noise/`, `pixelart/`, `plotter/`, `procedural/`, `text/`, `voronoi/`.
+**164 generators** across 14 families: `animation/`, `cellular/`, `flux/`, `fractals/`, `geometry/`, `graphs/`, `image/`, `noise/`, `physics/`, `pixelart/`, `plotter/`, `procedural/`, `text/`, `voronoi/`.
 
 Note: A `shader/` family of 13 CPU ray-marched 3D scenes was added in 1.9.1 and removed shortly after — CPU ray marching could not achieve interactive frame rates on mobile, and the existing CPU `Generator.renderCanvas()` interface has no GPU path. Future GPU-based generators would require a separate render pipeline.
 

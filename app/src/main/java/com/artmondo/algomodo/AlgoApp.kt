@@ -15,6 +15,7 @@ import com.artmondo.algomodo.generators.voronoi.*
 import com.artmondo.algomodo.generators.procedural.*
 import com.artmondo.algomodo.generators.flux.*
 import com.artmondo.algomodo.generators.pixelart.*
+import com.artmondo.algomodo.generators.physics.*
 import dagger.hilt.android.HiltAndroidApp
 
 @HiltAndroidApp
@@ -202,5 +203,19 @@ class AlgoApp : Application() {
         GeneratorRegistry.register(PixelTerrainGenerator())
         GeneratorRegistry.register(PixelVoronoiGenerator())
         GeneratorRegistry.register(PixelWormGenerator())
+
+        // Physics (12)
+        GeneratorRegistry.register(BoidsGenerator())
+        GeneratorRegistry.register(BrownianMotionGenerator())
+        GeneratorRegistry.register(ClothSimGenerator())
+        GeneratorRegistry.register(ElectricFieldGenerator())
+        GeneratorRegistry.register(FluidDynamicsGenerator())
+        GeneratorRegistry.register(MagneticFieldGenerator())
+        GeneratorRegistry.register(NBodyGenerator())
+        GeneratorRegistry.register(NuclearGenerator())
+        GeneratorRegistry.register(PendulumSystemsGenerator())
+        GeneratorRegistry.register(PhysicsGravityPackingGenerator())
+        GeneratorRegistry.register(SpringNetworksGenerator())
+        GeneratorRegistry.register(WavePropagationGenerator())
     }
 }
