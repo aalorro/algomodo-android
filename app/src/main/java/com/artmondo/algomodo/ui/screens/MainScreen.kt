@@ -325,6 +325,18 @@ fun MainScreen(
                             showFps = state.showFps,
                             renderTrigger = state.renderTrigger,
                             onPauseTimeCapture = { viewModel.setSnapshotTime(it) },
+                            onPlayClick = {
+                                viewModel.toggleAnimation()
+                                if (state.isAudioLoaded) {
+                                    if (!state.isAnimating) {
+                                        audioPlayer.play()
+                                        isAudioPlaying = true
+                                    } else {
+                                        audioPlayer.pause()
+                                        isAudioPlaying = false
+                                    }
+                                }
+                            },
                             modifier = canvasModifier
                         )
                     }
