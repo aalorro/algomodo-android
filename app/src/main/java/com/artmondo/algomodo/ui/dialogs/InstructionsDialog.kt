@@ -25,7 +25,7 @@ fun InstructionsDialog(onDismiss: () -> Unit) {
             ) {
                 HelpSection("What is Algomodo?") {
                     "Algomodo is an algorithmic art generator that runs entirely on your device. Nothing is uploaded — all processing happens locally.\n\n" +
-                    "Choose a family from the Generators tab, then pick a style to generate art. There are 140 generators across 12 families: Animation, Cellular, Flux, Fractals, Geometry, Graphs, Image, Noise, Plotter, Procedural, Text, and Voronoi."
+                    "Choose a family from the Generators tab, then pick a style to generate art. There are 164 generators across 14 families: Animation, Cellular, Flux, Fractals, Geometry, Graphs, Image, Noise, Physics, Pixel Art, Plotter, Procedural, Text, and Voronoi."
                 }
                 HelpSection("What is a Seed?") {
                     "A seed is a number that controls the randomness in your artwork. The same seed with the same parameters and palette will always produce the exact same result, every time. This means you can share a seed number with someone else and they will see the identical artwork.\n\n" +
@@ -39,7 +39,7 @@ fun InstructionsDialog(onDismiss: () -> Unit) {
                     "RELOAD: Re-renders the artwork from scratch with the exact same settings. Use this to replay an animation that has reached a stop state or to force a fresh redraw after PostFX changes."
                 }
                 HelpSection("The Four Tabs") {
-                    "Generators: Browse 12 families, select from 140 generators. Swipe left and right through the family tabs to reveal the generators in each family. Use the search bar to quickly filter by name or family.\n\n" +
+                    "Generators: Browse 14 families, select from 164 generators. Swipe left and right through the family tabs to reveal the generators in each family. Use the search bar to quickly filter by name or family.\n\n" +
                     "Params: The main control panel. Every generator has its own set of parameters — sliders for numbers, chips for modes, toggles for booleans, and text fields for custom input. Lock individual parameters with the lock icon to keep them fixed during randomization.\n\n" +
                     "Export: Download your artwork as PNG, JPG, SVG, GIF, or MP4. Export/import recipes that save every setting so the artwork can be recreated exactly. Export/import presets to share between devices or with the web app.\n\n" +
                     "Settings: Theme (light/dark), quality (Draft/Balanced/High), animation FPS, touch interaction, and PostFX (Grain, Vignette, Dither, Posterize)."
@@ -81,7 +81,7 @@ fun InstructionsDialog(onDismiss: () -> Unit) {
                 }
                 HelpSection("Favorites vs Presets") {
                     "Algomodo offers two ways to save what you like — they serve different purposes:\n\n" +
-                    "Favorites (⭐): Bookmark generators you return to often. Tap the star icon next to any generator in the list to mark it as a favorite. Favorited generators appear in the yellow 'Favorites' tab, pinned before Animation at the top of the Generators list. Favorites save only the generator itself — not its parameters, palette, or seed. Use favorites to build a shortlist of go-to styles across all 12 families.\n\n" +
+                    "Favorites (⭐): Bookmark generators you return to often. Tap the star icon next to any generator in the list to mark it as a favorite. Favorited generators appear in the yellow 'Favorites' tab, pinned before Animation at the top of the Generators list. Favorites save only the generator itself — not its parameters, palette, or seed. Use favorites to build a shortlist of go-to styles across all 14 families.\n\n" +
                     "Presets: Snapshot an entire configuration — generator + every parameter + palette + seed + PostFX. Presets capture a specific artwork you created, so you can reload it exactly later or share it with someone else. Use presets when you've dialled in a look you want to keep or recreate.\n\n" +
                     "In short: favorites = which generators you love, presets = specific artworks you've made."
                 }

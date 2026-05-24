@@ -18,6 +18,19 @@ fun ChangelogDialog(onDismiss: () -> Unit) {
         text = {
             Text(
                 text = """
+v2.0.0 (Android)
+New Generator Families (2):
+- Pixel Art (12 generators): low-resolution generators with nearest-neighbor upscaling — Automata, City, Diffusion, Dither, Flow Field, Harmonograph, Maze, Portraits, Symmetry, Terrain, Voronoi, Worm
+- Physics (12 generators): simulation-based — Boids, Brownian Motion, Cloth Sim, Electric Field, Fluid Dynamics, Magnetic Field, N-Body, Nuclear, Pendulum Systems, Gravity Packing, Spring Networks, Wave Propagation
+
+Improvements:
+- Total generator count now 164 across 14 families
+- Crystal Cavern: zero-alloc hashing, bounding sphere early-out, step-count AO
+- Apollonian Spheres and Caustic Pool: higher fps and resolution
+
+Removed:
+- Shader family (13 CPU ray-marched 3D generators): could not achieve interactive fps on mobile
+
 v1.9.1 (Android)
 New Generator:
 - Helix (Procedural): DNA-inspired multi-strand helix with 5 variants (classic, particle, ribbon, zdna, supercoil), depth-sorted pseudo-3D, 4 color modes, breathing, mutation noise, and audio reactivity
