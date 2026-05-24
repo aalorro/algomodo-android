@@ -14,6 +14,7 @@ import com.artmondo.algomodo.generators.text.*
 import com.artmondo.algomodo.generators.voronoi.*
 import com.artmondo.algomodo.generators.procedural.*
 import com.artmondo.algomodo.generators.flux.*
+import com.artmondo.algomodo.generators.pixelart.*
 import dagger.hilt.android.HiltAndroidApp
 
 @HiltAndroidApp
@@ -187,5 +188,19 @@ class AlgoApp : Application() {
         GeneratorRegistry.register(FluxTrailSystemGenerator())
         GeneratorRegistry.register(FluxFeedbackLoopGenerator())
         GeneratorRegistry.register(FluxPixelSortFeedbackGenerator())
+
+        // Pixel Art (12)
+        GeneratorRegistry.register(PixelAutomataGenerator())
+        GeneratorRegistry.register(PixelCityGenerator())
+        GeneratorRegistry.register(PixelDiffusionGenerator())
+        GeneratorRegistry.register(PixelDitherGenerator())
+        GeneratorRegistry.register(PixelFlowFieldGenerator())
+        GeneratorRegistry.register(PixelHarmonographGenerator())
+        GeneratorRegistry.register(PixelMazeGenerator())
+        GeneratorRegistry.register(PixelPortraitsGenerator())
+        GeneratorRegistry.register(PixelSymmetryGenerator())
+        GeneratorRegistry.register(PixelTerrainGenerator())
+        GeneratorRegistry.register(PixelVoronoiGenerator())
+        GeneratorRegistry.register(PixelWormGenerator())
     }
 }
