@@ -35,9 +35,9 @@ Single-module Android app (`com.artmondo.algomodo`) using **MVVM + Jetpack Compo
 
 The app is a generative art tool built around the `Generator` interface (`generators/Generator.kt`). Each generator implements `renderCanvas()` for bitmap output and optionally `renderVector()` for SVG output. Generators declare their parameters via `parameterSchema` (sealed class `Parameter` with Number, Boolean, Select, Color, Text variants) and are organized into families.
 
-**164 generators** across 14 families: `animation/`, `cellular/`, `flux/`, `fractals/`, `geometry/`, `graphs/`, `image/`, `noise/`, `physics/`, `pixelart/`, `plotter/`, `procedural/`, `text/`, `voronoi/`.
+**166 generators** across 15 families: `animation/`, `cellular/`, `flux/`, `fractals/`, `geometry/`, `graphs/`, `image/`, `noise/`, `physics/`, `pixelart/`, `plotter/`, `procedural/`, `shader/`, `text/`, `voronoi/`.
 
-Note: A `shader/` family of 13 CPU ray-marched 3D scenes was added in 1.9.1 and removed shortly after — CPU ray marching could not achieve interactive frame rates on mobile, and the existing CPU `Generator.renderCanvas()` interface has no GPU path. Future GPU-based generators would require a separate render pipeline.
+The `shader/` family is GPU-backed (see GPU Shader Pipeline below) — it was previously CPU ray-marched and removed for performance, then reintroduced via an OpenGL ES 3.0 fragment-shader pipeline. Pilot members: Mandelbulb, Caustic Pool.
 
 `GeneratorRegistry` (`core/registry/`) is a singleton that indexes all generators by ID and family. It is populated during `AlgoApp.onCreate()`.
 
@@ -67,6 +67,23 @@ Generators render to `Canvas`/`Bitmap`. The rendering flow uses a two-phase appr
 `StaticCanvas` wraps rendering in `runInterruptible` so blocking generator calls are cancellable when inputs change — threads are interrupted immediately instead of running to completion. A generation counter (`AtomicInteger`) skips stale queued renders. A single-thread dispatcher (`Dispatchers.Default.limitedParallelism(1)`) ensures at most one full render occupies a thread.
 
 `PostFXProcessor` (`rendering/`) applies optional grain, vignette, dither, posterize effects. `SvgBuilder` produces vector output for supported generators. `CanvasView` shows a milestone progress bar for renders lasting >1 second.
+
+### GPU Shader Pipeline
+
+Generators that implement `GpuGenerator` (`generators/GpuGenerator.kt`) render via an OpenGL ES 3.0 fragment shader instead of CPU code. The interface's default `renderCanvas` dispatches to `GpuShaderRunner` (`rendering/gl/`), so every existing CPU call site (live preview `StaticCanvas`/`AnimationCanvas`, all five export paths, `PostFXProcessor`) works unchanged — the runner writes pixels straight into the caller's Bitmap.
+
+`GpuShaderRunner` is a thread-local class that owns its own offscreen EGL context backed by a 1×1 pbuffer; the actual draw target is a colour-texture-backed FBO sized to match the requested bitmap. It saves and restores any pre-existing EGL context on every render so it can safely be invoked from inside another EGL context (notably `VideoExporter`'s MediaCodec input surface). Compiled programs are cached per shader-source hash.
+
+Each `GpuGenerator` provides:
+- `fragmentShaderSource()` — full GLSL ES 3.0 source. Must declare the built-in uniforms it uses: `uResolution` (vec2 pixels), `uTime` (float seconds), `uAudio` (vec3 bass/mid/high), `uPalette[5]` (vec3 colours 0..1). Output as `out vec4 fragColor`.
+- `bindUniforms(programId, params, seed, palette, quality, time, w, h)` — uploads custom uniforms. The runner has already called glUseProgram.
+
+Helpers:
+- `PaletteUniform.toUniformFloats(palette)` packs a `Palette` into `vec3[5]`.
+- `PaletteUniform.GLSL_HELPERS` is a snippet that can be concatenated into a shader source to get the `uPalette[5]` declaration plus a ready-made `palette_color(float t)` gradient interpolator matching `Palette.colorAt`.
+- Audio: the runner pulls `_audioAnalysis` out of the params map automatically and binds bass/mid/high to `uAudio`.
+
+The vertex shader is fixed (a fullscreen triangle with Y flipped so `gl_FragCoord` matches bitmap orientation — no post-readback row flip needed). `glReadPixels(GL_RGBA)` → `Bitmap.copyPixelsFromBuffer` is the readback path.
 
 ### Export
 
