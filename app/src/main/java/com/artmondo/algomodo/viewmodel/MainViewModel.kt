@@ -177,13 +177,15 @@ class MainViewModel @Inject constructor(
     fun undo() {
         if (undoStack.isEmpty()) return
         val s = _state.value
-        val gen = s.generator ?: return
-        if (redoStack.size >= 50) redoStack.removeFirst()
-        redoStack.addLast(
-            HistorySnapshot(s.params, s.palette, s.seed, gen.id, s.familyId, s.postFX)
-        )
+        // Save current state to redo stack (even if generator is null, e.g. after clear)
+        if (s.generator != null) {
+            if (redoStack.size >= 50) redoStack.removeFirst()
+            redoStack.addLast(
+                HistorySnapshot(s.params, s.palette, s.seed, s.generator.id, s.familyId, s.postFX)
+            )
+        }
         val snapshot = undoStack.removeLast()
-        val restoredGen = GeneratorRegistry.get(snapshot.selectedGeneratorId) ?: gen
+        val restoredGen = GeneratorRegistry.get(snapshot.selectedGeneratorId)
         _state.update {
             it.copy(
                 generator = restoredGen,
@@ -226,14 +228,55 @@ class MainViewModel @Inject constructor(
 
     fun selectGenerator(generator: Generator) {
         pushHistory()
+        val rng = SeededRNG(secureRandom.nextInt())
+        val newSeed = secureRandom.nextInt(1_000_000)
+        val s = _state.value
+
+        val newPalette = if ("palette" in s.lockedParams) s.palette
+            else {
+                val pool = buildList {
+                    if (rng.random() < 0.3f) addAll(CuratedPalettes.all)
+                    else addAll(CuratedPalettes.bright)
+                    addAll(s.customPalettes)
+                }
+                pool[rng.integer(0, pool.size - 1)]
+            }
+
+        val familyDefaults = FAMILY_DEFAULT_PARAMS[generator.family].orEmpty()
+        val newParams = mutableMapOf<String, Any>()
+        for (param in generator.parameterSchema) {
+            when (param) {
+                is Parameter.NumberParam -> {
+                    if (param.key in ALWAYS_DEFAULT_PARAMS || param.key in familyDefaults) {
+                        newParams[param.key] = param.default
+                    } else {
+                        newParams[param.key] = safeRandomStep(param, rng)
+                    }
+                }
+                is Parameter.BooleanParam -> {
+                    newParams[param.key] = rng.boolean()
+                }
+                is Parameter.SelectParam -> {
+                    if (param.key in ALWAYS_DEFAULT_PARAMS || param.key in familyDefaults) {
+                        newParams[param.key] = param.default
+                    } else {
+                        val choices = param.options.filter { it != "none" }.ifEmpty { param.options }
+                        newParams[param.key] = rng.pick(choices)
+                    }
+                }
+                is Parameter.TextParam -> newParams[param.key] = param.default
+                is Parameter.ColorParam -> newParams[param.key] = param.default
+            }
+        }
+
         _state.update {
-            // Preserve the Favorites virtual family when user picks from it;
-            // otherwise switch to the generator's real family.
             val newFamilyId = if (it.familyId == FAVORITES_FAMILY_ID) it.familyId else generator.family
             it.copy(
                 generator = generator,
                 familyId = newFamilyId,
-                params = generator.getDefaultParams(),
+                seed = newSeed,
+                palette = newPalette,
+                params = newParams,
                 renderTrigger = it.renderTrigger + 1
             )
         }
@@ -304,6 +347,10 @@ class MainViewModel @Inject constructor(
 
     // Select params that should always keep their default during randomize/surpriseMe
     private val ALWAYS_DEFAULT_PARAMS = setOf("fill", "centerX", "centerY")
+    // Params that keep their default only for specific families
+    private val FAMILY_DEFAULT_PARAMS = mapOf(
+        "fractals" to setOf("zoom")
+    )
 
     /**
      * Randomize a NumberParam to a safe range — avoids the bottom 15% of
@@ -333,15 +380,22 @@ class MainViewModel @Inject constructor(
 
         val newSeed = if (s.seedLocked) s.seed else secureRandom.nextInt(1_000_000)
         val newPalette = if ("palette" in s.lockedParams) s.palette
-            else if (rng.random() < 0.3f) CuratedPalettes.random()
-            else CuratedPalettes.bright[rng.integer(0, CuratedPalettes.bright.size - 1)]
+            else {
+                val pool = buildList {
+                    if (rng.random() < 0.3f) addAll(CuratedPalettes.all)
+                    else addAll(CuratedPalettes.bright)
+                    addAll(s.customPalettes)
+                }
+                pool[rng.integer(0, pool.size - 1)]
+            }
 
+        val familyDefaults = FAMILY_DEFAULT_PARAMS[gen.family].orEmpty()
         val newParams = s.params.toMutableMap()
         for (param in gen.parameterSchema) {
             if (param.key in s.lockedParams) continue
             when (param) {
                 is Parameter.NumberParam -> {
-                    if (param.key in ALWAYS_DEFAULT_PARAMS) {
+                    if (param.key in ALWAYS_DEFAULT_PARAMS || param.key in familyDefaults) {
                         newParams[param.key] = param.default
                     } else {
                         newParams[param.key] = safeRandomStep(param, rng)
@@ -351,7 +405,7 @@ class MainViewModel @Inject constructor(
                     newParams[param.key] = rng.boolean()
                 }
                 is Parameter.SelectParam -> {
-                    if (param.key in ALWAYS_DEFAULT_PARAMS) {
+                    if (param.key in ALWAYS_DEFAULT_PARAMS || param.key in familyDefaults) {
                         newParams[param.key] = param.default
                     } else {
                         val choices = param.options.filter { it != "none" }.ifEmpty { param.options }
@@ -387,14 +441,21 @@ class MainViewModel @Inject constructor(
         val s = _state.value
         val newSeed = secureRandom.nextInt(1_000_000)
         val newPalette = if ("palette" in s.lockedParams) s.palette
-            else if (rng.random() < 0.3f) CuratedPalettes.random()
-            else CuratedPalettes.bright[rng.integer(0, CuratedPalettes.bright.size - 1)]
+            else {
+                val pool = buildList {
+                    if (rng.random() < 0.3f) addAll(CuratedPalettes.all)
+                    else addAll(CuratedPalettes.bright)
+                    addAll(s.customPalettes)
+                }
+                pool[rng.integer(0, pool.size - 1)]
+            }
 
+        val familyDefaults = FAMILY_DEFAULT_PARAMS[gen.family].orEmpty()
         val newParams = mutableMapOf<String, Any>()
         for (param in gen.parameterSchema) {
             when (param) {
                 is Parameter.NumberParam -> {
-                    if (param.key in ALWAYS_DEFAULT_PARAMS) {
+                    if (param.key in ALWAYS_DEFAULT_PARAMS || param.key in familyDefaults) {
                         newParams[param.key] = param.default
                     } else {
                         newParams[param.key] = safeRandomStep(param, rng)
@@ -402,7 +463,7 @@ class MainViewModel @Inject constructor(
                 }
                 is Parameter.BooleanParam -> newParams[param.key] = rng.boolean()
                 is Parameter.SelectParam -> {
-                    if (param.key in ALWAYS_DEFAULT_PARAMS) {
+                    if (param.key in ALWAYS_DEFAULT_PARAMS || param.key in familyDefaults) {
                         newParams[param.key] = param.default
                     } else {
                         // Filter out "none" — surprise me should always pick an active option
@@ -433,6 +494,7 @@ class MainViewModel @Inject constructor(
     }
 
     fun clearCanvas() {
+        pushHistory()
         _state.update {
             it.copy(
                 generator = null,

@@ -14,6 +14,8 @@ import com.artmondo.algomodo.generators.text.*
 import com.artmondo.algomodo.generators.voronoi.*
 import com.artmondo.algomodo.generators.procedural.*
 import com.artmondo.algomodo.generators.flux.*
+import com.artmondo.algomodo.generators.pixelart.*
+import com.artmondo.algomodo.generators.physics.*
 import dagger.hilt.android.HiltAndroidApp
 
 @HiltAndroidApp
@@ -51,12 +53,13 @@ class AlgoApp : Application() {
         GeneratorRegistry.register(SandpileGenerator())
         GeneratorRegistry.register(TuringPatternsGenerator())
 
-        // Fractals (11)
+        // Fractals (12)
         GeneratorRegistry.register(BurningShipGenerator())
         GeneratorRegistry.register(FractalFlamesGenerator())
         GeneratorRegistry.register(FractalInteriorGenerator())
         GeneratorRegistry.register(IfsBarnsleyGenerator())
         GeneratorRegistry.register(JuliaGenerator())
+        GeneratorRegistry.register(LyapunovGenerator())
         GeneratorRegistry.register(MandelbrotGenerator())
         GeneratorRegistry.register(MultibrotGenerator())
         GeneratorRegistry.register(NewtonGenerator())
@@ -65,7 +68,7 @@ class AlgoApp : Application() {
         GeneratorRegistry.register(RecursiveSubdivisionGenerator())
         GeneratorRegistry.register(StrangeAttractorDensityGenerator())
 
-        // Geometry (13)
+        // Geometry (14)
         GeneratorRegistry.register(ChladniGenerator())
         GeneratorRegistry.register(GravityPackingGenerator())
         GeneratorRegistry.register(HarmonicsGenerator())
@@ -73,6 +76,7 @@ class AlgoApp : Application() {
         GeneratorRegistry.register(MoireGenerator())
         GeneratorRegistry.register(RosettesGenerator())
         GeneratorRegistry.register(RubiksPermutationGenerator())
+        GeneratorRegistry.register(SquareGasketGenerator())
         GeneratorRegistry.register(SuperformulaGenerator())
         GeneratorRegistry.register(TruchetGenerator())
         GeneratorRegistry.register(LissajousGenerator())
@@ -160,12 +164,13 @@ class AlgoApp : Application() {
         GeneratorRegistry.register(VoronoiMosaicGenerator())
         GeneratorRegistry.register(VoronoiWeightedGenerator())
 
-        // Procedural (9)
+        // Procedural (10)
         GeneratorRegistry.register(AudioReactiveGenerator())
         GeneratorRegistry.register(DisplacementGenerator())
         GeneratorRegistry.register(EdgeGlowGenerator())
         GeneratorRegistry.register(FeedbackSystemsGenerator())
         GeneratorRegistry.register(FieldParticleGenerator())
+        GeneratorRegistry.register(HelixGenerator())
         GeneratorRegistry.register(InstancedGeometryGenerator())
         GeneratorRegistry.register(ParticleAdvectionGenerator())
         GeneratorRegistry.register(SdfRaymarchGenerator())
@@ -184,5 +189,33 @@ class AlgoApp : Application() {
         GeneratorRegistry.register(FluxTrailSystemGenerator())
         GeneratorRegistry.register(FluxFeedbackLoopGenerator())
         GeneratorRegistry.register(FluxPixelSortFeedbackGenerator())
+
+        // Pixel Art (12)
+        GeneratorRegistry.register(PixelAutomataGenerator())
+        GeneratorRegistry.register(PixelCityGenerator())
+        GeneratorRegistry.register(PixelDiffusionGenerator())
+        GeneratorRegistry.register(PixelDitherGenerator())
+        GeneratorRegistry.register(PixelFlowFieldGenerator())
+        GeneratorRegistry.register(PixelHarmonographGenerator())
+        GeneratorRegistry.register(PixelMazeGenerator())
+        GeneratorRegistry.register(PixelPortraitsGenerator())
+        GeneratorRegistry.register(PixelSymmetryGenerator())
+        GeneratorRegistry.register(PixelTerrainGenerator())
+        GeneratorRegistry.register(PixelVoronoiGenerator())
+        GeneratorRegistry.register(PixelWormGenerator())
+
+        // Physics (12)
+        GeneratorRegistry.register(BoidsGenerator())
+        GeneratorRegistry.register(BrownianMotionGenerator())
+        GeneratorRegistry.register(ClothSimGenerator())
+        GeneratorRegistry.register(ElectricFieldGenerator())
+        GeneratorRegistry.register(FluidDynamicsGenerator())
+        GeneratorRegistry.register(MagneticFieldGenerator())
+        GeneratorRegistry.register(NBodyGenerator())
+        GeneratorRegistry.register(NuclearGenerator())
+        GeneratorRegistry.register(PendulumSystemsGenerator())
+        GeneratorRegistry.register(PhysicsGravityPackingGenerator())
+        GeneratorRegistry.register(SpringNetworksGenerator())
+        GeneratorRegistry.register(WavePropagationGenerator())
     }
 }

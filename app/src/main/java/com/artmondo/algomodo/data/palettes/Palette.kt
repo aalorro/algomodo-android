@@ -75,11 +75,18 @@ object CuratedPalettes {
         Palette("Rainbow", listOf("#FF0000", "#FF8800", "#FFEE00", "#00CC44", "#3366FF")),
         Palette("Contrast", listOf("#000000", "#FFFFFF", "#FF0000", "#FFFF00", "#0000FF")),
         Palette("Earth", listOf("#5C3D2E", "#A0522D", "#C89B7B", "#D4A76A", "#F5DEB3")),
-        Palette("Nature", listOf("#2E7D32", "#66BB6A", "#AED581", "#81D4FA", "#FFCC80"))
+        Palette("Nature", listOf("#2E7D32", "#66BB6A", "#AED581", "#81D4FA", "#FFCC80")),
+        Palette("Sakura", listOf("#3D0C11", "#A3344A", "#E8758F", "#F2B5C8", "#FBE8EE")),
+        Palette("Cyber", listOf("#0A0A2A", "#1B03A3", "#7209B7", "#F72585", "#4CC9F0")),
+        Palette("Vapor", listOf("#FF6AD5", "#C774E8", "#AD8CFF", "#8795E8", "#94D0FF")),
+        Palette("Lava", listOf("#0C0404", "#4A0E0E", "#B7202E", "#FF5722", "#FFEB3B")),
+        Palette("Tide", listOf("#05445E", "#189AB4", "#75E6DA", "#D4F1F9", "#F5E6CA"))
     )
 
-    // Display-only placeholder for "Random" in the palette list
-    val randomPlaceholder = Palette("Random", listOf("#FF0000", "#00FF00", "#0000FF", "#FFFF00", "#FF00FF"))
+    // Display-only placeholders for random palette chips
+    val randomPlaceholder = Palette("RAND 5", listOf("#FF0000", "#00FF00", "#0000FF", "#FFFF00", "#FF00FF"))
+    val random8Placeholder = Palette("RAND 8", listOf("#FF0000", "#FF8800", "#FFEE00", "#00CC44", "#0088FF", "#8800FF", "#FF0088", "#00FFCC"))
+    val random10Placeholder = Palette("RAND 10", listOf("#FF0000", "#FF6600", "#FFCC00", "#66FF00", "#00FF66", "#00CCFF", "#0066FF", "#6600FF", "#CC00FF", "#FF0066"))
 
     /** Palettes with enough average brightness to work on dark backgrounds. */
     val bright: List<Palette> by lazy {
@@ -97,15 +104,41 @@ object CuratedPalettes {
     fun byName(name: String): Palette? = all.find { it.name == name }
 
     /** Generate a palette with 5 visually diverse random colors using golden-angle hue spacing. */
-    fun random(): Palette {
+    fun random(): Palette = randomN(5, "RAND 5")
+
+    /** Generate a palette with 8 related colors — analogous hue spread with varied saturation/lightness. */
+    fun random8(): Palette {
         val baseHue = (Math.random() * 360).toFloat()
-        val colors = (0 until 5).map { i ->
+        val spread = 40f + (Math.random() * 40f).toFloat() // 40–80 degree hue range
+        val colors = (0 until 8).map { i ->
+            val hue = (baseHue + (i.toFloat() / 7f) * spread) % 360f
+            val sat = 0.45f + (Math.random() * 0.50f).toFloat()
+            val lit = 0.30f + (Math.random() * 0.45f).toFloat()
+            hslToHex(hue, sat, lit)
+        }
+        return Palette("RAND 8", colors)
+    }
+
+    /** Generate a palette with 10 totally unrelated random colors — each hue fully independent. */
+    fun random10(): Palette {
+        val colors = (0 until 10).map {
+            val hue = (Math.random() * 360).toFloat()
+            val sat = 0.50f + (Math.random() * 0.45f).toFloat()
+            val lit = 0.35f + (Math.random() * 0.40f).toFloat()
+            hslToHex(hue, sat, lit)
+        }
+        return Palette("RAND 10", colors)
+    }
+
+    private fun randomN(count: Int, name: String): Palette {
+        val baseHue = (Math.random() * 360).toFloat()
+        val colors = (0 until count).map { i ->
             val hue = (baseHue + i * 137.508f) % 360f // golden angle
             val sat = 0.60f + (Math.random() * 0.30f).toFloat()
             val lit = 0.50f + (Math.random() * 0.25f).toFloat()
             hslToHex(hue, sat, lit)
         }
-        return Palette("Random", colors)
+        return Palette(name, colors)
     }
 
     private fun hslToHex(h: Float, s: Float, l: Float): String {

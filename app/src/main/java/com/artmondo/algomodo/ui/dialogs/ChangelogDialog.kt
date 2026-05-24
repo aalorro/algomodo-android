@@ -18,6 +18,42 @@ fun ChangelogDialog(onDismiss: () -> Unit) {
         text = {
             Text(
                 text = """
+v1.9.1 (Android)
+New Generator:
+- Helix (Procedural): DNA-inspired multi-strand helix with 5 variants (classic, particle, ribbon, zdna, supercoil), depth-sorted pseudo-3D, 4 color modes, breathing, mutation noise, and audio reactivity
+
+Improvements:
+- Generator selection now randomizes params/seed/palette (unique first render every time)
+- Parameter help text now visible below each control
+- GIF loop: accumulation generators pre-warm for seamless looping
+
+Bug Fixes:
+- Fixed "recycled bitmap" crash when exporting GIF/MP4 from Flowing Particles and Curl Fluid
+- Keyboard now dismisses when tapping outside text fields
+
+v1.9.0 (Android)
+New Generators (5):
+- Fractal Interior: interior coloring of Mandelbrot/Julia/Newton/Tricorn/Burning Ship with orbit trap, period detection, multiplier, and interior distance modes
+- Lyapunov Fractal: stability map of alternating logistic maps with animated drift and smooth anti-aliased rendering
+- Square Gasket: geometric Sierpinski-style square fractal
+- Stipple Portrait: image-to-stipple conversion using weighted Voronoi relaxation
+- Space Filling Curve: Hilbert, Moore, Peano and more
+
+Improvements:
+- Flowing Particles: complete rewrite with curl-noise flow field, 6 patterns (flow, swirl, split, gravity, pulse-wave, highway), 5 color modes, turbulence and pulse
+- Curl Fluid: offscreen accumulation rendering with persistent fading trails, distinct movement modes
+- Lyapunov: fast ln() approximation (3x faster), 1.5x supersampling for smooth edges
+- Fractal Interior: bilinear upscale for smoother animation
+- Mandelbrot: multiple animation movement styles
+- Orbit Traps: new trap shapes, animation, and color modes
+- Lissajous: new patterns, styles, and rendering improvements
+- Random palettes: RAND 5, RAND 8, and RAND 10 sizes
+
+Bug Fixes:
+- Fixed glitchy GIF/MP4 exports (frame 0 static rendering, concurrent render data races)
+- Fixed Fractal Interior and Lyapunov viewport stretching during animation
+- Curl Fluid: particles no longer disappear from screen
+
 v1.8.3 (Android)
 Improvements:
 - App title updated to "Algomodo - Generative Art" for better Play Store discoverability

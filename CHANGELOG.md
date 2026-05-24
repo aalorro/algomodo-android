@@ -2,6 +2,53 @@
 
 All notable changes to Algomodo will be documented in this file.
 
+## [1.9.1] - Android
+
+### New Generators (1)
+- Helix (Procedural): DNA-inspired multi-strand helix with depth-sorted pseudo-3D, 5 variants (classic, particle, ribbon, zdna, supercoil), 4 color modes, breathing/mutation noise, and audio reactivity
+
+### Improvements
+- Generator selection now randomizes parameters, seed, and palette instead of always showing the same default render
+- Parameter help text now displayed below each control in the Params tab
+- GIF loop export: accumulation-based generators (Flowing Particles, Curl Fluid) pre-warm for seamless looping without visible reset at loop boundary
+
+### Bug Fixes
+- Fixed "trying to use a recycled bitmap" crash when exporting GIF/MP4 from Flowing Particles and Curl Fluid (thread-local state isolation prevents live canvas and export thread from sharing mutable bitmaps)
+- Fixed keyboard appearing randomly — tapping anywhere outside a text field now dismisses the keyboard
+
+## [1.9.0] - Android
+
+### New Generators (5)
+- Fractal Interior: interior coloring of Mandelbrot/Julia/Newton/Tricorn/Burning Ship fractals with orbit trap, period detection, multiplier, and interior distance estimation modes
+- Lyapunov Fractal: stability map of alternating logistic maps with animated drift through parameter space, multiple sequence patterns, and smooth anti-aliased rendering
+- Square Gasket: geometric Sierpinski-style square fractal
+- Stipple Portrait: image-to-stipple conversion using weighted Voronoi relaxation
+- Space Filling Curve: Hilbert, Moore, Peano, and other space-filling curve plotters
+
+### Improvements
+- Flowing Particles: complete rewrite with curl-noise flow field, 6 pattern modes (flow, swirl, split, gravity, pulse-wave, highway), 5 color modes, turbulence and pulse parameters
+- Flowing Particles: particle respawning system keeps canvas uniformly populated
+- Flowing Particles: line shape optimized (filled rectangles instead of stroked lines with round caps — eliminates 10x fps drop)
+- Curl Fluid: rewritten with offscreen accumulation rendering matching web version behavior (persistent trails with semi-transparent fading)
+- Curl Fluid: movement modes (curl, wave, spiral) now produce visibly distinct motion patterns
+- Lyapunov Fractal: fast ln() approximation via IEEE 754 bit decomposition (~3x faster inner loop)
+- Lyapunov Fractal: 1.5x supersampling for smooth fractal boundaries on static renders
+- Fractal Interior: bilinear upscale replaces nearest-neighbor for smoother animation
+- Mandelbrot: multiple animation movement styles
+- Orbit Traps: new parameters for trap shapes, animation, and color modes
+- Lissajous: new patterns, styles, and improved rendering
+- Random palettes: support for RAND 5, RAND 8, and RAND 10 palette sizes
+- Palette selection: custom palettes included in randomization
+- Undo: state saved to redo stack even when generator is null
+- Multi-threaded rendering with improved color packing across generators
+
+### Bug Fixes
+- Fixed glitchy GIF and MP4 exports: frame 0 no longer renders as static image (time epsilon ensures consistent animation mode across all exported frames)
+- Fixed glitchy exports from concurrent rendering: eliminated shared mutable state (cancelled flag, pixel arrays) between live canvas and export threads on singleton generators
+- Fixed Fractal Interior and Lyapunov coordinate mapping bug that stretched the viewport during animation
+- Curl Fluid: particles no longer disappear from screen (respawn instead of wrap)
+- Curl Fluid: max particle count capped at 4000 for stable fps
+
 ## [1.8.3] - Android
 
 ### Improvements

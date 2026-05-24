@@ -14,7 +14,8 @@
       "Bash(rm:*)",
       "Bash(./gradlew:*)",
       "Bash(python3:*)",
-      "Bash(/dev/null:*)"
+      "Bash(/dev/null:*)",
+      "Bash(wc:*)"
     ]
   }
 }
