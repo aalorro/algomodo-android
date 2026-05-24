@@ -67,14 +67,13 @@ class CausticPoolGenerator : Generator {
     ) {
         val w = bitmap.width; val h = bitmap.height
 
-        // Light generator — use higher resolution than generic "medium"
         val animating = time > 0f
         val cfg = when (quality) {
-            Quality.DRAFT -> if (animating) RenderConfig(0.45f, 64, 0.002f, 50f)
+            Quality.DRAFT -> if (animating) RenderConfig(0.40f, 64, 0.002f, 50f)
                              else RenderConfig(0.55f, 80, 0.001f, 50f)
-            Quality.BALANCED -> if (animating) RenderConfig(0.60f, 80, 0.001f, 50f)
+            Quality.BALANCED -> if (animating) RenderConfig(0.50f, 80, 0.001f, 50f)
                                 else RenderConfig(0.75f, 80, 0.001f, 50f)
-            Quality.ULTRA -> if (animating) RenderConfig(0.70f, 128, 0.0005f, 60f)
+            Quality.ULTRA -> if (animating) RenderConfig(0.65f, 128, 0.0005f, 60f)
                              else RenderConfig(0.90f, 128, 0.0005f, 60f)
         }
         val renderW = (w * cfg.scale).toInt().coerceAtLeast(100)
@@ -104,8 +103,6 @@ class CausticPoolGenerator : Generator {
             waveSrcZ[i] = rng.range(-3f, 3f)
             wavePhase[i] = rng.randomAngle()
         }
-
-        // Pre-compute time-dependent phase offsets (constant for all pixels)
         val waveTimePhase = FloatArray(waveCount) { i -> t * 3f - wavePhase[i] }
 
         val ro = FloatArray(3)
@@ -114,8 +111,6 @@ class CausticPoolGenerator : Generator {
 
         val colors = palette.colorInts()
         val nColors = colors.size
-
-        // Pre-extract color components to avoid per-pixel Color.red/green/blue calls
         val colR = IntArray(nColors) { Color.red(colors[it]) }
         val colG = IntArray(nColors) { Color.green(colors[it]) }
         val colB = IntArray(nColors) { Color.blue(colors[it]) }
@@ -123,25 +118,106 @@ class CausticPoolGenerator : Generator {
         val waterIOR = 1.33f
         val eta = 1f / waterIOR
         val floorY = -poolDepth
-
-        // Pre-compute Fresnel R0 for water
         val r0w = ((1f - waterIOR) / (1f + waterIOR)).let { it * it }
-
-        // Pre-compute water tint from palette[0]
         val tintR = colR[0] / 255f * 0.3f
         val tintG = colG[0] / 255f * 0.3f + 0.1f
         val tintB = colB[0] / 255f * 0.3f + 0.15f
-
-        // Floor style enum to avoid string comparison in hot loop
         val styleId = when (floorStyle) { "Marble" -> 1; "Mosaic" -> 2; "Sand" -> 3; else -> 0 }
 
-        val pixels = IntArray(renderW * renderH)
-        val invW = 2f / renderW; val invH = 2f / renderH
+        // ─── Pre-compute caustic grid ───────────────────────────────────────
+        // Compute visible water area by projecting screen corners to y=0 plane
+        val rd0 = FloatArray(3); val rd1 = FloatArray(3)
+        val rd2 = FloatArray(3); val rd3 = FloatArray(3)
+        getRayDir(rd0, -1f, 1f - 2f, cam)  // bottom-left
+        getRayDir(rd1, 1f, 1f - 2f, cam)   // bottom-right
+        getRayDir(rd2, -1f, 1f, cam)        // top-left
+        getRayDir(rd3, 1f, 1f, cam)         // top-right
 
-        // Stencil epsilon: unified for normal + caustic (saves 3 waterHeight calls per pixel)
-        val eps = 0.03f
+        // Find water plane intersections to determine world-space bounds
+        var minWX = Float.MAX_VALUE; var maxWX = -Float.MAX_VALUE
+        var minWZ = Float.MAX_VALUE; var maxWZ = -Float.MAX_VALUE
+        for (corner in arrayOf(rd0, rd1, rd2, rd3)) {
+            if (abs(corner[1]) > 0.0001f) {
+                val tHit = -ro[1] / corner[1]
+                if (tHit > 0f && tHit < 50f) {
+                    val wx = ro[0] + corner[0] * tHit
+                    val wz = ro[2] + corner[2] * tHit
+                    if (wx < minWX) minWX = wx; if (wx > maxWX) maxWX = wx
+                    if (wz < minWZ) minWZ = wz; if (wz > maxWZ) maxWZ = wz
+                }
+            }
+        }
+        // Clamp to reasonable bounds
+        minWX = minWX.coerceIn(-15f, 15f); maxWX = maxWX.coerceIn(-15f, 15f)
+        minWZ = minWZ.coerceIn(-15f, 15f); maxWZ = maxWZ.coerceIn(-15f, 15f)
+        // Add margin for normal stencil
+        minWX -= 0.1f; minWZ -= 0.1f; maxWX += 0.1f; maxWZ += 0.1f
+
+        // Grid resolution — enough to sample wave pattern without aliasing
+        val gridSize = if (animating) 80 else 128
+        val gridW = gridSize; val gridH = gridSize
+        val gridTotal = gridW * gridH
+        val cellW = (maxWX - minWX) / gridW
+        val cellH = (maxWZ - minWZ) / gridH
+
+        // Grid stores: height, dh/dx, dh/dz, caustic (4 floats per cell)
+        val gridHeight = FloatArray(gridTotal)
+        val gridDhdx = FloatArray(gridTotal)
+        val gridDhdz = FloatArray(gridTotal)
+        val gridCaustic = FloatArray(gridTotal)
+
+        // Fill grid (multi-threaded)
+        val eps = 0.04f
         val invEps = 1f / eps
         val invEps2 = 1f / (eps * eps)
+        val gridCores = Runtime.getRuntime().availableProcessors().coerceIn(2, 8)
+        val gridThreads = Array(gridCores) { tc ->
+            Thread {
+                val gy0 = tc * gridH / gridCores
+                val gy1 = (tc + 1) * gridH / gridCores
+                for (gy in gy0 until gy1) {
+                    val wz = minWZ + (gy + 0.5f) * cellH
+                    for (gx in 0 until gridW) {
+                        val wx = minWX + (gx + 0.5f) * cellW
+                        val idx = gy * gridW + gx
+
+                        // 5-point stencil
+                        var hc = 0f; var hPx = 0f; var hNx = 0f; var hPz = 0f; var hNz = 0f
+                        for (i in 0 until waveCount) {
+                            val sx = waveSrcX[i]; val sz = waveSrcZ[i]
+                            val tp = waveTimePhase[i]
+                            val dcx = wx - sx; val dcz = wz - sz
+
+                            val distC = sqrt(dcx * dcx + dcz * dcz)
+                            hc += sin(distC * waveFreq - tp) * waveAmp / (1f + distC * 0.3f)
+
+                            val dpxx = dcx + eps
+                            hPx += sin(sqrt(dpxx * dpxx + dcz * dcz) * waveFreq - tp) * waveAmp / (1f + sqrt(dpxx * dpxx + dcz * dcz) * 0.3f)
+
+                            val dnxx = dcx - eps
+                            hNx += sin(sqrt(dnxx * dnxx + dcz * dcz) * waveFreq - tp) * waveAmp / (1f + sqrt(dnxx * dnxx + dcz * dcz) * 0.3f)
+
+                            val dpzz = dcz + eps
+                            hPz += sin(sqrt(dcx * dcx + dpzz * dpzz) * waveFreq - tp) * waveAmp / (1f + sqrt(dcx * dcx + dpzz * dpzz) * 0.3f)
+
+                            val dnzz = dcz - eps
+                            hNz += sin(sqrt(dcx * dcx + dnzz * dnzz) * waveFreq - tp) * waveAmp / (1f + sqrt(dcx * dcx + dnzz * dnzz) * 0.3f)
+                        }
+
+                        gridHeight[idx] = hc
+                        gridDhdx[idx] = (hPx - hNx) * 0.5f * invEps
+                        gridDhdz[idx] = (hPz - hNz) * 0.5f * invEps
+                        gridCaustic[idx] = (abs((hPx - 2f * hc + hNx) * invEps2 + (hPz - 2f * hc + hNz) * invEps2) * 2f).coerceAtMost(3f)
+                    }
+                }
+            }.also { it.start() }
+        }
+        gridThreads.forEach { it.join() }
+
+        // ─── Pixel rendering (cheap: just grid lookup + floor color) ────────
+        val pixels = IntArray(renderW * renderH)
+        val invW = 2f / renderW; val invH = 2f / renderH
+        val invCellW = 1f / cellW; val invCellH = 1f / cellH
 
         renderMultithreaded(renderW, renderH, pixels) { y0, y1, rd, normal, tm, _ ->
             val refr = FloatArray(3)
@@ -151,9 +227,7 @@ class CausticPoolGenerator : Generator {
                     val u = px * invW - 1f
                     getRayDir(rd, u, v, cam)
 
-                    // Intersect ray with water plane at y=0
                     if (abs(rd[1]) < 0.0001f || ro[1] * rd[1] > 0f) {
-                        // Sky (ray parallel to water or pointing away)
                         val skyT = rd[1] * 0.5f + 0.5f
                         toneMapACES(tm, 0.1f + skyT * 0.2f, 0.12f + skyT * 0.3f, 0.2f + skyT * 0.5f, exposure)
                         pixels[py * renderW + px] = Color.rgb(tm[0].toInt().coerceIn(0, 255), tm[1].toInt().coerceIn(0, 255), tm[2].toInt().coerceIn(0, 255))
@@ -164,42 +238,27 @@ class CausticPoolGenerator : Generator {
                     val hitX = ro[0] + rd[0] * waterHit
                     val hitZ = ro[2] + rd[2] * waterHit
 
-                    // 5-point stencil: compute normal AND caustic from same samples
-                    var hc = 0f; var hPx = 0f; var hNx = 0f; var hPz = 0f; var hNz = 0f
-                    for (i in 0 until waveCount) {
-                        val sx = waveSrcX[i]; val sz = waveSrcZ[i]
-                        val tp = waveTimePhase[i]
+                    // Bilinear grid lookup
+                    val gfx = (hitX - minWX) * invCellW - 0.5f
+                    val gfz = (hitZ - minWZ) * invCellH - 0.5f
+                    val gix = gfx.toInt().coerceIn(0, gridW - 2)
+                    val giz = gfz.toInt().coerceIn(0, gridH - 2)
+                    val fx = (gfx - gix).coerceIn(0f, 1f)
+                    val fz = (gfz - giz).coerceIn(0f, 1f)
 
-                        // Center
-                        val dcx = hitX - sx; val dcz = hitZ - sz
-                        val distC = sqrt(dcx * dcx + dcz * dcz)
-                        val attC = waveAmp / (1f + distC * 0.3f)
-                        hc += sin(distC * waveFreq - tp) * attC
+                    val i00 = giz * gridW + gix; val i10 = i00 + 1
+                    val i01 = i00 + gridW; val i11 = i01 + 1
 
-                        // +X
-                        val dpxx = dcx + eps
-                        val distPx = sqrt(dpxx * dpxx + dcz * dcz)
-                        hPx += sin(distPx * waveFreq - tp) * waveAmp / (1f + distPx * 0.3f)
+                    val hc = gridHeight[i00] * (1f - fx) * (1f - fz) + gridHeight[i10] * fx * (1f - fz) +
+                             gridHeight[i01] * (1f - fx) * fz + gridHeight[i11] * fx * fz
+                    val dhdx = gridDhdx[i00] * (1f - fx) * (1f - fz) + gridDhdx[i10] * fx * (1f - fz) +
+                               gridDhdx[i01] * (1f - fx) * fz + gridDhdx[i11] * fx * fz
+                    val dhdz = gridDhdz[i00] * (1f - fx) * (1f - fz) + gridDhdz[i10] * fx * (1f - fz) +
+                               gridDhdz[i01] * (1f - fx) * fz + gridDhdz[i11] * fx * fz
+                    val caustic = gridCaustic[i00] * (1f - fx) * (1f - fz) + gridCaustic[i10] * fx * (1f - fz) +
+                                  gridCaustic[i01] * (1f - fx) * fz + gridCaustic[i11] * fx * fz
 
-                        // -X
-                        val dnxx = dcx - eps
-                        val distNx = sqrt(dnxx * dnxx + dcz * dcz)
-                        hNx += sin(distNx * waveFreq - tp) * waveAmp / (1f + distNx * 0.3f)
-
-                        // +Z
-                        val dpzz = dcz + eps
-                        val distPz = sqrt(dcx * dcx + dpzz * dpzz)
-                        hPz += sin(distPz * waveFreq - tp) * waveAmp / (1f + distPz * 0.3f)
-
-                        // -Z
-                        val dnzz = dcz - eps
-                        val distNz = sqrt(dcx * dcx + dnzz * dnzz)
-                        hNz += sin(distNz * waveFreq - tp) * waveAmp / (1f + distNz * 0.3f)
-                    }
-
-                    // Central-difference normal (more accurate than forward-diff)
-                    val dhdx = (hPx - hNx) * 0.5f * invEps
-                    val dhdz = (hPz - hNz) * 0.5f * invEps
+                    // Normal from interpolated gradient
                     val nLen = sqrt(dhdx * dhdx + 1f + dhdz * dhdz)
                     val invNLen = 1f / nLen
                     normal[0] = -dhdx * invNLen; normal[1] = invNLen; normal[2] = -dhdz * invNLen
@@ -220,10 +279,6 @@ class CausticPoolGenerator : Generator {
                             val floorX = hitX + refr[0] * toFloor
                             val floorZ = hitZ + refr[2] * toFloor
 
-                            // Caustic from Laplacian (reuses stencil samples)
-                            val laplacian = abs((hPx - 2f * hc + hNx) * invEps2 + (hPz - 2f * hc + hNz) * invEps2)
-                            val caustic = (laplacian * 2f).coerceAtMost(3f)
-
                             // Floor color
                             val baseR: Float; val baseG: Float; val baseB: Float
                             when (styleId) {
@@ -240,13 +295,13 @@ class CausticPoolGenerator : Generator {
                                 2 -> { // Mosaic
                                     val sx = floorX * 1.5f; val sz = floorZ * 1.5f
                                     val cellX = floor(sx); val cellZ = floor(sz)
-                                    val fx = sx - cellX; val fz = sz - cellZ
+                                    val ffx = sx - cellX; val ffz = sz - cellZ
                                     var minDist = 10f; var cellId = 0
                                     for (di in -1..1) for (dj in -1..1) {
                                         val cx = (cellX + di).toInt(); val cz = (cellZ + dj).toInt()
                                         val hv = hash3(cx, 0, cz)
-                                        val px2 = di + hv * 0.8f - fx
-                                        val pz2 = dj + hash3(cz, 0, cx) * 0.8f - fz
+                                        val px2 = di + hv * 0.8f - ffx
+                                        val pz2 = dj + hash3(cz, 0, cx) * 0.8f - ffz
                                         val d2 = px2 * px2 + pz2 * pz2
                                         if (d2 < minDist) { minDist = d2; cellId = (hv * 1000f).toInt() }
                                     }
@@ -286,7 +341,7 @@ class CausticPoolGenerator : Generator {
                         }
                     }
 
-                    // Fresnel (inlined Schlick, avoids pow(5) — use x²×x²×x)
+                    // Fresnel
                     val cosI = abs(NdotI)
                     val oneMinusC = 1f - cosI
                     val omc2 = oneMinusC * oneMinusC

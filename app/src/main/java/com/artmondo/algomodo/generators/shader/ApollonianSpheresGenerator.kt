@@ -67,17 +67,17 @@ class ApollonianSpheresGenerator : Generator {
         val w = bitmap.width; val h = bitmap.height
         val animating = time > 0f
 
-        // Custom quality config: higher resolution than generic "medium", tuned for this fractal
+        // Higher resolution + fewer steps: bounding sphere makes steps cheap
         val cfg = when (quality) {
-            Quality.DRAFT -> if (animating) RenderConfig(0.30f, 48, 0.003f, 30f)
-                             else RenderConfig(0.40f, 72, 0.002f, 40f)
-            Quality.BALANCED -> if (animating) RenderConfig(0.45f, 56, 0.002f, 35f)
-                                else RenderConfig(0.55f, 80, 0.001f, 50f)
-            Quality.ULTRA -> if (animating) RenderConfig(0.55f, 72, 0.001f, 40f)
-                             else RenderConfig(0.75f, 128, 0.0005f, 60f)
+            Quality.DRAFT -> if (animating) RenderConfig(0.40f, 40, 0.004f, 25f)
+                             else RenderConfig(0.50f, 64, 0.002f, 40f)
+            Quality.BALANCED -> if (animating) RenderConfig(0.55f, 48, 0.003f, 28f)
+                                else RenderConfig(0.70f, 80, 0.001f, 50f)
+            Quality.ULTRA -> if (animating) RenderConfig(0.65f, 60, 0.002f, 35f)
+                             else RenderConfig(0.85f, 128, 0.0005f, 60f)
         }
-        val renderW = (w * cfg.scale).toInt().coerceAtLeast(80)
-        val renderH = (h * cfg.scale).toInt().coerceAtLeast(80)
+        val renderW = (w * cfg.scale).toInt().coerceAtLeast(100)
+        val renderH = (h * cfg.scale).toInt().coerceAtLeast(100)
 
         val camDist = extractFloat(params, "cameraDistance", 4f)
         val fov = extractFloat(params, "fov", 40f)
@@ -89,8 +89,7 @@ class ApollonianSpheresGenerator : Generator {
         val spd = extractFloat(params, "speed", 0.5f)
         val packing = extractString(params, "packingStyle", "Classic")
         val iters = extractFloat(params, "iterations", 8f).toInt().coerceIn(2, 16)
-        // Reduce iterations during animation for performance
-        val renderIters = if (animating) iters.coerceAtMost(7) else iters
+        val renderIters = if (animating) iters.coerceAtMost(6) else iters
         val sphereR = extractFloat(params, "sphereSize", 0.3f)
         val rimGlow = extractFloat(params, "rimGlow", 0.5f)
         val roughness = extractFloat(params, "roughness", 0.4f)
@@ -105,6 +104,9 @@ class ApollonianSpheresGenerator : Generator {
             else -> { ox = 1.0f; oy = 1.0f; oz = 1.0f; invR2 = 1.0f }
         }
 
+        // Bounding sphere radius for early-out (fractal fits within this)
+        val boundR = 3.5f
+
         val rotY = t * 0.3f
         val cosRot = cos(rotY); val sinRot = sin(rotY)
 
@@ -117,8 +119,23 @@ class ApollonianSpheresGenerator : Generator {
         val colors = palette.colorInts()
         val nColors = colors.size
 
-        val topR = 0.05f; val topG = 0.05f; val topB = 0.12f
-        val botR = 0.12f; val botG = 0.08f; val botB = 0.15f
+        // Sky colors from palette (darkened) — fixes always-purple background
+        val lastC = colors[nColors - 1]
+        val firstC = colors[0]
+        val skyTopR = Color.red(lastC) / 255f * 0.15f
+        val skyTopG = Color.green(lastC) / 255f * 0.15f
+        val skyTopB = Color.blue(lastC) / 255f * 0.15f
+        val skyBotR = Color.red(firstC) / 255f * 0.2f
+        val skyBotG = Color.green(firstC) / 255f * 0.2f
+        val skyBotB = Color.blue(firstC) / 255f * 0.2f
+
+        // Pre-extract color components
+        val colR = IntArray(nColors) { Color.red(colors[it]) }
+        val colG = IntArray(nColors) { Color.green(colors[it]) }
+        val colB = IntArray(nColors) { Color.blue(colors[it]) }
+        val rimR = colR[0] / 255f
+        val rimG = colG[0] / 255f
+        val rimB = colB[0] / 255f
 
         val pixels = IntArray(renderW * renderH)
         val invW = 2f / renderW; val invH = 2f / renderH
@@ -127,15 +144,10 @@ class ApollonianSpheresGenerator : Generator {
         val maxSteps = cfg.maxSteps
         val epsilon = cfg.epsilon
         val maxDist = cfg.maxDist
-        // AO steps: skip during animation for perf
-        val aoSteps = if (animating) 0 else 3
-        // Normal epsilon: larger = faster (fewer precision needed during animation)
-        val normalEps = if (animating) epsilon * 4f else epsilon * 2f
+        val normalEps = if (animating) epsilon * 5f else epsilon * 2.5f
 
         renderMultithreaded(renderW, renderH, pixels) { y0, y1, rd, normal, tm, _ ->
-            val sky = FloatArray(3)
-            // Thread-local DE+trap result
-            val deResult = FloatArray(2) // [0]=distance, [1]=trap
+            val deResult = FloatArray(2)
 
             for (py in y0 until y1) {
                 val v = 1f - py * invH
@@ -143,8 +155,28 @@ class ApollonianSpheresGenerator : Generator {
                     val u = px * invW - 1f
                     getRayDir(rd, u, v, cam)
 
-                    // Inlined ray march with over-relaxation for faster convergence
-                    var marchT = 0f
+                    // Ray-sphere intersection for bounding volume (skip rays that miss entirely)
+                    // Sphere at origin with radius boundR
+                    val b = ro[0] * rd[0] + ro[1] * rd[1] + ro[2] * rd[2]
+                    val c = ro[0] * ro[0] + ro[1] * ro[1] + ro[2] * ro[2] - boundR * boundR
+                    val disc = b * b - c
+
+                    if (disc < 0f) {
+                        // Ray misses bounding sphere entirely — sky
+                        val skyT = rd[1] * 0.5f + 0.5f
+                        toneMapACES(tm,
+                            skyBotR + (skyTopR - skyBotR) * skyT,
+                            skyBotG + (skyTopG - skyBotG) * skyT,
+                            skyBotB + (skyTopB - skyBotB) * skyT, exposure)
+                        pixels[py * renderW + px] = Color.rgb(tm[0].toInt().coerceIn(0, 255), tm[1].toInt().coerceIn(0, 255), tm[2].toInt().coerceIn(0, 255))
+                        continue
+                    }
+
+                    // Start march at bounding sphere entry (or 0 if inside)
+                    val sqrtDisc = sqrt(disc)
+                    val tEntry = maxOf(0f, -b - sqrtDisc)
+
+                    var marchT = tEntry
                     var hit = false
                     var hitX = 0f; var hitY = 0f; var hitZ = 0f
                     var i = 0
@@ -154,15 +186,17 @@ class ApollonianSpheresGenerator : Generator {
                         hitZ = ro[2] + rd[2] * marchT
                         val d = apollonianDE(hitX, hitY, hitZ, renderIters, ox, oy, oz, invR2, sphereR, cosRot, sinRot)
                         if (d < epsilon) { hit = true; break }
-                        // Over-relaxation: safe for Apollonian (Lipschitz ~1)
-                        marchT += d * 1.3f
+                        marchT += d * 1.4f
                         if (marchT > maxDist) break
                         i++
                     }
 
                     if (hit) {
-                        // Forward-difference normal (3 SDF evals instead of 6)
-                        val nc = apollonianDE(hitX, hitY, hitZ, renderIters, ox, oy, oz, invR2, sphereR, cosRot, sinRot)
+                        // Get trap from center point, then forward-diff normal from 3 offset points
+                        apollonianDETrap(deResult, hitX, hitY, hitZ, renderIters, ox, oy, oz, invR2, sphereR, cosRot, sinRot)
+                        val nc = deResult[0]
+                        val trap = deResult[1]
+
                         val nx = apollonianDE(hitX + normalEps, hitY, hitZ, renderIters, ox, oy, oz, invR2, sphereR, cosRot, sinRot) - nc
                         val ny = apollonianDE(hitX, hitY + normalEps, hitZ, renderIters, ox, oy, oz, invR2, sphereR, cosRot, sinRot) - nc
                         val nz = apollonianDE(hitX, hitY, hitZ + normalEps, renderIters, ox, oy, oz, invR2, sphereR, cosRot, sinRot) - nc
@@ -173,36 +207,24 @@ class ApollonianSpheresGenerator : Generator {
                         val vLen = sqrt(vx * vx + vy * vy + vz * vz).let { if (it == 0f) 1f else it }
                         val nvx = vx / vLen; val nvy = vy / vLen; val nvz = vz / vLen
 
-                        // Combined DE+Trap (avoids re-running the full fractal loop)
-                        apollonianDETrap(deResult, hitX, hitY, hitZ, renderIters, ox, oy, oz, invR2, sphereR, cosRot, sinRot)
-                        val colorT = deResult[1].coerceIn(0f, 1f)
+                        // Color from trap (uses pre-extracted components)
+                        val colorT = trap.coerceIn(0f, 1f)
                         val ci = (colorT * (nColors - 1)).toInt().coerceIn(0, nColors - 1)
                         val c1i = (ci + 1).coerceAtMost(nColors - 1)
                         val frac = colorT * (nColors - 1) - ci
-                        val cr = (Color.red(colors[ci]) + (Color.red(colors[c1i]) - Color.red(colors[ci])) * frac) / 255f
-                        val cg = (Color.green(colors[ci]) + (Color.green(colors[c1i]) - Color.green(colors[ci])) * frac) / 255f
-                        val cb = (Color.blue(colors[ci]) + (Color.blue(colors[c1i]) - Color.blue(colors[ci])) * frac) / 255f
+                        val cr = (colR[ci] + (colR[c1i] - colR[ci]) * frac) / 255f
+                        val cg = (colG[ci] + (colG[c1i] - colG[ci]) * frac) / 255f
+                        val cb = (colB[ci] + (colB[c1i] - colB[ci]) * frac) / 255f
 
                         val shade = phongShade(normal[0], normal[1], normal[2], nvx, nvy, nvz, ld[0], ld[1], ld[2], 0.15f, 0.6f, specAmt, shininess)
 
-                        // AO only for static renders
-                        val ao = if (aoSteps > 0) {
-                            var occ = 0f; var scale = 1f
-                            for (s in 1..aoSteps) {
-                                val at = 0.02f * s
-                                val d = apollonianDE(hitX + normal[0] * at, hitY + normal[1] * at, hitZ + normal[2] * at, renderIters, ox, oy, oz, invR2, sphereR, cosRot, sinRot)
-                                occ += (at - d) * scale; scale *= 0.75f
-                            }
-                            maxOf(0f, 1f - 3f * occ)
-                        } else 1f
+                        // Cheap step-based AO approximation (no extra SDF evals)
+                        val ao = (1f - (i.toFloat() / maxSteps) * 0.4f).coerceIn(0.6f, 1f)
 
-                        // Fresnel rim glow
+                        // Fresnel rim glow (inlined pow(3) = x*x*x)
                         val NdotV = maxOf(0f, normal[0] * nvx + normal[1] * nvy + normal[2] * nvz)
-                        val fresnel = (1f - NdotV).pow(3) * rimGlow
-                        val rimColor = colors[0]
-                        val rimR = Color.red(rimColor) / 255f
-                        val rimG = Color.green(rimColor) / 255f
-                        val rimB = Color.blue(rimColor) / 255f
+                        val oneMinusNdV = 1f - NdotV
+                        val fresnel = oneMinusNdV * oneMinusNdV * oneMinusNdV * rimGlow
 
                         val r = cr * shade * ao + rimR * fresnel
                         val g = cg * shade * ao + rimG * fresnel
@@ -211,8 +233,12 @@ class ApollonianSpheresGenerator : Generator {
                         toneMapACES(tm, r, g, b, exposure)
                         pixels[py * renderW + px] = Color.rgb(tm[0].toInt().coerceIn(0, 255), tm[1].toInt().coerceIn(0, 255), tm[2].toInt().coerceIn(0, 255))
                     } else {
-                        skyGradient(sky, rd[1], topR, topG, topB, botR, botG, botB)
-                        toneMapACES(tm, sky[0], sky[1], sky[2], exposure)
+                        // Sky gradient from palette colors
+                        val skyT = rd[1] * 0.5f + 0.5f
+                        toneMapACES(tm,
+                            skyBotR + (skyTopR - skyBotR) * skyT,
+                            skyBotG + (skyTopG - skyBotG) * skyT,
+                            skyBotB + (skyTopB - skyBotB) * skyT, exposure)
                         pixels[py * renderW + px] = Color.rgb(tm[0].toInt().coerceIn(0, 255), tm[1].toInt().coerceIn(0, 255), tm[2].toInt().coerceIn(0, 255))
                     }
                 }
@@ -280,7 +306,7 @@ class ApollonianSpheresGenerator : Generator {
                 if (y < z) { val t = y; y = z; z = t }
                 x -= ox; y -= oy; z -= oz
                 val r2 = x * x + y * y + z * z
-                minR2 = minOf(minR2, r2)
+                if (r2 < minR2) minR2 = r2
                 if (r2 < invR2) {
                     val k = invR2 / r2
                     x *= k; y *= k; z *= k
