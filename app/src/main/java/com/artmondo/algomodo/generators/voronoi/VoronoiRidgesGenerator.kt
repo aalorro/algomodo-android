@@ -1,28 +1,31 @@
 package com.artmondo.algomodo.generators.voronoi
 
-import android.graphics.Bitmap
-import android.graphics.Canvas
-import android.graphics.Color
-import android.graphics.Paint
-import android.graphics.Rect
+import android.opengl.GLES30
 import com.artmondo.algomodo.core.rng.SeededRNG
 import com.artmondo.algomodo.core.rng.SimplexNoise
 import com.artmondo.algomodo.data.palettes.Palette
-import com.artmondo.algomodo.generators.Generator
+import com.artmondo.algomodo.generators.GpuGenerator
 import com.artmondo.algomodo.generators.ParamGroup
 import com.artmondo.algomodo.generators.Parameter
 import com.artmondo.algomodo.generators.Quality
+import com.artmondo.algomodo.rendering.gl.PaletteUniform
+import com.artmondo.algomodo.rendering.gl.VoronoiGlsl
+import kotlin.math.abs
+import kotlin.math.max
 import kotlin.math.pow
 import kotlin.math.sqrt
 
 /**
- * Voronoi ridge / edge-emphasis generator.
+ * GPU port. Multi-octave (1..5) voronoi ridge field.
  *
- * Emphasises the boundaries between Voronoi cells as glowing or sharp ridges.
- * Uses the F2-F1 distance field inverted so that edges are bright and cell
- * interiors are dark.
+ * Per-octave point arrays are packed into a single uniform vec2 array
+ * [uRidgePoints] with per-octave offsets / counts. To fit within GLES 3.0
+ * uniform-vector budgets each octave is capped at [MAX_POINTS_PER_OCTAVE].
+ * This is a meaningful behavioural change vs the CPU (which capped each
+ * octave at 4000) but keeps the visual character intact while running at
+ * native framerate.
  */
-class VoronoiRidgesGenerator : Generator {
+class VoronoiRidgesGenerator : GpuGenerator {
 
     override val id = "voronoi-ridges"
     override val family = "voronoi"
@@ -30,10 +33,9 @@ class VoronoiRidgesGenerator : Generator {
     override val definition =
         "Voronoi ridge patterns where cell boundaries are rendered as glowing, sharp, or smooth luminous ridges against a dark background."
     override val algorithmNotes =
-        "The F2-F1 distance field is computed per pixel. Low values (near cell edges) are mapped to bright " +
-        "colours. The 'sharp' style uses a hard threshold; 'smooth' uses a Gaussian falloff; 'glowing' adds " +
-        "an additive bloom-like spread. ridgeWidth controls the effective width of the bright zone. " +
-        "Animation drifts seed points via simplex noise."
+        "GPU shader. Each octave o has cellCount * lacunarity^o points (capped at 384/octave) scattered " +
+        "randomly. The shader scans every octave per pixel for F1/F2 and accumulates (1 - normalised edgeDist) * gain^o. " +
+        "ridgeSharpness applies pow(intensity, s). Per-octave max edge distance is sampled CPU-side and uploaded."
     override val supportsVector = false
     override val supportsAnimation = true
 
@@ -61,19 +63,12 @@ class VoronoiRidgesGenerator : Generator {
         "animAmp" to 0.15f
     )
 
-    override fun renderCanvas(
-        canvas: Canvas,
-        bitmap: Bitmap,
-        params: Map<String, Any>,
-        seed: Int,
-        palette: Palette,
-        quality: Quality,
-        time: Float
+    override fun bindUniforms(
+        programId: Int, params: Map<String, Any>, seed: Int, palette: Palette,
+        quality: Quality, time: Float, width: Int, height: Int
     ) {
-        val w = bitmap.width
-        val h = bitmap.height
         val numPoints = (params["cellCount"] as? Number)?.toInt() ?: 50
-        val octaves = (params["octaves"] as? Number)?.toInt()?.coerceIn(1, 5) ?: 3
+        val octaves = ((params["octaves"] as? Number)?.toInt() ?: 3).coerceIn(1, MAX_OCTAVES)
         val lacunarity = (params["lacunarity"] as? Number)?.toFloat() ?: 2.0f
         val gain = (params["gain"] as? Number)?.toFloat() ?: 0.5f
         val ridgeSharpness = (params["ridgeSharpness"] as? Number)?.toFloat() ?: 1.5f
@@ -89,296 +84,169 @@ class VoronoiRidgesGenerator : Generator {
         val styleId = when (style) { "greyscale" -> 1; "inverted" -> 2; else -> 0 }
 
         val noise = SimplexNoise(seed)
-        val avgCellSize = sqrt((w * h).toFloat() / numPoints)
+        val avgCellSize = sqrt((width.toFloat() * height.toFloat()) / numPoints)
 
-        // ── Per-octave data + spatial grids ──
-        val octPx = Array(octaves) { FloatArray(0) }
-        val octPy = Array(octaves) { FloatArray(0) }
-        val octCount = IntArray(octaves)
-        val octAmp = FloatArray(octaves)
-        val octInvMaxEd = FloatArray(octaves)
-        val octGh = Array(octaves) { IntArray(0) }
-        val octGn = Array(octaves) { IntArray(0) }
-        val octGc = IntArray(octaves)
-        val octGr = IntArray(octaves)
-        val octGcM1 = IntArray(octaves)
-        val octGrM1 = IntArray(octaves)
-        val octInvGs = FloatArray(octaves)
+        val packedPts = FloatArray(MAX_TOTAL_POINTS * 2)
+        val octOffset = IntArray(MAX_OCTAVES)
+        val octCount = IntArray(MAX_OCTAVES)
+        val octAmp = FloatArray(MAX_OCTAVES)
+        val octInvMaxEd = FloatArray(MAX_OCTAVES)
 
+        var ampSum = 0f
+        var cursor = 0
         for (oct in 0 until octaves) {
             val octRng = SeededRNG(seed + oct * 7919)
             val freq = lacunarity.pow(oct.toFloat())
             val amp = gain.pow(oct.toFloat())
-            val octPoints = (numPoints * freq).toInt().coerceIn(3, 4000)
+            val requested = (numPoints * freq).toInt().coerceAtLeast(3)
+            val octPoints = requested.coerceAtMost(MAX_POINTS_PER_OCTAVE)
 
-            val opx = FloatArray(octPoints)
-            val opy = FloatArray(octPoints)
+            val opx = FloatArray(octPoints); val opy = FloatArray(octPoints)
             for (i in 0 until octPoints) {
-                opx[i] = octRng.random() * w
-                opy[i] = octRng.random() * h
+                opx[i] = octRng.random() * width
+                opy[i] = octRng.random() * height
             }
 
             if (time > 0f) {
                 val driftRange = animAmp * avgCellSize / freq
                 for (i in 0 until octPoints) {
-                    opx[i] = (opx[i] + noise.noise2D(i * 0.3f + 70f + oct * 100f, time * animSpeed) * driftRange).coerceIn(0f, w - 1f)
-                    opy[i] = (opy[i] + noise.noise2D(i * 0.3f + 170f + oct * 100f, time * animSpeed) * driftRange).coerceIn(0f, h - 1f)
+                    opx[i] = (opx[i] + noise.noise2D(i * 0.3f + 70f + oct * 100f, time * animSpeed) * driftRange).coerceIn(0f, width - 1f)
+                    opy[i] = (opy[i] + noise.noise2D(i * 0.3f + 170f + oct * 100f, time * animSpeed) * driftRange).coerceIn(0f, height - 1f)
                 }
             }
 
-            val gs = (maxOf(w, h).toFloat() / sqrt(octPoints.toFloat())).coerceAtLeast(8f)
-            val invGs = 1f / gs
-            val gc = (w * invGs).toInt() + 1
-            val gr = (h * invGs).toInt() + 1
-            val gcM1 = gc - 1; val grM1v = gr - 1
-            val gh = IntArray(gc * gr) { -1 }
-            val gn = IntArray(octPoints) { -1 }
-            for (i in 0 until octPoints) {
-                val gx = minOf((opx[i] * invGs).toInt(), gcM1)
-                val gy = minOf((opy[i] * invGs).toInt(), grM1v)
-                val cell = gy * gc + gx
-                gn[i] = gh[cell]; gh[cell] = i
-            }
-
+            // Sample 50 random pixels for maxEd normalisation (was 80 on CPU; halved here
+            // because brute-force scan over octPoints can be expensive for big octaves).
             var maxEd = 1f
             val sampleRng = SeededRNG(seed + oct * 3571)
-            for (s in 0 until 80) {
-                val sx = sampleRng.random() * w; val sy = sampleRng.random() * h
-                val sgx = minOf((sx * invGs).toInt(), gcM1)
-                val sgy = minOf((sy * invGs).toInt(), grM1v)
-                val scyMin = maxOf(sgy - 1, 0); val scyMax = minOf(sgy + 1, grM1v)
-                val scxMin = maxOf(sgx - 1, 0); val scxMax = minOf(sgx + 1, gcM1)
+            for (s in 0 until 50) {
+                val sx = sampleRng.random() * width; val sy = sampleRng.random() * height
                 var sf1 = Float.MAX_VALUE; var sf2 = Float.MAX_VALUE
-                for (cy in scyMin..scyMax) {
-                    val ro = cy * gc
-                    for (cx in scxMin..scxMax) {
-                        var ii = gh[ro + cx]
-                        while (ii >= 0) {
-                            val dx = sx - opx[ii]; val dy = sy - opy[ii]
-                            val d = if (isEuclidean) dx * dx + dy * dy
-                                    else if (metricId == 1) { val ax = if (dx < 0f) -dx else dx; val ay = if (dy < 0f) -dy else dy; ax + ay }
-                                    else { val ax = if (dx < 0f) -dx else dx; val ay = if (dy < 0f) -dy else dy; if (ax > ay) ax else ay }
-                            if (d < sf1) { sf2 = sf1; sf1 = d }
-                            else if (d < sf2) { sf2 = d }
-                            ii = gn[ii]
-                        }
+                for (i in 0 until octPoints) {
+                    val dx = sx - opx[i]; val dy = sy - opy[i]
+                    val d = when {
+                        isEuclidean -> dx * dx + dy * dy
+                        metricId == 1 -> abs(dx) + abs(dy)
+                        else -> max(abs(dx), abs(dy))
                     }
+                    if (d < sf1) { sf2 = sf1; sf1 = d } else if (d < sf2) { sf2 = d }
                 }
                 val ed = if (isEuclidean) sqrt(sf2) - sqrt(sf1) else sf2 - sf1
                 if (ed > maxEd) maxEd = ed
             }
 
-            octPx[oct] = opx; octPy[oct] = opy; octCount[oct] = octPoints
-            octAmp[oct] = amp; octInvMaxEd[oct] = 1f / maxEd
-            octGh[oct] = gh; octGn[oct] = gn
-            octGc[oct] = gc; octGr[oct] = gr
-            octGcM1[oct] = gcM1; octGrM1[oct] = grM1v
-            octInvGs[oct] = invGs
+            octOffset[oct] = cursor
+            octCount[oct] = octPoints
+            octAmp[oct] = amp
+            octInvMaxEd[oct] = 1f / maxEd
+            ampSum += amp
+
+            for (i in 0 until octPoints) {
+                packedPts[(cursor + i) * 2]     = opx[i]
+                packedPts[(cursor + i) * 2 + 1] = opy[i]
+            }
+            cursor += octPoints
         }
 
-        val sharpLut = FloatArray(256) { (it / 255f).pow(ridgeSharpness) }
-
-        var ampSum = 0f
-        for (oct in 0 until octaves) ampSum += octAmp[oct]
         val invAmpSum = 1f / ampSum
 
-        val colors = palette.colorInts()
-        val colorsSize = colors.size
-
-        // ── Pre-compute color LUTs per cell (eliminates per-pixel Color.rgb + float→int) ──
-        val colorLuts = Array(colorsSize) { ci ->
-            IntArray(256) { v ->
-                when (styleId) {
-                    1 -> Color.rgb(v, v, v)
-                    2 -> {
-                        val base = colors[ci]; val inv = (255 - v) / 255f
-                        Color.rgb((Color.red(base) * inv).toInt().coerceIn(0, 255),
-                            (Color.green(base) * inv).toInt().coerceIn(0, 255),
-                            (Color.blue(base) * inv).toInt().coerceIn(0, 255))
-                    }
-                    else -> {
-                        val base = colors[ci]; val f = v / 255f
-                        Color.rgb((Color.red(base) * f).toInt().coerceIn(0, 255),
-                            (Color.green(base) * f).toInt().coerceIn(0, 255),
-                            (Color.blue(base) * f).toInt().coerceIn(0, 255))
-                    }
-                }
-            }
-        }
-
-        // ── Render at reduced resolution, bilinear upscale ──
-        val scale = when (quality) { Quality.DRAFT -> 3; Quality.BALANCED -> 2; else -> 1 }
-        val rw = if (scale > 1) (w + scale - 1) / scale else w
-        val rh = if (scale > 1) (h + scale - 1) / scale else h
-        val scaleF = scale.toFloat()
-        val pixels = IntArray(rw * rh)
-
-        if (isEuclidean) {
-            // ── EUCLIDEAN PATH ──
-            for (row in 0 until rh) {
-                val y = row.toFloat() * scaleF
-                val rowOff = row * rw
-                for (col in 0 until rw) {
-                    val x = col.toFloat() * scaleF
-                    var ridgeSum = 0f
-                    var nearestIdx = 0
-
-                    for (oct in 0 until octaves) {
-                        val opx = octPx[oct]; val opy = octPy[oct]
-                        val gh = octGh[oct]; val gn = octGn[oct]
-                        val gc = octGc[oct]; val gcM1 = octGcM1[oct]; val grM1 = octGrM1[oct]
-                        val invGs = octInvGs[oct]
-
-                        val gxv = minOf((x * invGs).toInt(), gcM1)
-                        val gyv = minOf((y * invGs).toInt(), grM1)
-                        val cyMin = maxOf(gyv - 1, 0); val cyMax = minOf(gyv + 1, grM1)
-                        val cxMin = maxOf(gxv - 1, 0); val cxMax = minOf(gxv + 1, gcM1)
-
-                        var f1 = Float.MAX_VALUE; var f2 = Float.MAX_VALUE; var ni = 0
-                        for (cy in cyMin..cyMax) {
-                            val ro = cy * gc
-                            for (cx in cxMin..cxMax) {
-                                var ii = gh[ro + cx]
-                                while (ii >= 0) {
-                                    val dx = x - opx[ii]; val dy = y - opy[ii]
-                                    val d = dx * dx + dy * dy
-                                    if (d < f1) { f2 = f1; f1 = d; ni = ii }
-                                    else if (d < f2) { f2 = d }
-                                    ii = gn[ii]
-                                }
-                            }
-                        }
-
-                        val edgeDist = sqrt(f2) - sqrt(f1)
-                        val normalized = (edgeDist * octInvMaxEd[oct]).coerceIn(0f, 1f)
-                        ridgeSum += (1f - normalized) * octAmp[oct]
-                        if (oct == 0) nearestIdx = ni
-                    }
-
-                    val ridgeNorm = (ridgeSum * invAmpSum).coerceIn(0f, 1f)
-                    val ridgeIntensity = sharpLut[(ridgeNorm * 255f).toInt().coerceIn(0, 255)]
-                    val intensityIdx = (ridgeIntensity * 255f).toInt().coerceIn(0, 255)
-                    pixels[rowOff + col] = colorLuts[nearestIdx % colorsSize][intensityIdx]
-                }
-            }
-        } else if (metricId == 1) {
-            // ── MANHATTAN PATH ──
-            for (row in 0 until rh) {
-                val y = row.toFloat() * scaleF
-                val rowOff = row * rw
-                for (col in 0 until rw) {
-                    val x = col.toFloat() * scaleF
-                    var ridgeSum = 0f
-                    var nearestIdx = 0
-
-                    for (oct in 0 until octaves) {
-                        val opx = octPx[oct]; val opy = octPy[oct]
-                        val gh = octGh[oct]; val gn = octGn[oct]
-                        val gc = octGc[oct]; val gcM1 = octGcM1[oct]; val grM1 = octGrM1[oct]
-                        val invGs = octInvGs[oct]
-
-                        val gxv = minOf((x * invGs).toInt(), gcM1)
-                        val gyv = minOf((y * invGs).toInt(), grM1)
-                        val cyMin = maxOf(gyv - 1, 0); val cyMax = minOf(gyv + 1, grM1)
-                        val cxMin = maxOf(gxv - 1, 0); val cxMax = minOf(gxv + 1, gcM1)
-
-                        var f1 = Float.MAX_VALUE; var f2 = Float.MAX_VALUE; var ni = 0
-                        for (cy in cyMin..cyMax) {
-                            val ro = cy * gc
-                            for (cx in cxMin..cxMax) {
-                                var ii = gh[ro + cx]
-                                while (ii >= 0) {
-                                    val dx = x - opx[ii]; val dy = y - opy[ii]
-                                    val adx = if (dx < 0f) -dx else dx
-                                    if (adx < f1) {
-                                        val ady = if (dy < 0f) -dy else dy
-                                        val d = adx + ady
-                                        if (d < f1) { f2 = f1; f1 = d; ni = ii }
-                                        else if (d < f2) { f2 = d }
-                                    }
-                                    ii = gn[ii]
-                                }
-                            }
-                        }
-
-                        val normalized = ((f2 - f1) * octInvMaxEd[oct]).coerceIn(0f, 1f)
-                        ridgeSum += (1f - normalized) * octAmp[oct]
-                        if (oct == 0) nearestIdx = ni
-                    }
-
-                    val ridgeNorm = (ridgeSum * invAmpSum).coerceIn(0f, 1f)
-                    val ridgeIntensity = sharpLut[(ridgeNorm * 255f).toInt().coerceIn(0, 255)]
-                    val intensityIdx = (ridgeIntensity * 255f).toInt().coerceIn(0, 255)
-                    pixels[rowOff + col] = colorLuts[nearestIdx % colorsSize][intensityIdx]
-                }
-            }
-        } else {
-            // ── CHEBYSHEV PATH ──
-            for (row in 0 until rh) {
-                val y = row.toFloat() * scaleF
-                val rowOff = row * rw
-                for (col in 0 until rw) {
-                    val x = col.toFloat() * scaleF
-                    var ridgeSum = 0f
-                    var nearestIdx = 0
-
-                    for (oct in 0 until octaves) {
-                        val opx = octPx[oct]; val opy = octPy[oct]
-                        val gh = octGh[oct]; val gn = octGn[oct]
-                        val gc = octGc[oct]; val gcM1 = octGcM1[oct]; val grM1 = octGrM1[oct]
-                        val invGs = octInvGs[oct]
-
-                        val gxv = minOf((x * invGs).toInt(), gcM1)
-                        val gyv = minOf((y * invGs).toInt(), grM1)
-                        val cyMin = maxOf(gyv - 1, 0); val cyMax = minOf(gyv + 1, grM1)
-                        val cxMin = maxOf(gxv - 1, 0); val cxMax = minOf(gxv + 1, gcM1)
-
-                        var f1 = Float.MAX_VALUE; var f2 = Float.MAX_VALUE; var ni = 0
-                        for (cy in cyMin..cyMax) {
-                            val ro = cy * gc
-                            for (cx in cxMin..cxMax) {
-                                var ii = gh[ro + cx]
-                                while (ii >= 0) {
-                                    val dx = x - opx[ii]; val dy = y - opy[ii]
-                                    val adx = if (dx < 0f) -dx else dx
-                                    if (adx < f1) {
-                                        val ady = if (dy < 0f) -dy else dy
-                                        val d = if (adx > ady) adx else ady
-                                        if (d < f1) { f2 = f1; f1 = d; ni = ii }
-                                        else if (d < f2) { f2 = d }
-                                    }
-                                    ii = gn[ii]
-                                }
-                            }
-                        }
-
-                        val normalized = ((f2 - f1) * octInvMaxEd[oct]).coerceIn(0f, 1f)
-                        ridgeSum += (1f - normalized) * octAmp[oct]
-                        if (oct == 0) nearestIdx = ni
-                    }
-
-                    val ridgeNorm = (ridgeSum * invAmpSum).coerceIn(0f, 1f)
-                    val ridgeIntensity = sharpLut[(ridgeNorm * 255f).toInt().coerceIn(0, 255)]
-                    val intensityIdx = (ridgeIntensity * 255f).toInt().coerceIn(0, 255)
-                    pixels[rowOff + col] = colorLuts[nearestIdx % colorsSize][intensityIdx]
-                }
-            }
-        }
-
-        // ── Output with bilinear upscale ──
-        if (scale > 1) {
-            val smallBmp = Bitmap.createBitmap(rw, rh, Bitmap.Config.ARGB_8888)
-            smallBmp.setPixels(pixels, 0, rw, 0, 0, rw, rh)
-            canvas.drawBitmap(smallBmp, null, Rect(0, 0, w, h), Paint(Paint.FILTER_BITMAP_FLAG))
-            smallBmp.recycle()
-        } else {
-            bitmap.setPixels(pixels, 0, w, 0, 0, w, h)
-            canvas.drawBitmap(bitmap, 0f, 0f, null)
-        }
+        GLES30.glUniform2fv(GLES30.glGetUniformLocation(programId, "uRidgePoints"),
+            MAX_TOTAL_POINTS, packedPts, 0)
+        GLES30.glUniform1iv(GLES30.glGetUniformLocation(programId, "uOctOffset"),
+            MAX_OCTAVES, octOffset, 0)
+        GLES30.glUniform1iv(GLES30.glGetUniformLocation(programId, "uOctCount"),
+            MAX_OCTAVES, octCount, 0)
+        GLES30.glUniform1fv(GLES30.glGetUniformLocation(programId, "uOctAmp"),
+            MAX_OCTAVES, octAmp, 0)
+        GLES30.glUniform1fv(GLES30.glGetUniformLocation(programId, "uOctInvMaxEd"),
+            MAX_OCTAVES, octInvMaxEd, 0)
+        GLES30.glUniform1i(GLES30.glGetUniformLocation(programId, "uOctaves"), octaves)
+        GLES30.glUniform1i(GLES30.glGetUniformLocation(programId, "uMetric"), metricId)
+        GLES30.glUniform1i(GLES30.glGetUniformLocation(programId, "uStyleId"), styleId)
+        GLES30.glUniform1f(GLES30.glGetUniformLocation(programId, "uRidgeSharpness"), ridgeSharpness)
+        GLES30.glUniform1f(GLES30.glGetUniformLocation(programId, "uInvAmpSum"), invAmpSum)
     }
 
-    override fun estimateCost(params: Map<String, Any>, quality: Quality): Float {
-        val n = (params["cellCount"] as? Number)?.toFloat() ?: 50f
-        return (n / 150f).coerceIn(0.3f, 1f)
+    override fun fragmentShaderSource(): String = """#version 300 es
+        precision highp float;
+
+        uniform vec2 uResolution;
+        uniform float uTime;
+        uniform vec3 uAudio;
+        ${PaletteUniform.GLSL_HELPERS}
+
+        const int MAX_RIDGE_OCTAVES = $MAX_OCTAVES;
+        const int MAX_POINTS_PER_OCTAVE = $MAX_POINTS_PER_OCTAVE;
+        const int MAX_RIDGE_POINTS = $MAX_TOTAL_POINTS;
+
+        uniform vec2 uRidgePoints[MAX_RIDGE_POINTS];
+        uniform int uOctOffset[MAX_RIDGE_OCTAVES];
+        uniform int uOctCount[MAX_RIDGE_OCTAVES];
+        uniform float uOctAmp[MAX_RIDGE_OCTAVES];
+        uniform float uOctInvMaxEd[MAX_RIDGE_OCTAVES];
+        uniform int uOctaves;
+        uniform int uMetric;
+        uniform int uStyleId;
+        uniform float uRidgeSharpness;
+        uniform float uInvAmpSum;
+
+        out vec4 fragColor;
+
+        void main() {
+            vec2 p = gl_FragCoord.xy;
+            float ridgeSum = 0.0;
+            int nearestIdx = 0;
+
+            for (int oct = 0; oct < MAX_RIDGE_OCTAVES; oct++) {
+                if (oct >= uOctaves) break;
+                int off = uOctOffset[oct];
+                int cnt = uOctCount[oct];
+
+                float f1 = 1e30; float f2 = 1e30; int ni = 0;
+                for (int i = 0; i < MAX_POINTS_PER_OCTAVE; i++) {
+                    if (i >= cnt) break;
+                    vec2 d = p - uRidgePoints[off + i];
+                    float dist;
+                    if (uMetric == 1)      dist = abs(d.x) + abs(d.y);
+                    else if (uMetric == 2) dist = max(abs(d.x), abs(d.y));
+                    else                   dist = dot(d, d);    // euclidean squared
+                    if (dist < f1) { f2 = f1; f1 = dist; ni = i; }
+                    else if (dist < f2) { f2 = dist; }
+                }
+
+                float edgeDist;
+                if (uMetric == 0) edgeDist = sqrt(f2) - sqrt(f1);
+                else              edgeDist = f2 - f1;
+                float normalized = clamp(edgeDist * uOctInvMaxEd[oct], 0.0, 1.0);
+                ridgeSum += (1.0 - normalized) * uOctAmp[oct];
+
+                if (oct == 0) nearestIdx = ni;
+            }
+
+            float ridgeNorm = clamp(ridgeSum * uInvAmpSum, 0.0, 1.0);
+            float intensity = pow(ridgeNorm, uRidgeSharpness);
+
+            vec3 col;
+            if (uStyleId == 1) {
+                // greyscale
+                col = vec3(intensity);
+            } else if (uStyleId == 2) {
+                // inverted: palette * (1 - intensity)
+                float t = mod(float(nearestIdx), 5.0) / 4.0;
+                col = palette_color(t) * (1.0 - intensity);
+            } else {
+                // palette: palette * intensity
+                float t = mod(float(nearestIdx), 5.0) / 4.0;
+                col = palette_color(t) * intensity;
+            }
+
+            fragColor = vec4(col, 1.0);
+        }
+    """
+
+    companion object {
+        const val MAX_OCTAVES = 5
+        const val MAX_POINTS_PER_OCTAVE = 384
+        const val MAX_TOTAL_POINTS = MAX_OCTAVES * MAX_POINTS_PER_OCTAVE  // 1920
     }
 }
