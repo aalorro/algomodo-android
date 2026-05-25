@@ -1,127 +1,97 @@
 package com.artmondo.algomodo.generators.animation
 
-import android.graphics.Bitmap
-import android.graphics.Canvas
-import android.graphics.Color
-import android.graphics.Paint
-import android.graphics.Rect
-import android.graphics.RectF
+import android.opengl.GLES30
 import com.artmondo.algomodo.core.rng.SeededRNG
 import com.artmondo.algomodo.data.palettes.Palette
-import com.artmondo.algomodo.generators.Generator
+import com.artmondo.algomodo.generators.GpuGenerator
 import com.artmondo.algomodo.generators.ParamGroup
 import com.artmondo.algomodo.generators.Parameter
 import com.artmondo.algomodo.generators.Quality
-import kotlin.math.*
+import com.artmondo.algomodo.rendering.gl.PaletteUniform
+import kotlin.math.PI
+import kotlin.math.sin
 
 /**
- * Animated plasma effect with domain warping and feedback-like turbulence.
+ * GPU-rendered animated plasma with double domain-warp, twist, contrast
+ * sharpening and four blend modes. Per-layer frequencies, phases and
+ * amplitudes are derived from the seed CPU-side and uploaded as uniform
+ * arrays; the shader sums the layered sin/cos interference per pixel.
  *
- * Classic plasma built from layered sine/cosine interference, enhanced with
- * double domain-warp (coordinates displaced by independent sine fields before
- * sampling), rotational twist, contrast sharpening, scale pulsing, and multiple
- * blend modes. The result is mapped to the palette for vivid, detailed output.
+ * Ported from the original CPU implementation; id, parameter schema and
+ * defaults are preserved so existing presets continue to load.
  */
-class PlasmaFeedbackGenerator : Generator {
+class PlasmaFeedbackGenerator : GpuGenerator {
 
     override val id = "plasma-feedback"
     override val family = "animation"
     override val styleName = "Plasma Feedback"
     override val definition = "Animated plasma effect built from layered sine-wave interference, mapped to the palette."
     override val algorithmNotes =
-        "For each pixel (x, y), apply double domain-warp: dx1 = sin(y*f1+t), dy1 = cos(x*f2+t), " +
-        "then dx2 = sin((y+dy1)*f3+t), dy2 = cos((x+dx1)*f4+t). Warped coordinates (x+dx1+dx2, " +
-        "y+dy1+dy2) are fed to layered sin*cos interference. Twist rotates sample coords by a " +
-        "sine-driven angle. Contrast applies power-curve sharpening. Blend modes transform " +
-        "the final value (smooth, additive, bands, ripple) before palette mapping."
+        "Per-pixel fragment shader on the GPU. Applies double domain-warp (two pairs of sine-driven " +
+        "coordinate displacements) followed by up to 5 layered sin/cos interference octaves with " +
+        "optional per-layer twist rotation. Contrast applies a power-curve sharpening; four blend " +
+        "modes (smooth, additive, bands, ripple) transform the final value before palette mapping."
     override val supportsVector = false
     override val supportsAnimation = true
 
+    companion object { private const val MAX_LAYERS = 5 }
+
     override val parameterSchema = listOf(
         Parameter.NumberParam(
-            name = "Scale",
-            key = "scale",
-            group = ParamGroup.COMPOSITION,
-            help = null,
+            name = "Scale", key = "scale", group = ParamGroup.COMPOSITION, help = null,
             min = 0.5f, max = 6f, step = 0.1f, default = 2.0f
         ),
         Parameter.NumberParam(
-            name = "Layers",
-            key = "layers",
-            group = ParamGroup.COMPOSITION,
-            help = "Number of overlapping noise octaves — each successive layer doubles the frequency and halves the amplitude",
+            name = "Layers", key = "layers", group = ParamGroup.COMPOSITION,
+            help = "Number of overlapping noise octaves \u2014 each successive layer doubles the frequency and halves the amplitude",
             min = 1f, max = 5f, step = 1f, default = 3f
         ),
         Parameter.NumberParam(
-            name = "Warp",
-            key = "warp",
-            group = ParamGroup.COMPOSITION,
-            help = "Double domain-warp intensity — displaces sample coordinates twice using independent noise fields, creating deep turbulent feedback-like structure. 0 = plain FBM. 1–2 = rich folded plasma.",
+            name = "Warp", key = "warp", group = ParamGroup.COMPOSITION,
+            help = "Double domain-warp intensity \u2014 displaces sample coordinates twice using independent noise fields, creating deep turbulent feedback-like structure. 0 = plain FBM. 1\u20132 = rich folded plasma.",
             min = 0f, max = 2f, step = 0.1f, default = 0.8f
         ),
         Parameter.NumberParam(
-            name = "Twist",
-            key = "twist",
-            group = ParamGroup.COMPOSITION,
-            help = "Rotational warp — a noise-driven rotation angle is applied to each layer's sample coordinates, producing swirling helical and spiral structures. 0 = no rotation.",
+            name = "Twist", key = "twist", group = ParamGroup.COMPOSITION,
+            help = "Rotational warp \u2014 a noise-driven rotation angle is applied to each layer's sample coordinates, producing swirling helical and spiral structures. 0 = no rotation.",
             min = 0f, max = 1.5f, step = 0.05f, default = 0f
         ),
         Parameter.NumberParam(
-            name = "Contrast",
-            key = "contrast",
-            group = ParamGroup.TEXTURE,
-            help = null,
+            name = "Contrast", key = "contrast", group = ParamGroup.TEXTURE, help = null,
             min = 0.5f, max = 3f, step = 0.1f, default = 1.4f
         ),
         Parameter.NumberParam(
-            name = "Pulse",
-            key = "pulse",
-            group = ParamGroup.FLOW_MOTION,
-            help = "Scale breathing — oscillates the global zoom as scale × (1 + pulse × sin(t)), making the entire field expand and contract rhythmically",
+            name = "Pulse", key = "pulse", group = ParamGroup.FLOW_MOTION,
+            help = "Scale breathing \u2014 oscillates the global zoom as scale \u00d7 (1 + pulse \u00d7 sin(t))",
             min = 0f, max = 1f, step = 0.05f, default = 0f
         ),
         Parameter.NumberParam(
-            name = "Speed",
-            key = "speed",
-            group = ParamGroup.FLOW_MOTION,
-            help = null,
+            name = "Speed", key = "speed", group = ParamGroup.FLOW_MOTION, help = null,
             min = 0.1f, max = 3f, step = 0.05f, default = 0.6f
         ),
         Parameter.SelectParam(
-            name = "Blend Mode",
-            key = "blend",
-            group = ParamGroup.COLOR,
-            help = "smooth: maps [−1,1] linearly to [0,1] | additive: abs(v) for symmetric bright plasma | bands: sin(v·4π + t) animated colour rings | ripple: two-frequency sine interference — multi-scale wave patterns",
-            options = listOf("smooth", "additive", "bands", "ripple"),
-            default = "smooth"
+            name = "Blend Mode", key = "blend", group = ParamGroup.COLOR,
+            help = "smooth: maps [\u22121,1] linearly to [0,1] | additive: abs(v) | bands: sin(v\u00b74\u03c0 + t) | ripple: two-frequency interference",
+            options = listOf("smooth", "additive", "bands", "ripple"), default = "smooth"
         )
     )
 
     override fun getDefaultParams(): Map<String, Any> = mapOf(
-        "scale" to 2.0f,
-        "speed" to 0.6f,
-        "layers" to 3f,
-        "contrast" to 1.4f,
-        "warp" to 0.8f,
-        "twist" to 0f,
-        "pulse" to 0f,
-        "blend" to "smooth"
+        "scale" to 2.0f, "speed" to 0.6f, "layers" to 3f, "contrast" to 1.4f,
+        "warp" to 0.8f, "twist" to 0f, "pulse" to 0f, "blend" to "smooth"
     )
 
-    override fun renderCanvas(
-        canvas: Canvas,
-        bitmap: Bitmap,
+    override fun bindUniforms(
+        programId: Int,
         params: Map<String, Any>,
         seed: Int,
         palette: Palette,
         quality: Quality,
-        time: Float
+        time: Float,
+        width: Int,
+        height: Int
     ) {
-        val w = bitmap.width
-        val h = bitmap.height
-        val dim = min(w, h).toFloat()
-
-        val layers = (params["layers"] as? Number)?.toInt() ?: 3
+        val layers = ((params["layers"] as? Number)?.toInt() ?: 3).coerceIn(1, MAX_LAYERS)
         val speed = (params["speed"] as? Number)?.toFloat() ?: 0.6f
         val baseZoom = (params["scale"] as? Number)?.toFloat() ?: 2.0f
         val warp = (params["warp"] as? Number)?.toFloat() ?: 0.8f
@@ -131,151 +101,164 @@ class PlasmaFeedbackGenerator : Generator {
         val blend = (params["blend"] as? String) ?: "smooth"
 
         val rng = SeededRNG(seed)
-
-        // Apply pulse: oscillate zoom
         val zoom = baseZoom * (1f + pulse * sin(time * speed * 0.7f))
-
         val t = time * speed
 
-        // Seeded per-layer parameters
-        val freqs = FloatArray(layers)
-        val phaseX = FloatArray(layers)
-        val phaseY = FloatArray(layers)
-        val amps = FloatArray(layers)
-        val angleOffsets = FloatArray(layers) // for twist
+        val twoPi = 2f * PI.toFloat()
 
+        // Per-layer params (mirror CPU order: layer 0 first)
+        val freqs = FloatArray(MAX_LAYERS)
+        val phaseX = FloatArray(MAX_LAYERS)
+        val phaseY = FloatArray(MAX_LAYERS)
+        val amps = FloatArray(MAX_LAYERS)
+        val angleOffsets = FloatArray(MAX_LAYERS)
         for (i in 0 until layers) {
             freqs[i] = (i + 1).toFloat() * 0.8f * zoom
-            phaseX[i] = rng.random() * PI.toFloat() * 2f
-            phaseY[i] = rng.random() * PI.toFloat() * 2f
+            phaseX[i] = rng.random() * twoPi
+            phaseY[i] = rng.random() * twoPi
             amps[i] = 1f / (i + 1).toFloat()
-            angleOffsets[i] = rng.random() * PI.toFloat() * 2f
+            angleOffsets[i] = rng.random() * twoPi
         }
-
-        // Seeded warp frequencies
+        // Seeded warp frequencies (after layer params, matching CPU rng order)
         val warpF1 = 2.3f + rng.random() * 1.5f
         val warpF2 = 1.7f + rng.random() * 1.5f
         val warpF3 = 3.1f + rng.random() * 1.5f
         val warpF4 = 2.7f + rng.random() * 1.5f
-        val warpPhase1 = rng.random() * PI.toFloat() * 2f
-        val warpPhase2 = rng.random() * PI.toFloat() * 2f
+        val warpPhase1 = rng.random() * twoPi
+        val warpPhase2 = rng.random() * twoPi
 
-        val pi = PI.toFloat()
-        val twoPi = 2f * pi
-
-        // --- Pre-compute LUTs ---
-        val paletteLut = palette.buildLut(256)
-        val invContrast = 1f / contrast
-
-        // Contrast LUT: maps normalized [-1,1] (indexed 0..512) to contrasted value
-        val contrastLutSize = 513
-        val contrastLut = FloatArray(contrastLutSize) { i ->
-            val normalized = (i.toFloat() / (contrastLutSize - 1)) * 2f - 1f  // [-1, 1]
-            if (contrast != 1f) {
-                val sign = if (normalized >= 0f) 1f else -1f
-                sign * abs(normalized).pow(invContrast)
-            } else normalized
+        val blendId = when (blend) {
+            "smooth" -> 0; "additive" -> 1; "bands" -> 2; "ripple" -> 3
+            else -> 0
         }
 
-        // --- Coarse grid sampling + bilinear upscale ---
-        val gridStep = when (quality) {
-            Quality.DRAFT -> 4
-            Quality.BALANCED -> 2
-            Quality.ULTRA -> 1
-        }
-        val cw = (w + gridStep - 1) / gridStep + 1
-        val ch = (h + gridStep - 1) / gridStep + 1
-        val coarsePixels = IntArray(cw * ch)
-
-        for (cy in 0 until ch) {
-            val py = (cy * gridStep).coerceAtMost(h - 1)
-            val baseY = py.toFloat() / dim
-            for (cx in 0 until cw) {
-                val px = (cx * gridStep).coerceAtMost(w - 1)
-                val baseX = px.toFloat() / dim
-
-                var nx = baseX
-                var ny = baseY
-
-                // Double domain warp
-                if (warp > 0f) {
-                    val dx1 = sin(ny * warpF1 * twoPi + t * 1.3f + warpPhase1) * warp * 0.3f
-                    val dy1 = cos(nx * warpF2 * twoPi + t * 1.1f + warpPhase2) * warp * 0.3f
-                    val dx2 = sin((ny + dy1) * warpF3 * twoPi + t * 0.7f) * warp * 0.2f
-                    val dy2 = cos((nx + dx1) * warpF4 * twoPi + t * 0.9f) * warp * 0.2f
-                    nx += dx1 + dx2
-                    ny += dy1 + dy2
-                }
-
-                // Accumulate layers
-                var value = 0f
-                var maxAmp = 0f
-
-                for (i in 0 until layers) {
-                    val f = freqs[i]
-                    var lx = nx * f
-                    var ly = ny * f
-
-                    if (twist > 0f) {
-                        val twistAngle = sin(
-                            (nx + ny) * 3f + t * 0.5f * (i + 1) + angleOffsets[i]
-                        ) * twist * pi
-                        val cosA = cos(twistAngle)
-                        val sinA = sin(twistAngle)
-                        val rlx = lx * cosA - ly * sinA
-                        val rly = lx * sinA + ly * cosA
-                        lx = rlx; ly = rly
-                    }
-
-                    val timeScaleX = t * (i + 1) * 0.3f
-                    val timeScaleY = t * (i + 1) * 0.27f
-                    val sinPart = sin(lx * twoPi + timeScaleX + phaseX[i])
-                    val cosPart = cos(ly * twoPi + timeScaleY + phaseY[i])
-                    val cross = sin((lx + ly) * pi + t * 0.2f * (i + 1))
-                    val dist = sqrt((nx - 0.5f) * (nx - 0.5f) + (ny - 0.5f) * (ny - 0.5f))
-                    val radial = sin(dist * f * twoPi * 0.8f - t * (i + 1) * 0.15f)
-
-                    value += amps[i] * (sinPart * cosPart + cross * 0.4f + radial * 0.2f)
-                    maxAmp += amps[i] * 1.6f
-                }
-
-                // Normalize and apply contrast via LUT
-                val normalized = (value / maxAmp).coerceIn(-1f, 1f)
-                val lutIdx = ((normalized * 0.5f + 0.5f) * (contrastLutSize - 1)).toInt()
-                val contrasted = contrastLut[lutIdx]
-
-                // Blend mode
-                val blended = when (blend) {
-                    "additive" -> abs(contrasted)
-                    "bands" -> sin(contrasted * 4f * pi + t * 1.5f) * 0.5f + 0.5f
-                    "ripple" -> {
-                        val r1 = sin(contrasted * 6f * pi + t)
-                        val r2 = sin(contrasted * 10f * pi - t * 1.3f)
-                        (r1 * 0.6f + r2 * 0.4f) * 0.5f + 0.5f
-                    }
-                    else -> contrasted * 0.5f + 0.5f
-                }
-
-                coarsePixels[cy * cw + cx] = paletteLut[(blended.coerceIn(0f, 1f) * 255f).toInt()]
-            }
-        }
-
-        // Upscale coarse grid to full resolution with bilinear filtering
-        val coarseBmp = Bitmap.createBitmap(cw, ch, Bitmap.Config.ARGB_8888)
-        coarseBmp.setPixels(coarsePixels, 0, cw, 0, 0, cw, ch)
-        val upscalePaint = Paint(Paint.FILTER_BITMAP_FLAG)
-        canvas.drawBitmap(coarseBmp, Rect(0, 0, cw, ch), RectF(0f, 0f, w.toFloat(), h.toFloat()), upscalePaint)
-        coarseBmp.recycle()
+        GLES30.glUniform1fv(GLES30.glGetUniformLocation(programId, "uFreqs"), MAX_LAYERS, freqs, 0)
+        GLES30.glUniform1fv(GLES30.glGetUniformLocation(programId, "uPhaseX"), MAX_LAYERS, phaseX, 0)
+        GLES30.glUniform1fv(GLES30.glGetUniformLocation(programId, "uPhaseY"), MAX_LAYERS, phaseY, 0)
+        GLES30.glUniform1fv(GLES30.glGetUniformLocation(programId, "uAmps"), MAX_LAYERS, amps, 0)
+        GLES30.glUniform1fv(GLES30.glGetUniformLocation(programId, "uAngleOffsets"), MAX_LAYERS, angleOffsets, 0)
+        GLES30.glUniform1i(GLES30.glGetUniformLocation(programId, "uLayers"), layers)
+        GLES30.glUniform4f(GLES30.glGetUniformLocation(programId, "uWarpFreqs"), warpF1, warpF2, warpF3, warpF4)
+        GLES30.glUniform2f(GLES30.glGetUniformLocation(programId, "uWarpPhases"), warpPhase1, warpPhase2)
+        GLES30.glUniform1f(GLES30.glGetUniformLocation(programId, "uWarp"), warp)
+        GLES30.glUniform1f(GLES30.glGetUniformLocation(programId, "uTwist"), twist)
+        GLES30.glUniform1f(GLES30.glGetUniformLocation(programId, "uContrast"), contrast)
+        GLES30.glUniform1f(GLES30.glGetUniformLocation(programId, "uT"), t)
+        GLES30.glUniform1i(GLES30.glGetUniformLocation(programId, "uBlend"), blendId)
     }
+
+    override fun fragmentShaderSource(): String = """#version 300 es
+        precision highp float;
+
+        uniform vec2 uResolution;
+        uniform float uTime;
+        uniform vec3 uAudio;
+        ${PaletteUniform.GLSL_HELPERS}
+
+        const int MAX_LAYERS = $MAX_LAYERS;
+        uniform float uFreqs[MAX_LAYERS];
+        uniform float uPhaseX[MAX_LAYERS];
+        uniform float uPhaseY[MAX_LAYERS];
+        uniform float uAmps[MAX_LAYERS];
+        uniform float uAngleOffsets[MAX_LAYERS];
+        uniform int   uLayers;
+        uniform vec4  uWarpFreqs;     // warpF1..F4
+        uniform vec2  uWarpPhases;    // warpPhase1, warpPhase2
+        uniform float uWarp;
+        uniform float uTwist;
+        uniform float uContrast;
+        uniform float uT;
+        uniform int   uBlend;         // 0 smooth, 1 additive, 2 bands, 3 ripple
+
+        out vec4 fragColor;
+
+        const float PI = 3.14159265359;
+        const float TAU = 6.28318530718;
+
+        void main() {
+            // CPU code: baseX = px / dim, baseY = py / dim (min(w,h))
+            float dim = min(uResolution.x, uResolution.y);
+            vec2 frag = gl_FragCoord.xy;
+            float baseX = frag.x / dim;
+            float baseY = frag.y / dim;
+
+            float nx = baseX;
+            float ny = baseY;
+
+            // Double domain warp
+            if (uWarp > 0.0) {
+                float dx1 = sin(ny * uWarpFreqs.x * TAU + uT * 1.3 + uWarpPhases.x) * uWarp * 0.3;
+                float dy1 = cos(nx * uWarpFreqs.y * TAU + uT * 1.1 + uWarpPhases.y) * uWarp * 0.3;
+                float dx2 = sin((ny + dy1) * uWarpFreqs.z * TAU + uT * 0.7) * uWarp * 0.2;
+                float dy2 = cos((nx + dx1) * uWarpFreqs.w * TAU + uT * 0.9) * uWarp * 0.2;
+                nx += dx1 + dx2;
+                ny += dy1 + dy2;
+            }
+
+            // Accumulate layers
+            float value = 0.0;
+            float maxAmp = 0.0;
+            for (int i = 0; i < MAX_LAYERS; i++) {
+                if (i >= uLayers) break;
+                float f = uFreqs[i];
+                float lx = nx * f;
+                float ly = ny * f;
+
+                if (uTwist > 0.0) {
+                    float twistAngle = sin((nx + ny) * 3.0 + uT * 0.5 * float(i + 1) + uAngleOffsets[i])
+                                       * uTwist * PI;
+                    float cA = cos(twistAngle);
+                    float sA = sin(twistAngle);
+                    float rlx = lx * cA - ly * sA;
+                    float rly = lx * sA + ly * cA;
+                    lx = rlx; ly = rly;
+                }
+
+                float fi = float(i + 1);
+                float tsX = uT * fi * 0.3;
+                float tsY = uT * fi * 0.27;
+                float sinPart = sin(lx * TAU + tsX + uPhaseX[i]);
+                float cosPart = cos(ly * TAU + tsY + uPhaseY[i]);
+                float cross = sin((lx + ly) * PI + uT * 0.2 * fi);
+                float dist = length(vec2(nx - 0.5, ny - 0.5));
+                float radial = sin(dist * f * TAU * 0.8 - uT * fi * 0.15);
+
+                value += uAmps[i] * (sinPart * cosPart + cross * 0.4 + radial * 0.2);
+                maxAmp += uAmps[i] * 1.6;
+            }
+
+            float normalized = clamp(value / maxAmp, -1.0, 1.0);
+
+            // Contrast (power-curve sharpening, preserve sign)
+            float invContrast = 1.0 / uContrast;
+            float contrasted = normalized;
+            if (uContrast != 1.0) {
+                float s = (normalized >= 0.0) ? 1.0 : -1.0;
+                contrasted = s * pow(abs(normalized), invContrast);
+            }
+
+            // Blend mode
+            float blended;
+            if (uBlend == 1) {
+                blended = abs(contrasted);
+            } else if (uBlend == 2) {
+                blended = sin(contrasted * 4.0 * PI + uT * 1.5) * 0.5 + 0.5;
+            } else if (uBlend == 3) {
+                float r1 = sin(contrasted * 6.0 * PI + uT);
+                float r2 = sin(contrasted * 10.0 * PI - uT * 1.3);
+                blended = (r1 * 0.6 + r2 * 0.4) * 0.5 + 0.5;
+            } else {
+                blended = contrasted * 0.5 + 0.5;
+            }
+
+            vec3 col = palette_color(clamp(blended, 0.0, 1.0));
+            fragColor = vec4(col, 1.0);
+        }
+    """
 
     override fun estimateCost(params: Map<String, Any>, quality: Quality): Float {
         val layers = (params["layers"] as? Number)?.toFloat() ?: 3f
         val warp = (params["warp"] as? Number)?.toFloat() ?: 0.8f
-        val base = layers * (1f + warp * 0.5f)
-        return when (quality) {
-            Quality.DRAFT -> base / 20f
-            Quality.BALANCED -> base / 10f
-            Quality.ULTRA -> base / 8f
-        }.coerceIn(0.1f, 1f)
+        return (layers * (1f + warp * 0.5f) / 25f).coerceIn(0.1f, 0.5f)
     }
 }
