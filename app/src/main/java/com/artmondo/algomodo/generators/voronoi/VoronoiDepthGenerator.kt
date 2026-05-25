@@ -37,7 +37,6 @@ class VoronoiDepthGenerator : GpuGenerator {
 
     override val parameterSchema = listOf(
         Parameter.NumberParam("Cell Count", "cellCount", ParamGroup.COMPOSITION, "", 5f, 150f, 5f, 40f),
-        Parameter.NumberParam("Relaxation", "relaxationSteps", ParamGroup.GEOMETRY, "Lloyd relaxation passes for more even cell distribution", 0f, 8f, 1f, 3f),
         Parameter.NumberParam("Tilt Amount", "tiltAmount", ParamGroup.GEOMETRY, "How far cell normals deviate from vertical (0 = flat, 1 = maximum tilt)", 0f, 1f, 0.05f, 0.65f),
         Parameter.NumberParam("Light Angle", "lightAngle", ParamGroup.GEOMETRY, "Horizontal direction of the light source in degrees (0=right, 90=down, 180=left, 270=up)", 0f, 360f, 5f, 225f),
         Parameter.NumberParam("Light Elevation", "lightElevation", ParamGroup.GEOMETRY, "Vertical elevation of the light above the horizon in degrees", 5f, 85f, 5f, 50f),
@@ -52,7 +51,7 @@ class VoronoiDepthGenerator : GpuGenerator {
     )
 
     override fun getDefaultParams(): Map<String, Any> = mapOf(
-        "cellCount" to 40f, "relaxationSteps" to 3f, "tiltAmount" to 0.65f,
+        "cellCount" to 40f, "tiltAmount" to 0.65f,
         "lightAngle" to 225f, "lightElevation" to 50f, "ambient" to 0.15f,
         "specular" to 0.45f, "shininess" to 12f, "borderWidth" to 1f,
         "colorMode" to "By Index", "distanceMetric" to "Euclidean",
@@ -65,7 +64,6 @@ class VoronoiDepthGenerator : GpuGenerator {
     ) {
         val numPoints = ((params["cellCount"] as? Number)?.toInt() ?: 40)
             .coerceIn(1, VoronoiGlsl.MAX_POINTS)
-        val relaxSteps = ((params["relaxationSteps"] as? Number)?.toInt() ?: 3).coerceAtLeast(0)
         val depth = (params["tiltAmount"] as? Number)?.toFloat() ?: 0.65f
         val lightAngleDeg = (params["lightAngle"] as? Number)?.toFloat() ?: 225f
         val lightElevationDeg = (params["lightElevation"] as? Number)?.toFloat() ?: 50f
@@ -84,9 +82,6 @@ class VoronoiDepthGenerator : GpuGenerator {
         val rng = SeededRNG(seed)
         val px = FloatArray(numPoints); val py = FloatArray(numPoints)
         VoronoiGlsl.scatterPoints(px, py, numPoints, width, height, rng)
-        if (relaxSteps > 0) {
-            VoronoiGlsl.lloydRelax(px, py, numPoints, width, height, metricId, passes = relaxSteps)
-        }
         if (time > 0f && animAmp > 0f) {
             val noise = SimplexNoise(seed)
             val wf = width.toFloat(); val hf = height.toFloat()
@@ -162,13 +157,15 @@ class VoronoiDepthGenerator : GpuGenerator {
             int idx = int(f.z + 0.5);
             vec2 sp = uPoints[idx];
 
-            // Surface normal: euclidean distance to seed gives nx/ny
-            vec2 toCentre = sp - p;
-            float dist = length(toCentre);
-            vec2 nxy = (dist > 0.001) ? toCentre / dist : vec2(0.0);
-            float edgeFactor = clamp(1.0 - dist * uInvAvgRadius, 0.0, 1.0);
-            float ns = edgeFactor * uDepth;
-            vec3 n = vec3(nxy * ns, 1.0 - 0.5 * ns * ns);
+            // Plateau-shaped normal: flat at the cell centre, sloped outward at
+            // the edges. outward = unit vec from seed toward pixel; tilt grows
+            // with distance from centre and is clamped at the average cell radius.
+            vec2 fromCentre = p - sp;
+            float dist = length(fromCentre);
+            vec2 outward = (dist > 0.001) ? fromCentre / dist : vec2(0.0);
+            float edgeFrac = clamp(dist * uInvAvgRadius, 0.0, 1.0);
+            float ns = edgeFrac * uDepth;
+            vec3 n = normalize(vec3(outward * ns, max(1.0 - 0.5 * ns * ns, 0.05)));
 
             float diffuse = clamp(dot(n, uLight), 0.0, 1.0);
             float specDot = clamp(dot(n, uHalf), 0.0, 1.0);

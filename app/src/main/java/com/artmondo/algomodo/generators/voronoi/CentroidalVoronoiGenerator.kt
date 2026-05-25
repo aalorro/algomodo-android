@@ -13,12 +13,17 @@ import com.artmondo.algomodo.rendering.gl.VoronoiGlsl
 
 /**
  * GPU port. Centroidal Voronoi via Lloyd's relaxation — same as VoronoiCells
- * but the "Relaxed" toggle is always on and the number of passes is exposed.
+ * but the seeds are pre-relaxed toward their cell centroids before rendering.
  * Adds "Show Seeds" (draws a small white circle at every centroid) and "By
  * Position" color mode (palette indexed by seed distance from origin).
  *
- * Lloyd relaxation runs CPU-side. The Show Seeds dot is drawn analytically
- * in the fragment shader via a near-zero f1 test.
+ * Lloyd relaxation is expensive (O(passes * pixels * points) per pass) so the
+ * relaxed centroids are cached per (seed, count, canvas-size, metric). Repeated
+ * renders — including animation frames — reuse the cached result and only the
+ * cheap per-frame animation drift runs on every bindUniforms call.
+ *
+ * The Show Seeds dot is drawn analytically in the fragment shader via a
+ * near-zero f1 test.
  */
 class CentroidalVoronoiGenerator : GpuGenerator {
 
@@ -28,15 +33,15 @@ class CentroidalVoronoiGenerator : GpuGenerator {
     override val definition =
         "Centroidal Voronoi tessellation where Lloyd's relaxation iteratively moves seed points to their cell centroids, producing regular honeycomb-like patterns."
     override val algorithmNotes =
-        "GPU shader. CPU pre-runs Lloyd relaxation for the requested number of passes, then animates the relaxed " +
-        "seeds via simplex noise. The fragment shader does a brute-force nearest/second-nearest scan. Show Seeds " +
-        "draws a 3px white dot at each centroid by checking pixel-to-nearest distance."
+        "GPU shader. CPU pre-runs Lloyd relaxation once (5 passes) and caches the result; subsequent frames reuse " +
+        "the cached centroids and only the simplex-noise animation drift is recomputed. The fragment shader does " +
+        "a brute-force nearest/second-nearest scan. Show Seeds draws a 3px white dot at each centroid by checking " +
+        "pixel-to-nearest distance."
     override val supportsVector = false
     override val supportsAnimation = true
 
     override val parameterSchema = listOf(
         Parameter.NumberParam("Cell Count", "cellCount", ParamGroup.COMPOSITION, "", 5f, 200f, 5f, 50f),
-        Parameter.NumberParam("Relaxation Steps", "relaxationSteps", ParamGroup.GEOMETRY, "Lloyd relaxation passes — more steps = more regular hexagonal cells", 0f, 15f, 1f, 5f),
         Parameter.NumberParam("Border Width", "borderWidth", ParamGroup.GEOMETRY, "", 0f, 6f, 0.5f, 1.5f),
         Parameter.BooleanParam("Show Seeds", "showSeeds", ParamGroup.GEOMETRY, "Draw the centroid seed point in each cell", false),
         Parameter.SelectParam("Color Mode", "colorMode", ParamGroup.COLOR, "", listOf("By Index", "By Distance", "By Position"), "By Index"),
@@ -46,7 +51,7 @@ class CentroidalVoronoiGenerator : GpuGenerator {
     )
 
     override fun getDefaultParams(): Map<String, Any> = mapOf(
-        "cellCount" to 50f, "relaxationSteps" to 5f, "borderWidth" to 1.5f,
+        "cellCount" to 50f, "borderWidth" to 1.5f,
         "showSeeds" to false, "colorMode" to "By Index",
         "distanceMetric" to "Euclidean", "animSpeed" to 0.4f, "animAmp" to 0.2f
     )
@@ -57,7 +62,6 @@ class CentroidalVoronoiGenerator : GpuGenerator {
     ) {
         val numPoints = ((params["cellCount"] as? Number)?.toInt() ?: 50)
             .coerceIn(1, VoronoiGlsl.MAX_POINTS)
-        val relaxSteps = ((params["relaxationSteps"] as? Number)?.toInt() ?: 5).coerceAtLeast(0)
         val showSeeds = (params["showSeeds"] as? Boolean) ?: false
         val borderWidth = (params["borderWidth"] as? Number)?.toFloat() ?: 1.5f
         val colorMode = (params["colorMode"] as? String) ?: "By Index"
@@ -68,12 +72,9 @@ class CentroidalVoronoiGenerator : GpuGenerator {
         val metricId = VoronoiGlsl.metricId(metric)
         val colorModeId = when (colorMode) { "By Distance" -> 1; "By Position" -> 2; else -> 0 }
 
-        val rng = SeededRNG(seed)
-        val px = FloatArray(numPoints); val py = FloatArray(numPoints)
-        VoronoiGlsl.scatterPoints(px, py, numPoints, width, height, rng)
-        if (relaxSteps > 0) {
-            VoronoiGlsl.lloydRelax(px, py, numPoints, width, height, metricId, passes = relaxSteps)
-        }
+        val cached = getRelaxedPoints(seed, numPoints, width, height, metricId)
+        val px = cached.px.copyOf()
+        val py = cached.py.copyOf()
         VoronoiGlsl.animatePoints(px, py, numPoints, width, height,
             SimplexNoise(seed), time, animSpeed, animAmp,
             keyStep = 0.5f, baseX = 10f, baseY = 110f, driftScale = 0.02f)
@@ -140,4 +141,43 @@ class CentroidalVoronoiGenerator : GpuGenerator {
             fragColor = vec4(col, 1.0);
         }
     """
+
+    // ── Relaxed-centroid cache ──
+    //
+    // Lloyd's relaxation is by far the slowest part of this generator (the
+    // grid scan is O(passes * px * py * numPoints) and we run it 5 times).
+    // The relaxed positions only depend on (seed, numPoints, width, height,
+    // metric) — they're independent of time, animation, palette, etc. — so
+    // we memoise them and reuse across frames. Animation drift is applied to
+    // a fresh copy on each render so the cache itself is never mutated.
+    private data class RelaxKey(
+        val seed: Int, val numPoints: Int,
+        val width: Int, val height: Int,
+        val metricId: Int
+    )
+    private data class RelaxedPoints(val px: FloatArray, val py: FloatArray)
+
+    private val relaxCache = object : LinkedHashMap<RelaxKey, RelaxedPoints>(8, 0.75f, true) {
+        override fun removeEldestEntry(eldest: MutableMap.MutableEntry<RelaxKey, RelaxedPoints>?): Boolean =
+            size > 16
+    }
+
+    private fun getRelaxedPoints(
+        seed: Int, numPoints: Int, width: Int, height: Int, metricId: Int
+    ): RelaxedPoints {
+        val key = RelaxKey(seed, numPoints, width, height, metricId)
+        synchronized(relaxCache) { relaxCache[key] }?.let { return it }
+
+        val rng = SeededRNG(seed)
+        val px = FloatArray(numPoints); val py = FloatArray(numPoints)
+        VoronoiGlsl.scatterPoints(px, py, numPoints, width, height, rng)
+        VoronoiGlsl.lloydRelax(px, py, numPoints, width, height, metricId, passes = RELAX_PASSES)
+        val entry = RelaxedPoints(px, py)
+        synchronized(relaxCache) { relaxCache[key] = entry }
+        return entry
+    }
+
+    companion object {
+        private const val RELAX_PASSES = 5
+    }
 }

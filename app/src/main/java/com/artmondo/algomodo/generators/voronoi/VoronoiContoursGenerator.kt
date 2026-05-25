@@ -46,14 +46,13 @@ class VoronoiContoursGenerator : GpuGenerator {
         Parameter.NumberParam("Contour Line", "contourLineWidth", ParamGroup.GEOMETRY, "Width of the dark contour boundary (hard/stepped modes)", 0f, 6f, 0.5f, 1f),
         Parameter.SelectParam("Color Mode", "colorMode", ParamGroup.COLOR, "", listOf("palette-cycle", "palette-gradient", "monochrome"), "palette-cycle"),
         Parameter.SelectParam("Distance Metric", "distanceMetric", ParamGroup.GEOMETRY, "", listOf("Euclidean", "Manhattan", "Chebyshev"), "Euclidean"),
-        Parameter.BooleanParam("Lloyd Relaxed", "relaxed", ParamGroup.GEOMETRY, "", false),
         Parameter.NumberParam("Anim Speed", "animSpeed", ParamGroup.FLOW_MOTION, "", 0f, 2f, 0.05f, 0.4f),
         Parameter.NumberParam("Anim Amplitude", "animAmp", ParamGroup.FLOW_MOTION, "Drift distance as a fraction of average cell size", 0f, 1f, 0.05f, 0.2f)
     )
 
     override fun getDefaultParams(): Map<String, Any> = mapOf(
         "cellCount" to 25f, "bandCount" to 8f, "bandMode" to "hard", "contourLineWidth" to 1f,
-        "colorMode" to "palette-cycle", "distanceMetric" to "Euclidean", "relaxed" to false,
+        "colorMode" to "palette-cycle", "distanceMetric" to "Euclidean",
         "animSpeed" to 0.4f, "animAmp" to 0.2f
     )
 
@@ -68,7 +67,6 @@ class VoronoiContoursGenerator : GpuGenerator {
         val contourLineWidth = (params["contourLineWidth"] as? Number)?.toFloat() ?: 1f
         val colorMode = (params["colorMode"] as? String) ?: "palette-cycle"
         val metric = (params["distanceMetric"] as? String) ?: "Euclidean"
-        val relaxed = (params["relaxed"] as? Boolean) ?: false
         val animSpeed = (params["animSpeed"] as? Number)?.toFloat() ?: 0.4f
         val animAmp = (params["animAmp"] as? Number)?.toFloat() ?: 0.2f
 
@@ -80,7 +78,6 @@ class VoronoiContoursGenerator : GpuGenerator {
         val rng = SeededRNG(seed)
         val px = FloatArray(numPoints); val py = FloatArray(numPoints)
         VoronoiGlsl.scatterPoints(px, py, numPoints, width, height, rng)
-        if (relaxed) VoronoiGlsl.lloydRelax(px, py, numPoints, width, height, metricId)
         if (time > 0f && animAmp > 0f) {
             val noise = SimplexNoise(seed)
             val avgCell = sqrt((width.toFloat() * height.toFloat()) / numPoints)

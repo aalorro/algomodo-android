@@ -16,8 +16,8 @@ import com.artmondo.algomodo.rendering.gl.VoronoiGlsl
  * seed point it lies closest to under the chosen metric. Edges are drawn
  * where the gap between the nearest and second-nearest distances is small.
  *
- * Point placement (and optional Lloyd relaxation + simplex-noise animation
- * drift) is computed CPU-side in [bindUniforms] and uploaded as a vec2 array.
+ * Point placement (and simplex-noise animation drift) is computed CPU-side
+ * in [bindUniforms] and uploaded as a vec2 array.
  * The fragment shader does a brute-force linear scan per pixel.
  */
 class VoronoiCellsGenerator : GpuGenerator {
@@ -28,7 +28,7 @@ class VoronoiCellsGenerator : GpuGenerator {
     override val definition =
         "Classic Voronoi diagram where the plane is partitioned into cells around scattered seed points, each coloured by palette index."
     override val algorithmNotes =
-        "GPU shader. Seed points and optional Lloyd relaxation + simplex-noise animation are computed on the CPU " +
+        "GPU shader. Seed points and simplex-noise animation are computed on the CPU " +
         "and uploaded as a vec2 uniform array. Per pixel the fragment shader linearly scans all points for the " +
         "nearest and second-nearest, then maps to palette by index/distance/angle. Edges are drawn where the " +
         "f2-f1 gap is below the border threshold."
@@ -40,7 +40,6 @@ class VoronoiCellsGenerator : GpuGenerator {
         Parameter.SelectParam("Distance Metric", "distanceMetric", ParamGroup.GEOMETRY, "", listOf("Euclidean", "Manhattan", "Chebyshev"), "Euclidean"),
         Parameter.NumberParam("Border Width", "borderWidth", ParamGroup.GEOMETRY, "", 0f, 5f, 0.5f, 1f),
         Parameter.SelectParam("Color Mode", "colorMode", ParamGroup.COLOR, "", listOf("By Index", "By Distance", "By Angle"), "By Index"),
-        Parameter.BooleanParam("Relaxed", "relaxed", ParamGroup.GEOMETRY, "Apply Lloyd relaxation for more uniform cells", false),
         Parameter.NumberParam("Anim Speed", "animSpeed", ParamGroup.FLOW_MOTION, "", 0f, 2f, 0.05f, 0.4f),
         Parameter.NumberParam("Anim Amplitude", "animAmp", ParamGroup.FLOW_MOTION, "Drift distance as a fraction of average cell size", 0f, 1f, 0.05f, 0.2f)
     )
@@ -50,7 +49,6 @@ class VoronoiCellsGenerator : GpuGenerator {
         "distanceMetric" to "Euclidean",
         "borderWidth" to 1f,
         "colorMode" to "By Index",
-        "relaxed" to false,
         "animSpeed" to 0.4f,
         "animAmp" to 0.2f
     )
@@ -64,7 +62,6 @@ class VoronoiCellsGenerator : GpuGenerator {
         val edgeWidth = (params["borderWidth"] as? Number)?.toFloat() ?: 1f
         val metric = (params["distanceMetric"] as? String) ?: "Euclidean"
         val colorMode = (params["colorMode"] as? String) ?: "By Index"
-        val relaxed = (params["relaxed"] as? Boolean) ?: false
         val animSpeed = (params["animSpeed"] as? Number)?.toFloat() ?: 0.4f
         val animAmp = (params["animAmp"] as? Number)?.toFloat() ?: 0.2f
 
@@ -74,7 +71,6 @@ class VoronoiCellsGenerator : GpuGenerator {
         val rng = SeededRNG(seed)
         val px = FloatArray(numPoints); val py = FloatArray(numPoints)
         VoronoiGlsl.scatterPoints(px, py, numPoints, width, height, rng)
-        if (relaxed) VoronoiGlsl.lloydRelax(px, py, numPoints, width, height, metricId)
         VoronoiGlsl.animatePoints(px, py, numPoints, width, height,
             SimplexNoise(seed), time, animSpeed, animAmp)
 

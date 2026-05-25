@@ -43,7 +43,6 @@ class VoronoiNeighborBandsGenerator : GpuGenerator {
         Parameter.SelectParam("Band Mode", "bandMode", ParamGroup.TEXTURE, "flat = solid color per ring; gradient = smooth blend between rings; alternating = rings flip between two palette ends", listOf("flat", "gradient", "alternating"), "flat"),
         Parameter.NumberParam("Border Width", "borderWidth", ParamGroup.GEOMETRY, "", 0f, 4f, 0.5f, 1f),
         Parameter.SelectParam("Distance Metric", "distanceMetric", ParamGroup.GEOMETRY, "", listOf("Euclidean", "Manhattan", "Chebyshev"), "Euclidean"),
-        Parameter.BooleanParam("Lloyd Relaxed", "relaxed", ParamGroup.GEOMETRY, "", false),
         Parameter.NumberParam("Anim Speed", "animSpeed", ParamGroup.FLOW_MOTION, "", 0f, 2f, 0.05f, 0.4f),
         Parameter.NumberParam("Anim Amplitude", "animAmp", ParamGroup.FLOW_MOTION, "Drift distance as a fraction of average cell size", 0f, 1f, 0.05f, 0.2f)
     )
@@ -54,7 +53,6 @@ class VoronoiNeighborBandsGenerator : GpuGenerator {
         "bandMode" to "flat",
         "borderWidth" to 1f,
         "distanceMetric" to "Euclidean",
-        "relaxed" to false,
         "animSpeed" to 0.4f,
         "animAmp" to 0.2f
     )
@@ -69,7 +67,6 @@ class VoronoiNeighborBandsGenerator : GpuGenerator {
         val bandMode = (params["bandMode"] as? String) ?: "flat"
         val borderWidth = (params["borderWidth"] as? Number)?.toFloat() ?: 1f
         val distanceMetric = (params["distanceMetric"] as? String) ?: "Euclidean"
-        val relaxed = params["relaxed"] as? Boolean ?: false
         val animSpeed = (params["animSpeed"] as? Number)?.toFloat() ?: 0.4f
         val animAmp = (params["animAmp"] as? Number)?.toFloat() ?: 0.2f
 
@@ -79,7 +76,6 @@ class VoronoiNeighborBandsGenerator : GpuGenerator {
         val rng = SeededRNG(seed)
         val px = FloatArray(numPoints); val py = FloatArray(numPoints)
         VoronoiGlsl.scatterPoints(px, py, numPoints, width, height, rng)
-        if (relaxed) VoronoiGlsl.lloydRelax(px, py, numPoints, width, height, metricId, passes = 3)
 
         if (time > 0f) {
             val noise = SimplexNoise(seed)

@@ -200,11 +200,14 @@ class VoronoiWeightedGenerator : GpuGenerator {
             vec2 p = gl_FragCoord.xy;
             vec4 f = weightedScan(p);
 
-            // For border test we need the gap in linear distance units.
-            // additive: already linear; multiplicative: sqrt of squared distances; power: same.
+            // For border test we need the gap in linear pixel units.
+            // additive: dval is already pixels — gap is in pixels.
+            // multiplicative: dval = (dist/w)^2, so sqrt(dval) = dist/w (unitless).
+            //                 Scale back to pixels by multiplying by avgCellSize = 1/uInvAvgCellSize.
+            // power: dval is squared pixels — gap is in squared pixels (existing behaviour).
             float gap;
             if (uWeightMode == 1) {
-                gap = sqrt(f.y) - sqrt(f.x);
+                gap = (sqrt(f.y) - sqrt(f.x)) / uInvAvgCellSize;
             } else {
                 gap = f.y - f.x;
             }

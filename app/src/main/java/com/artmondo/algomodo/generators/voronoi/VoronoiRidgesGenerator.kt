@@ -41,9 +41,6 @@ class VoronoiRidgesGenerator : GpuGenerator {
 
     override val parameterSchema = listOf(
         Parameter.NumberParam("Cell Count", "cellCount", ParamGroup.COMPOSITION, "", 5f, 200f, 5f, 50f),
-        Parameter.NumberParam("Octaves", "octaves", ParamGroup.COMPOSITION, "Layers of Voronoi stacked at increasing frequencies", 1f, 5f, 1f, 3f),
-        Parameter.NumberParam("Lacunarity", "lacunarity", ParamGroup.GEOMETRY, "Frequency multiplier per octave", 1.2f, 4f, 0.1f, 2.0f),
-        Parameter.NumberParam("Gain", "gain", ParamGroup.GEOMETRY, "Amplitude multiplier per octave", 0.2f, 0.8f, 0.05f, 0.5f),
         Parameter.NumberParam("Ridge Sharpness", "ridgeSharpness", ParamGroup.TEXTURE, "Power curve applied to ridge values — higher = sharper peaks", 0.5f, 4f, 0.1f, 1.5f),
         Parameter.SelectParam("Distance Metric", "distanceMetric", ParamGroup.GEOMETRY, "euclidean: round ridges | manhattan: diamond facets | chebyshev: square crystalline", listOf("euclidean", "manhattan", "chebyshev"), "euclidean"),
         Parameter.SelectParam("Color Mode", "colorMode", ParamGroup.COLOR, "", listOf("palette", "greyscale", "inverted"), "palette"),
@@ -53,9 +50,6 @@ class VoronoiRidgesGenerator : GpuGenerator {
 
     override fun getDefaultParams(): Map<String, Any> = mapOf(
         "cellCount" to 50f,
-        "octaves" to 3f,
-        "lacunarity" to 2.0f,
-        "gain" to 0.5f,
         "ridgeSharpness" to 1.5f,
         "distanceMetric" to "euclidean",
         "colorMode" to "palette",
@@ -68,9 +62,9 @@ class VoronoiRidgesGenerator : GpuGenerator {
         quality: Quality, time: Float, width: Int, height: Int
     ) {
         val numPoints = (params["cellCount"] as? Number)?.toInt() ?: 50
-        val octaves = ((params["octaves"] as? Number)?.toInt() ?: 3).coerceIn(1, MAX_OCTAVES)
-        val lacunarity = (params["lacunarity"] as? Number)?.toFloat() ?: 2.0f
-        val gain = (params["gain"] as? Number)?.toFloat() ?: 0.5f
+        val octaves = 1
+        val lacunarity = 1f
+        val gain = 1f
         val ridgeSharpness = (params["ridgeSharpness"] as? Number)?.toFloat() ?: 1.5f
         val distMetric = (params["distanceMetric"] as? String) ?: "euclidean"
         val style = (params["colorMode"] as? String) ?: "palette"

@@ -43,7 +43,6 @@ class VoronoiMosaicGenerator : GpuGenerator {
         Parameter.SelectParam("Tile Style", "tileStyle", ParamGroup.TEXTURE, "flat = solid color; raised/inset adds a shading gradient inside each tile", listOf("flat", "raised", "inset"), "flat"),
         Parameter.SelectParam("Color Mode", "colorMode", ParamGroup.COLOR, "", listOf("palette-cycle", "palette-angle", "palette-distance"), "palette-cycle"),
         Parameter.SelectParam("Distance Metric", "distanceMetric", ParamGroup.GEOMETRY, "", listOf("Euclidean", "Manhattan", "Chebyshev"), "Euclidean"),
-        Parameter.BooleanParam("Lloyd Relaxed", "relaxed", ParamGroup.GEOMETRY, "Apply one pass of Lloyd relaxation for more uniform tiles", true),
         Parameter.NumberParam("Anim Speed", "animSpeed", ParamGroup.FLOW_MOTION, "", 0f, 2f, 0.05f, 0.4f),
         Parameter.NumberParam("Anim Amplitude", "animAmp", ParamGroup.FLOW_MOTION, "Drift distance as a fraction of average cell size", 0f, 1f, 0.05f, 0.2f)
     )
@@ -51,7 +50,7 @@ class VoronoiMosaicGenerator : GpuGenerator {
     override fun getDefaultParams(): Map<String, Any> = mapOf(
         "cellCount" to 60f, "groutWidth" to 3f, "groutColor" to "grey",
         "tileStyle" to "flat", "colorMode" to "palette-cycle",
-        "distanceMetric" to "Euclidean", "relaxed" to true,
+        "distanceMetric" to "Euclidean",
         "animSpeed" to 0.4f, "animAmp" to 0.2f
     )
 
@@ -66,7 +65,6 @@ class VoronoiMosaicGenerator : GpuGenerator {
         val tileStyle = (params["tileStyle"] as? String) ?: "flat"
         val colorMode = (params["colorMode"] as? String) ?: "palette-cycle"
         val metric = (params["distanceMetric"] as? String) ?: "Euclidean"
-        val relaxed = (params["relaxed"] as? Boolean) ?: true
         val animSpeed = (params["animSpeed"] as? Number)?.toFloat() ?: 0.4f
         val animAmp = (params["animAmp"] as? Number)?.toFloat() ?: 0.2f
 
@@ -77,7 +75,6 @@ class VoronoiMosaicGenerator : GpuGenerator {
         val rng = SeededRNG(seed)
         val px = FloatArray(numPoints); val py = FloatArray(numPoints)
         VoronoiGlsl.scatterPoints(px, py, numPoints, width, height, rng)
-        if (relaxed) VoronoiGlsl.lloydRelax(px, py, numPoints, width, height, metricId)
         if (time > 0f && animAmp > 0f) {
             val noise = SimplexNoise(seed)
             val speed = animSpeed / 0.4f; val amp = animAmp / 0.2f

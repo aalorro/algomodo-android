@@ -122,9 +122,10 @@ class VoronoiFracturedGenerator : GpuGenerator {
         val packed1 = VoronoiGlsl.packPoints(px1, py1, fractureCount)
 
         val cellRadius = sqrt(wf * hf / numPoints.toFloat()) * 0.5f
-        // Note: CPU compares squared distances against crackWidth*3 / fractureWidth*2.
-        // We mirror that exactly in the shader to preserve visual output.
-        val crackThresh = crackWidth * 3f
+        // Thresholds are in linear pixels — shader converts the F1/F2 squared
+        // distances to linear before comparing. Multipliers chosen so that
+        // crackWidth=1.5 gives a ~3px crack and fractureWidth=0.8 gives ~1.6px.
+        val crackThresh = crackWidth * 2f
         val fractureThresh = fractureWidth * 2f
 
         GLES30.glUniform2fv(GLES30.glGetUniformLocation(programId, "uPoints"),
@@ -153,8 +154,8 @@ class VoronoiFracturedGenerator : GpuGenerator {
         uniform vec2 uFracturePoints[VORONOI_MAX_POINTS];
         uniform int uFractureCount;
         uniform int uColorMode;          // 0 palette-cycle, 1 palette-gradient, 2 monochrome
-        uniform float uCrackThresh;      // squared-distance gap threshold (level 0)
-        uniform float uFractureThresh;   // squared-distance gap threshold (level 1)
+        uniform float uCrackThresh;      // linear-pixel gap threshold (level 0)
+        uniform float uFractureThresh;   // linear-pixel gap threshold (level 1)
         uniform float uShadeStrength;
         uniform float uInvCellRadius;
 
@@ -200,8 +201,11 @@ class VoronoiFracturedGenerator : GpuGenerator {
             vec4 a = shardsScan(p);
             vec4 b = fractureScan(p);
 
-            bool isCrack    = (a.y - a.x) < uCrackThresh;
-            bool isFracture = (b.y - b.x) < uFractureThresh;
+            // Linearise euclidean (squared) gaps so the threshold is in pixels.
+            float aGap = (uMetric == 0) ? (sqrt(a.y) - sqrt(a.x)) : (a.y - a.x);
+            float bGap = (uMetric == 0) ? (sqrt(b.y) - sqrt(b.x)) : (b.y - b.x);
+            bool isCrack    = aGap < uCrackThresh;
+            bool isFracture = bGap < uFractureThresh;
 
             int near0 = int(a.z + 0.5);
             int near1 = int(b.z + 0.5);
@@ -229,7 +233,7 @@ class VoronoiFracturedGenerator : GpuGenerator {
             if (uShadeStrength > 0.0) {
                 vec2 cellD = p - uPoints[near0];
                 vec2 n = clamp(cellD * uInvCellRadius, -1.0, 1.0);
-                float shade = 1.0 + (n.x * 0.7071 + n.y * 0.7071) * uShadeStrength * 0.5;
+                float shade = 1.0 + (n.x * 0.7071 + n.y * 0.7071) * uShadeStrength;
                 baseCol = clamp(baseCol * shade, 0.0, 1.0);
             }
 
