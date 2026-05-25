@@ -18,7 +18,8 @@
       "Bash(wc:*)",
       "Bash(gh api:*)",
       "WebFetch(domain:github.com)",
-      "WebSearch"
+      "WebSearch",
+      "Bash(do echo:*)"
     ]
   }
 }
