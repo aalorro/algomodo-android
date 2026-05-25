@@ -1,0 +1,9 @@
+GPU shader pipeline:
+• Shader family is back — 13 ray-marched 3D generators (Mandelbulb, Apollonian Spheres, Crystal Cavern, Tunnel Vision, etc.) now run on the GPU
+• Noise, Voronoi, and escape-time Fractals also moved to GPU — smoother previews, faster exports
+
+Multibrot adds Variant (Burning Ship/Tricorn), Julia Mode, Rotation, and banded coloring.
+
+Fixes: Voronoi Depth/Weighted/Fractured params now work; Apollonian Spheres blank render.
+
+177 generators across 15 families.
