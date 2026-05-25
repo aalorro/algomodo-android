@@ -1,16 +1,20 @@
 package com.artmondo.algomodo.generators.noise
 
-import android.graphics.Bitmap
-import android.graphics.Canvas
-import com.artmondo.algomodo.core.rng.SimplexNoise
+import android.opengl.GLES30
 import com.artmondo.algomodo.data.palettes.Palette
-import com.artmondo.algomodo.generators.Generator
+import com.artmondo.algomodo.generators.GpuGenerator
 import com.artmondo.algomodo.generators.ParamGroup
 import com.artmondo.algomodo.generators.Parameter
 import com.artmondo.algomodo.generators.Quality
-import kotlin.math.*
+import com.artmondo.algomodo.rendering.gl.NoiseGlsl
+import com.artmondo.algomodo.rendering.gl.PaletteUniform
 
-class NoiseTurbulenceGenerator : Generator {
+/**
+ * GPU port. Per-octave: |noise| accumulated with optional erosion weighting
+ * (each octave's weight depends on the previous octave's value). Optional
+ * per-octave time drift for the "churn" boiling effect.
+ */
+class NoiseTurbulenceGenerator : GpuGenerator {
 
     override val id = "noise-turbulence"
     override val family = "noise"
@@ -18,9 +22,9 @@ class NoiseTurbulenceGenerator : Generator {
     override val definition =
         "Turbulence noise created by summing absolute-value noise octaves, producing billowy, smoke-like patterns."
     override val algorithmNotes =
-        "Each octave evaluates |noise(x * freq, y * freq)| and accumulates with decreasing " +
-        "amplitude. Erosion weights each octave by the previous. Power curve shapes contrast. " +
-        "Heat colormap and band quantization supported."
+        "GPU shader. Each octave: |noise(x*freq, y*freq)|, accumulated with decreasing " +
+        "amplitude. Erosion weights each octave by the previous one. Power curve shapes " +
+        "contrast. Churn mode adds independent per-octave time drift."
     override val supportsVector = false
     override val supportsAnimation = true
 
@@ -45,108 +49,130 @@ class NoiseTurbulenceGenerator : Generator {
         "animMode" to "drift", "speed" to 0.5f
     )
 
-    override fun renderCanvas(
-        canvas: Canvas, bitmap: Bitmap, params: Map<String, Any>,
-        seed: Int, palette: Palette, quality: Quality, time: Float
+    override fun bindUniforms(
+        programId: Int, params: Map<String, Any>, seed: Int, palette: Palette,
+        quality: Quality, time: Float, width: Int, height: Int
     ) {
-        val w = bitmap.width; val h = bitmap.height
         val scale = (params["scale"] as? Number)?.toFloat() ?: 2.5f
-        val octaves = (params["octaves"] as? Number)?.toInt() ?: 6
+        val octaves = ((params["octaves"] as? Number)?.toInt() ?: 6).coerceIn(1, 10)
         val lacunarity = (params["lacunarity"] as? Number)?.toFloat() ?: 2.0f
         val gain = (params["gain"] as? Number)?.toFloat() ?: 0.5f
         val power = (params["power"] as? Number)?.toFloat() ?: 1.0f
         val warpAmount = (params["warpAmount"] as? Number)?.toFloat() ?: 0f
         val erosion = (params["erosion"] as? Number)?.toFloat() ?: 0f
         val colorMode = (params["colorMode"] as? String) ?: "palette"
-        val bandCount = (params["bandCount"] as? Number)?.toInt() ?: 6
+        val bandCount = ((params["bandCount"] as? Number)?.toInt() ?: 6).coerceAtLeast(1)
         val animMode = (params["animMode"] as? String) ?: "drift"
         val speed = (params["speed"] as? Number)?.toFloat() ?: 0.5f
 
-        val noise = SimplexNoise(seed)
-        val pixels = IntArray(w * h)
-        val invScale = scale / w.toFloat()
-        val cx = w / 2f * invScale; val cy = h / 2f * invScale
-        val isChurn = animMode == "churn"
+        // "heat" mode is a label only — same palette mapping as palette mode.
+        val colorModeId = if (colorMode == "bands") 1 else 0
+        val animModeId = when (animMode) { "rotate" -> 1; "churn" -> 2; else -> 0 }
+        val (seedOffX, seedOffY) = NoiseGlsl.seedToOffset(seed)
 
-        val step = if (quality == Quality.DRAFT) 2 else 1
+        GLES30.glUniform1f(GLES30.glGetUniformLocation(programId, "uScale"), scale)
+        GLES30.glUniform1i(GLES30.glGetUniformLocation(programId, "uOctaves"), octaves)
+        GLES30.glUniform1f(GLES30.glGetUniformLocation(programId, "uLacunarity"), lacunarity)
+        GLES30.glUniform1f(GLES30.glGetUniformLocation(programId, "uGain"), gain)
+        GLES30.glUniform1f(GLES30.glGetUniformLocation(programId, "uPower"), power)
+        GLES30.glUniform1f(GLES30.glGetUniformLocation(programId, "uWarpAmount"), warpAmount)
+        GLES30.glUniform1f(GLES30.glGetUniformLocation(programId, "uErosion"), erosion)
+        GLES30.glUniform1i(GLES30.glGetUniformLocation(programId, "uColorMode"), colorModeId)
+        GLES30.glUniform1i(GLES30.glGetUniformLocation(programId, "uBandCount"), bandCount)
+        GLES30.glUniform1i(GLES30.glGetUniformLocation(programId, "uAnimMode"), animModeId)
+        GLES30.glUniform1f(GLES30.glGetUniformLocation(programId, "uSpeed"), speed)
+        GLES30.glUniform2f(GLES30.glGetUniformLocation(programId, "uSeedOffset"), seedOffX, seedOffY)
+    }
 
-        for (py in 0 until h step step) {
-            for (px in 0 until w step step) {
-                var nx = px * invScale
-                var ny = py * invScale
+    override fun fragmentShaderSource(): String = """#version 300 es
+        precision highp float;
 
-                // Animation
-                when (animMode) {
-                    "drift" -> { nx += time * speed * 0.35f; ny += time * speed * 0.2f }
-                    "rotate" -> {
-                        val dx = nx - cx; val dy = ny - cy
-                        val angle = time * speed * 0.3f
-                        nx = cx + dx * cos(angle) - dy * sin(angle)
-                        ny = cy + dx * sin(angle) + dy * cos(angle)
-                    }
-                    // "churn" handled per-octave below
-                    else -> { nx += time * speed * 0.35f; ny += time * speed * 0.2f }
-                }
+        uniform vec2 uResolution;
+        uniform float uTime;
+        uniform vec3 uAudio;
+        ${PaletteUniform.GLSL_HELPERS}
+        ${NoiseGlsl.GLSL_HELPERS}
 
-                // Domain warp
-                if (warpAmount > 0f) {
-                    val wx = noise.fbm(nx + 5.2f, ny + 1.3f, 3, lacunarity, gain)
-                    val wy = noise.fbm(nx + 1.7f, ny + 9.2f, 3, lacunarity, gain)
-                    nx += wx * warpAmount; ny += wy * warpAmount
-                }
+        uniform float uScale;
+        uniform int uOctaves;
+        uniform float uLacunarity;
+        uniform float uGain;
+        uniform float uPower;
+        uniform float uWarpAmount;
+        uniform float uErosion;
+        uniform int uColorMode;   // 0 = palette, 1 = bands
+        uniform int uBandCount;
+        uniform int uAnimMode;    // 0 = drift, 1 = rotate, 2 = churn
+        uniform float uSpeed;
+        uniform vec2 uSeedOffset;
 
-                // Turbulence with erosion and optional churn
-                var value = 0f
-                var amplitude = 1f
-                var frequency = 1f
-                var maxValue = 0f
-                var prevOctave = 1f
+        out vec4 fragColor;
 
-                for (i in 0 until octaves) {
-                    var sx = nx * frequency; var sy = ny * frequency
-                    if (isChurn) {
-                        // Each octave drifts at its own rate
-                        sx += time * speed * 0.2f * (i + 1) * 0.7f
-                        sy += time * speed * 0.15f * (i + 1) * 0.5f
-                    }
-                    val n = abs(noise.noise2D(sx, sy))
-                    val weight = if (erosion > 0f) amplitude * (1f - erosion + erosion * prevOctave) else amplitude
-                    value += weight * n
-                    maxValue += weight
-                    prevOctave = n
-                    amplitude *= gain
-                    frequency *= lacunarity
-                }
+        void main() {
+            float invScale = uScale / uResolution.x;
+            vec2 p = gl_FragCoord.xy * invScale;
+            vec2 c = vec2(uResolution.x * 0.5, uResolution.y * 0.5) * invScale;
 
-                var t = (value / maxValue).coerceIn(0f, 1f)
-                if (power != 1f) t = t.pow(power)
-
-                val color = when (colorMode) {
-                    "bands" -> {
-                        val band = (t * bandCount).toInt().coerceIn(0, bandCount - 1)
-                        palette.lerpColor(band.toFloat() / (bandCount - 1).coerceAtLeast(1))
-                    }
-                    "heat" -> palette.lerpColor(t)
-                    else -> palette.lerpColor(t)
-                }
-
-                if (step == 1) {
-                    pixels[py * w + px] = color
-                } else {
-                    for (dy in 0 until step) for (dx in 0 until step) {
-                        val fx = px + dx; val fy = py + dy
-                        if (fx < w && fy < h) pixels[fy * w + fx] = color
-                    }
-                }
+            // Base animation
+            if (uAnimMode == 1) {
+                vec2 d = p - c;
+                float ang = uTime * uSpeed * 0.3;
+                float cs = cos(ang); float sn = sin(ang);
+                p = c + vec2(d.x * cs - d.y * sn, d.x * sn + d.y * cs);
+            } else {
+                // drift and churn both add a base drift
+                p.x += uTime * uSpeed * 0.35;
+                p.y += uTime * uSpeed * 0.2;
             }
+
+            p += uSeedOffset;
+
+            // Domain warp
+            if (uWarpAmount > 0.0) {
+                float wx = fbm(p + vec2(5.2, 1.3), 3, uLacunarity, uGain);
+                float wy = fbm(p + vec2(1.7, 9.2), 3, uLacunarity, uGain);
+                p += vec2(wx, wy) * uWarpAmount;
+            }
+
+            // Turbulence with erosion + optional per-octave churn drift
+            float value = 0.0;
+            float amplitude = 1.0;
+            float frequency = 1.0;
+            float maxValue = 0.0;
+            float prevOctave = 1.0;
+            for (int i = 0; i < 10; i++) {
+                if (i >= uOctaves) break;
+                vec2 sp = p * frequency;
+                if (uAnimMode == 2) {
+                    float fi = float(i + 1);
+                    sp.x += uTime * uSpeed * 0.2 * fi * 0.7;
+                    sp.y += uTime * uSpeed * 0.15 * fi * 0.5;
+                }
+                float n = abs(snoise(sp));
+                float weight = (uErosion > 0.0)
+                    ? amplitude * (1.0 - uErosion + uErosion * prevOctave)
+                    : amplitude;
+                value += weight * n;
+                maxValue += weight;
+                prevOctave = n;
+                amplitude *= uGain;
+                frequency *= uLacunarity;
+            }
+
+            float t = clamp(value / max(maxValue, 0.0001), 0.0, 1.0);
+            if (uPower != 1.0) t = pow(t, uPower);
+
+            vec3 col;
+            if (uColorMode == 1) {
+                float bc = float(uBandCount);
+                float band = clamp(floor(t * bc), 0.0, bc - 1.0);
+                float denom = max(bc - 1.0, 1.0);
+                col = palette_color(band / denom);
+            } else {
+                col = palette_color(t);
+            }
+
+            fragColor = vec4(col, 1.0);
         }
-
-        bitmap.setPixels(pixels, 0, w, 0, 0, w, h)
-        canvas.drawBitmap(bitmap, 0f, 0f, null)
-    }
-
-    override fun estimateCost(params: Map<String, Any>, quality: Quality): Float {
-        val octaves = (params["octaves"] as? Number)?.toInt() ?: 6
-        return (octaves / 8f).coerceIn(0.3f, 1f)
-    }
+    """
 }

@@ -1,16 +1,21 @@
 package com.artmondo.algomodo.generators.noise
 
-import android.graphics.Bitmap
-import android.graphics.Canvas
-import com.artmondo.algomodo.core.rng.SimplexNoise
+import android.opengl.GLES30
 import com.artmondo.algomodo.data.palettes.Palette
-import com.artmondo.algomodo.generators.Generator
+import com.artmondo.algomodo.generators.GpuGenerator
 import com.artmondo.algomodo.generators.ParamGroup
 import com.artmondo.algomodo.generators.Parameter
 import com.artmondo.algomodo.generators.Quality
-import kotlin.math.*
+import com.artmondo.algomodo.rendering.gl.NoiseGlsl
+import com.artmondo.algomodo.rendering.gl.PaletteUniform
 
-class NoiseRidgedGenerator : Generator {
+/**
+ * GPU port of the ridged multifractal noise generator.
+ * Per-octave: signal = (offset - |noise|)^2 * weight, weight cascades by gain
+ * so bright ridges sharpen subsequent octaves. Sharpness is applied to the
+ * final normalised value via pow().
+ */
+class NoiseRidgedGenerator : GpuGenerator {
 
     override val id = "noise-ridged"
     override val family = "noise"
@@ -18,8 +23,10 @@ class NoiseRidgedGenerator : Generator {
     override val definition =
         "Ridged multifractal noise that creates sharp, ridge-like mountain terrain patterns."
     override val algorithmNotes =
-        "For each octave: signal = (offset - |noise|)^sharpness, accumulated with gain cascade. " +
-        "Ridge offset, sharpness, domain warping, and multiple color/animation modes supported."
+        "GPU shader. For each octave: signal = (offset - |noise|)^2, accumulated with " +
+        "a gain-cascade weight so bright ridges enhance the next octave. " +
+        "Sharpness post-applies a pow() curve. Ridge offset, domain warping, and multiple " +
+        "color/animation modes supported."
     override val supportsVector = false
     override val supportsAnimation = true
 
@@ -44,109 +51,133 @@ class NoiseRidgedGenerator : Generator {
         "animMode" to "drift", "speed" to 0.5f
     )
 
-    override fun renderCanvas(
-        canvas: Canvas, bitmap: Bitmap, params: Map<String, Any>,
-        seed: Int, palette: Palette, quality: Quality, time: Float
+    override fun bindUniforms(
+        programId: Int, params: Map<String, Any>, seed: Int, palette: Palette,
+        quality: Quality, time: Float, width: Int, height: Int
     ) {
-        val w = bitmap.width; val h = bitmap.height
         val scale = (params["scale"] as? Number)?.toFloat() ?: 2f
-        val octaves = (params["octaves"] as? Number)?.toInt() ?: 6
+        val octaves = ((params["octaves"] as? Number)?.toInt() ?: 6).coerceIn(1, 10)
         val lacunarity = (params["lacunarity"] as? Number)?.toFloat() ?: 2f
         val gain = (params["gain"] as? Number)?.toFloat() ?: 0.5f
         val offset = (params["offset"] as? Number)?.toFloat() ?: 1.0f
         val sharpness = (params["sharpness"] as? Number)?.toFloat() ?: 2.0f
         val warpAmount = (params["warpAmount"] as? Number)?.toFloat() ?: 0f
         val colorMode = (params["colorMode"] as? String) ?: "palette"
-        val bandCount = (params["bandCount"] as? Number)?.toInt() ?: 8
+        val bandCount = ((params["bandCount"] as? Number)?.toInt() ?: 8).coerceAtLeast(1)
         val animMode = (params["animMode"] as? String) ?: "drift"
         val speed = (params["speed"] as? Number)?.toFloat() ?: 0.5f
 
-        val noise = SimplexNoise(seed)
-        val pixels = IntArray(w * h)
-        val invScale = scale / w.toFloat()
-        val cx = w / 2f * invScale; val cy = h / 2f * invScale
+        val colorModeId = when (colorMode) { "bands" -> 1; "peaks" -> 2; else -> 0 }
+        val animModeId = when (animMode) { "rotate" -> 1; "sculpt" -> 2; else -> 0 }
+        val (seedOffX, seedOffY) = NoiseGlsl.seedToOffset(seed)
 
-        // Sculpt mode: oscillate ridge offset over time
-        val effectiveOffset = if (animMode == "sculpt")
-            offset + 0.3f * sin(time * speed * 0.8f) else offset
+        GLES30.glUniform1f(GLES30.glGetUniformLocation(programId, "uScale"), scale)
+        GLES30.glUniform1i(GLES30.glGetUniformLocation(programId, "uOctaves"), octaves)
+        GLES30.glUniform1f(GLES30.glGetUniformLocation(programId, "uLacunarity"), lacunarity)
+        GLES30.glUniform1f(GLES30.glGetUniformLocation(programId, "uGain"), gain)
+        GLES30.glUniform1f(GLES30.glGetUniformLocation(programId, "uOffset"), offset)
+        GLES30.glUniform1f(GLES30.glGetUniformLocation(programId, "uSharpness"), sharpness)
+        GLES30.glUniform1f(GLES30.glGetUniformLocation(programId, "uWarpAmount"), warpAmount)
+        GLES30.glUniform1i(GLES30.glGetUniformLocation(programId, "uColorMode"), colorModeId)
+        GLES30.glUniform1i(GLES30.glGetUniformLocation(programId, "uBandCount"), bandCount)
+        GLES30.glUniform1i(GLES30.glGetUniformLocation(programId, "uAnimMode"), animModeId)
+        GLES30.glUniform1f(GLES30.glGetUniformLocation(programId, "uSpeed"), speed)
+        GLES30.glUniform2f(GLES30.glGetUniformLocation(programId, "uSeedOffset"), seedOffX, seedOffY)
+    }
 
-        val step = if (quality == Quality.DRAFT) 2 else 1
+    override fun fragmentShaderSource(): String = """#version 300 es
+        precision highp float;
 
-        for (py in 0 until h step step) {
-            for (px in 0 until w step step) {
-                var nx = px * invScale
-                var ny = py * invScale
+        uniform vec2 uResolution;
+        uniform float uTime;
+        uniform vec3 uAudio;
+        ${PaletteUniform.GLSL_HELPERS}
+        ${NoiseGlsl.GLSL_HELPERS}
 
-                // Animation
-                when (animMode) {
-                    "drift", "sculpt" -> { nx += time * speed * 0.3f; ny += time * speed * 0.2f }
-                    "rotate" -> {
-                        val dx = nx - cx; val dy = ny - cy
-                        val angle = time * speed * 0.3f
-                        nx = cx + dx * cos(angle) - dy * sin(angle)
-                        ny = cy + dx * sin(angle) + dy * cos(angle)
-                    }
-                }
+        uniform float uScale;
+        uniform int uOctaves;
+        uniform float uLacunarity;
+        uniform float uGain;
+        uniform float uOffset;
+        uniform float uSharpness;
+        uniform float uWarpAmount;
+        uniform int uColorMode;   // 0 = palette, 1 = bands, 2 = peaks
+        uniform int uBandCount;
+        uniform int uAnimMode;    // 0 = drift, 1 = rotate, 2 = sculpt
+        uniform float uSpeed;
+        uniform vec2 uSeedOffset;
 
-                // Domain warp
-                if (warpAmount > 0f) {
-                    val wx = noise.fbm(nx + 5.2f, ny + 1.3f, 3, lacunarity, gain)
-                    val wy = noise.fbm(nx + 1.7f, ny + 9.2f, 3, lacunarity, gain)
-                    nx += wx * warpAmount; ny += wy * warpAmount
-                }
+        out vec4 fragColor;
 
-                // Ridged multifractal with offset and gain cascade
-                var value = 0f
-                var amplitude = 1f
-                var frequency = 1f
-                var weight = 1f
-                var maxValue = 0f
+        void main() {
+            float invScale = uScale / uResolution.x;
+            vec2 p = gl_FragCoord.xy * invScale;
+            vec2 c = vec2(uResolution.x * 0.5, uResolution.y * 0.5) * invScale;
 
-                for (i in 0 until octaves) {
-                    val n = noise.noise2D(nx * frequency, ny * frequency)
-                    var signal = effectiveOffset - abs(n)
-                    signal = signal * signal // square for ridge sharpness
-                    signal *= weight
-                    weight = (signal * gain).coerceIn(0f, 1f) // cascade: bright ridges enhance next octave
-                    value += signal * amplitude
-                    maxValue += amplitude
-                    amplitude *= gain
-                    frequency *= lacunarity
-                }
-
-                var t = (value / maxValue).coerceIn(0f, 1f)
-                if (sharpness != 1f) t = t.pow(sharpness)
-
-                val color = when (colorMode) {
-                    "bands" -> {
-                        val band = (t * bandCount).toInt().coerceIn(0, bandCount - 1)
-                        palette.lerpColor(band.toFloat() / (bandCount - 1).coerceAtLeast(1))
-                    }
-                    "peaks" -> {
-                        // Ridges bright with palette, valleys fade to black
-                        val dimmed = t * t // darken valleys more aggressively
-                        palette.lerpColor(dimmed)
-                    }
-                    else -> palette.lerpColor(t)
-                }
-
-                if (step == 1) {
-                    pixels[py * w + px] = color
-                } else {
-                    for (dy in 0 until step) for (dx in 0 until step) {
-                        val fx = px + dx; val fy = py + dy
-                        if (fx < w && fy < h) pixels[fy * w + fx] = color
-                    }
-                }
+            // Sculpt mode: oscillate effective ridge offset over time
+            float effOffset = uOffset;
+            if (uAnimMode == 2) {
+                effOffset += 0.3 * sin(uTime * uSpeed * 0.8);
             }
+
+            // Animation
+            if (uAnimMode == 1) {
+                vec2 d = p - c;
+                float ang = uTime * uSpeed * 0.3;
+                float cs = cos(ang); float sn = sin(ang);
+                p = c + vec2(d.x * cs - d.y * sn, d.x * sn + d.y * cs);
+            } else {
+                // drift and sculpt both pan
+                p.x += uTime * uSpeed * 0.3;
+                p.y += uTime * uSpeed * 0.2;
+            }
+
+            p += uSeedOffset;
+
+            // Domain warp
+            if (uWarpAmount > 0.0) {
+                float wx = fbm(p + vec2(5.2, 1.3), 3, uLacunarity, uGain);
+                float wy = fbm(p + vec2(1.7, 9.2), 3, uLacunarity, uGain);
+                p += vec2(wx, wy) * uWarpAmount;
+            }
+
+            // Ridged multifractal with offset + gain cascade
+            float value = 0.0;
+            float amplitude = 1.0;
+            float frequency = 1.0;
+            float weight = 1.0;
+            float maxValue = 0.0;
+            for (int i = 0; i < 10; i++) {
+                if (i >= uOctaves) break;
+                float n = snoise(p * frequency);
+                float signal = effOffset - abs(n);
+                signal = signal * signal;
+                signal *= weight;
+                weight = clamp(signal * uGain, 0.0, 1.0);
+                value += signal * amplitude;
+                maxValue += amplitude;
+                amplitude *= uGain;
+                frequency *= uLacunarity;
+            }
+
+            float t = clamp(value / max(maxValue, 0.0001), 0.0, 1.0);
+            if (uSharpness != 1.0) t = pow(t, uSharpness);
+
+            vec3 col;
+            if (uColorMode == 1) {
+                // Bands
+                float bc = float(uBandCount);
+                float band = clamp(floor(t * bc), 0.0, bc - 1.0);
+                float denom = max(bc - 1.0, 1.0);
+                col = palette_color(band / denom);
+            } else if (uColorMode == 2) {
+                // Peaks — valleys darken aggressively
+                col = palette_color(t * t);
+            } else {
+                col = palette_color(t);
+            }
+
+            fragColor = vec4(col, 1.0);
         }
-
-        bitmap.setPixels(pixels, 0, w, 0, 0, w, h)
-        canvas.drawBitmap(bitmap, 0f, 0f, null)
-    }
-
-    override fun estimateCost(params: Map<String, Any>, quality: Quality): Float {
-        val octaves = (params["octaves"] as? Number)?.toInt() ?: 6
-        return (octaves / 8f).coerceIn(0.3f, 1f)
-    }
+    """
 }
