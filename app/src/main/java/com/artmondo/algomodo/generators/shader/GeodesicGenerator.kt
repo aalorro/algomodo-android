@@ -51,7 +51,7 @@ class GeodesicGenerator : GpuGenerator {
         Parameter.NumberParam("Speed", "speed", ParamGroup.FLOW_MOTION,
             "Animation speed", 0.1f, 2f, 0.1f, 0.5f),
         Parameter.NumberParam("Subdivisions", "subdivisions", ParamGroup.GEOMETRY,
-            "Geodesic subdivision level (0-3)", 0f, 3f, 1f, 1f),
+            "Geodesic subdivision level (0-2)", 0f, 2f, 1f, 1f),
         Parameter.NumberParam("Wire Thickness", "wireThickness", ParamGroup.GEOMETRY,
             "Wireframe edge thickness", 0.01f, 0.1f, 0.005f, 0.03f),
         Parameter.NumberParam("Radius", "radius", ParamGroup.GEOMETRY,
@@ -93,7 +93,7 @@ class GeodesicGenerator : GpuGenerator {
         val lightHeight = (params["lightHeight"] as? Float) ?: 0.8f
         val exposure = (params["exposure"] as? Float) ?: 1.2f
         val speed = (params["speed"] as? Float) ?: 0.5f
-        val subdivisions = ((params["subdivisions"] as? Float) ?: 2f).toInt().coerceIn(0, 3)
+        val subdivisions = ((params["subdivisions"] as? Float) ?: 1f).toInt().coerceIn(0, 2)
         val wireThickness = (params["wireThickness"] as? Float) ?: 0.03f
         val radius = (params["radius"] as? Float) ?: 1.2f
         val audioReact = (params["audioReact"] as? Float) ?: 0.4f
@@ -261,74 +261,46 @@ class GeodesicGenerator : GpuGenerator {
             return d;
         }
 
-        // Three-level subdivision (slow but matches CPU subdivs=3).
-        float distFaceLevel3(vec3 p, vec3 a, vec3 b, vec3 c, float r) {
-            vec3 ab = sph(0.5 * (a + b), r);
-            vec3 bc = sph(0.5 * (b + c), r);
-            vec3 ca = sph(0.5 * (c + a), r);
-            float d = 1e9;
-            d = min(d, distFaceLevel2(p, a,  ab, ca, r));
-            d = min(d, distFaceLevel2(p, b,  bc, ab, r));
-            d = min(d, distFaceLevel2(p, c,  ca, bc, r));
-            d = min(d, distFaceLevel2(p, ab, bc, ca, r));
-            return d;
-        }
+        // Const array of base icosahedron vertices for direct lookup.
+        // GLES 3.0 supports const array initialisers; this is far cheaper
+        // than a 12-way if-chain at every face iteration.
+        const vec3 BASE_VERTS[12] = vec3[12](
+            V0, V1, V2, V3, V4, V5, V6, V7, V8, V9, V10, V11
+        );
 
-        // Helper to fetch base icosahedron vertex i (0..11).
-        vec3 baseVert(int i) {
-            if (i ==  0) return V0;
-            if (i ==  1) return V1;
-            if (i ==  2) return V2;
-            if (i ==  3) return V3;
-            if (i ==  4) return V4;
-            if (i ==  5) return V5;
-            if (i ==  6) return V6;
-            if (i ==  7) return V7;
-            if (i ==  8) return V8;
-            if (i ==  9) return V9;
-            if (i == 10) return V10;
-            return V11;
-        }
-
-        // 20 icosahedron faces, indexed in the same order as the CPU original.
-        ivec3 faceIdx(int i) {
-            if (i ==  0) return ivec3( 0, 11,  5);
-            if (i ==  1) return ivec3( 0,  5,  1);
-            if (i ==  2) return ivec3( 0,  1,  7);
-            if (i ==  3) return ivec3( 0,  7, 10);
-            if (i ==  4) return ivec3( 0, 10, 11);
-            if (i ==  5) return ivec3( 1,  5,  9);
-            if (i ==  6) return ivec3( 5, 11,  4);
-            if (i ==  7) return ivec3(11, 10,  2);
-            if (i ==  8) return ivec3(10,  7,  6);
-            if (i ==  9) return ivec3( 7,  1,  8);
-            if (i == 10) return ivec3( 3,  9,  4);
-            if (i == 11) return ivec3( 3,  4,  2);
-            if (i == 12) return ivec3( 3,  2,  6);
-            if (i == 13) return ivec3( 3,  6,  8);
-            if (i == 14) return ivec3( 3,  8,  9);
-            if (i == 15) return ivec3( 4,  9,  5);
-            if (i == 16) return ivec3( 2,  4, 11);
-            if (i == 17) return ivec3( 6,  2, 10);
-            if (i == 18) return ivec3( 8,  6,  7);
-            return ivec3( 9,  8,  1);
-        }
+        // 20 icosahedron face vertex indices, packed as ivec3.
+        const ivec3 FACE_IDX[20] = ivec3[20](
+            ivec3( 0, 11,  5), ivec3( 0,  5,  1), ivec3( 0,  1,  7), ivec3( 0,  7, 10),
+            ivec3( 0, 10, 11), ivec3( 1,  5,  9), ivec3( 5, 11,  4), ivec3(11, 10,  2),
+            ivec3(10,  7,  6), ivec3( 7,  1,  8), ivec3( 3,  9,  4), ivec3( 3,  4,  2),
+            ivec3( 3,  2,  6), ivec3( 3,  6,  8), ivec3( 3,  8,  9), ivec3( 4,  9,  5),
+            ivec3( 2,  4, 11), ivec3( 6,  2, 10), ivec3( 8,  6,  7), ivec3( 9,  8,  1)
+        );
 
         // Iterate the 20 faces and accumulate min edge distance for the chosen
-        // subdivision level.
-        float distSubdivided(vec3 p, int level, float r) {
+        // subdivision level. Per-face cap culling: each icosahedron face caps
+        // a spherical region. A face's three vertices have minimum dot-product
+        // ~0.795 with the face centroid direction (cos of circumradius). Any
+        // query point whose direction differs by more than that angle plus a
+        // small thickness slack cannot be the nearest face — skip it.
+        float distSubdivided(vec3 p, int level, float r, float thickSlack) {
             float d = 1e9;
+            vec3 pDir = p / max(length(p), 1e-6);
+            // Threshold: cos(circumradius + slack). Circumradius of an icosa
+            // face is ~37.4°; we widen by slack (~thick/r in radians) to be
+            // conservative when very close to edges.
+            float cullCos = 0.78 - thickSlack;
             for (int f = 0; f < 20; f++) {
-                ivec3 fi = faceIdx(f);
-                vec3 a = sph(baseVert(fi.x), r);
-                vec3 b = sph(baseVert(fi.y), r);
-                vec3 c = sph(baseVert(fi.z), r);
+                ivec3 fi = FACE_IDX[f];
+                vec3 a = sph(BASE_VERTS[fi.x], r);
+                vec3 b = sph(BASE_VERTS[fi.y], r);
+                vec3 c = sph(BASE_VERTS[fi.z], r);
+                vec3 faceCenter = normalize(a + b + c);
+                if (dot(pDir, faceCenter) < cullCos) continue;
                 if (level == 1) {
                     d = min(d, distSubdividedFace(p, a, b, c, r));
-                } else if (level == 2) {
-                    d = min(d, distFaceLevel2(p, a, b, c, r));
                 } else {
-                    d = min(d, distFaceLevel3(p, a, b, c, r));
+                    d = min(d, distFaceLevel2(p, a, b, c, r));
                 }
             }
             return d;
@@ -366,7 +338,10 @@ class GeodesicGenerator : GpuGenerator {
             if (uSubdivisions <= 0) {
                 d = distIcosaEdges(q, uRadius);
             } else {
-                d = distSubdivided(q, uSubdivisions, uRadius);
+                // Slack in cull threshold scales with wire thickness so we
+                // never cull a face whose edge is within `thick` of `p`.
+                float thickSlack = thick / max(uRadius, 1e-3);
+                d = distSubdivided(q, uSubdivisions, uRadius, thickSlack);
             }
 
             return d - thick;

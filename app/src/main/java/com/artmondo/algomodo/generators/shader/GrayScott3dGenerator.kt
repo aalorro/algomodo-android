@@ -221,9 +221,19 @@ class GrayScott3dGenerator : GpuGenerator {
             return sum / max(norm, 0.0001);
         }
 
-        // Gray-Scott stand-in density field. Iterated domain warp + FBM gives
-        // smooth blob/worm/stripe structures; "maturity" scales how strongly
-        // the warp deforms the field (akin to running more sim steps).
+        // Cheap 2-octave FBM used ONLY for the domain-warp offsets. The warp
+        // doesn't need fine detail — a coarse 2-octave estimate is visually
+        // indistinguishable from a 4-5-octave one but costs <half as much.
+        // Inlined manually to avoid an extra loop branch.
+        float fbm2(vec3 p) {
+            return 0.6667 * vnoise3(p) + 0.3333 * vnoise3(p * 2.03);
+        }
+
+        // Gray-Scott stand-in density field. Single domain-warp iteration with
+        // cheap 2-octave noise gives blob/worm/stripe structures at roughly
+        // a third of the cost of the previous two-warp version, with similar
+        // visual richness. The final density still uses the full uOctaves FBM
+        // so fine detail is preserved.
         float densityField(vec3 p, float t) {
             vec3 q = p * uFreq + vec3(uPhase, 0.0, uPhase * 0.5);
             // Slow temporal drift to animate the "reaction" growth.
@@ -231,21 +241,13 @@ class GrayScott3dGenerator : GpuGenerator {
 
             float warp = uWarpAmp * (0.5 + 0.5 * uMaturity);
 
-            // Two cheap warp iterations (more than two starts to look mushy
-            // and tanks the framerate inside the inner ray-march loop).
+            // One warp iteration (2-octave noise per component).
             vec3 w1 = vec3(
-                fbm(q + vec3(0.0, 1.7, 4.3)),
-                fbm(q + vec3(5.2, 1.3, 2.8)),
-                fbm(q + vec3(8.1, 3.1, 0.6))
+                fbm2(q + vec3(0.0, 1.7, 4.3)),
+                fbm2(q + vec3(5.2, 1.3, 2.8)),
+                fbm2(q + vec3(8.1, 3.1, 0.6))
             ) - 0.5;
             q += warp * w1;
-
-            vec3 w2 = vec3(
-                fbm(q * 1.4 + vec3(2.1, 0.0, 6.7)),
-                fbm(q * 1.4 + vec3(4.4, 5.5, 1.2)),
-                fbm(q * 1.4 + vec3(0.8, 3.3, 7.9))
-            ) - 0.5;
-            q += warp * 0.6 * w2;
 
             float n = fbm(q);
 
@@ -260,7 +262,16 @@ class GrayScott3dGenerator : GpuGenerator {
         // SDF: positive outside iso-surface, negative inside.
         // The 0.6 multiplier is an empirical Lipschitz dampener so sphere
         // tracing converges instead of overshooting.
+        // Bounding-sphere early-out: density falloff hits 0 at radius >= 1.6,
+        // so points outside that shell are guaranteed empty — return the cheap
+        // shell distance and skip the expensive FBM evaluation.
         float sceneSDF(vec3 p, float t, float thr) {
+            float r = length(p);
+            if (r > 1.7) {
+                // Cheap conservative shell SDF (assume thr - uIsoBias > 0
+                // outside, so we're "outside" by at least r - 1.6).
+                return (r - 1.6) * 0.6;
+            }
             return (thr - densityField(p, t)) * 0.6;
         }
 
