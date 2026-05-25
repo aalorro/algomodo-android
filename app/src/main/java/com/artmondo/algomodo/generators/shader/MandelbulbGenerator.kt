@@ -137,7 +137,7 @@ class MandelbulbGenerator : GpuGenerator {
             vec3 fw = normalize(-ro);
             vec3 rt = normalize(cross(vec3(0.0, 1.0, 0.0), fw));
             vec3 up = cross(fw, rt);
-            vec3 rd = normalize(uv.x * rt + uv.y * up + 1.4 * fw);
+            vec3 rd = normalize(uv.x * rt - uv.y * up + 1.4 * fw);
 
             float total = 0.0;
             float iter = 0.0;

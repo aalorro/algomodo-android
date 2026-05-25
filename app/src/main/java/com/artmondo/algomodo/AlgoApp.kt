@@ -219,8 +219,19 @@ class AlgoApp : Application() {
         GeneratorRegistry.register(SpringNetworksGenerator())
         GeneratorRegistry.register(WavePropagationGenerator())
 
-        // Shader (2) — GPU fragment-shader generators
-        GeneratorRegistry.register(MandelbulbGenerator())
+        // Shader (13) — GPU fragment-shader generators
+        GeneratorRegistry.register(ApollonianSpheresGenerator())
         GeneratorRegistry.register(CausticPoolGenerator())
+        GeneratorRegistry.register(CrystalCavernGenerator())
+        GeneratorRegistry.register(GeodesicGenerator())
+        GeneratorRegistry.register(GlassGardenGenerator())
+        GeneratorRegistry.register(GrayScott3dGenerator())
+        GeneratorRegistry.register(HeightfieldHorizonGenerator())
+        GeneratorRegistry.register(InfiniteLatticeGenerator())
+        GeneratorRegistry.register(MandelbulbGenerator())
+        GeneratorRegistry.register(MetaballCluster3dGenerator())
+        GeneratorRegistry.register(SdfSculptGenerator())
+        GeneratorRegistry.register(TunnelVisionGenerator())
+        GeneratorRegistry.register(TwistedFormsGenerator())
     }
 }
