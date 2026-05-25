@@ -1,28 +1,35 @@
 package com.artmondo.algomodo.generators.procedural
 
-import android.graphics.Bitmap
-import android.graphics.Canvas
-import android.graphics.Color
-import com.artmondo.algomodo.audio.AudioAnalysis
+import android.opengl.GLES30
 import com.artmondo.algomodo.data.palettes.Palette
-import com.artmondo.algomodo.generators.Generator
+import com.artmondo.algomodo.generators.GpuGenerator
 import com.artmondo.algomodo.generators.ParamGroup
 import com.artmondo.algomodo.generators.Parameter
 import com.artmondo.algomodo.generators.Quality
-import kotlin.math.*
+import com.artmondo.algomodo.rendering.gl.NoiseGlsl
+import com.artmondo.algomodo.rendering.gl.PaletteUniform
 
-class EdgeGlowGenerator : Generator {
+/**
+ * GPU-rendered neon edge-detection on noise fields. Four detection modes
+ * (contour, gradient, ridge, circuit) drive glow intensity multiplying a
+ * palette colour sampled from the underlying FBM value.
+ *
+ * Ported from the original CPU implementation; id, parameter schema and
+ * defaults are preserved. Noise visuals are close but not bit-identical
+ * (Ashima/Gustavson `snoise` vs the CPU `ValueNoise`).
+ */
+class EdgeGlowGenerator : GpuGenerator {
 
     override val id = "procedural-edge-glow"
     override val family = "procedural"
     override val styleName = "Edge + Glow"
     override val definition =
-        "Neon edge detection on noise fields — glowing contour lines, gradient edges, ridges, and circuit-board step patterns."
+        "Neon edge detection on noise fields \u2014 glowing contour lines, gradient edges, ridges, and circuit-board step patterns."
     override val algorithmNotes =
-        "Evaluates multi-octave value noise per pixel and detects edges via four methods: " +
-        "contour finds iso-lines at regular intervals; gradient computes finite differences; " +
-        "ridge uses Laplacian for curvature peaks; circuit detects quantized step boundaries. " +
-        "Edge strength is converted to glow brightness via a precomputed 256-entry power LUT."
+        "Per-pixel fragment shader on the GPU. Evaluates multi-octave simplex FBM and detects " +
+        "edges via four methods: contour finds iso-lines at regular intervals; gradient computes " +
+        "finite differences; ridge uses Laplacian for curvature peaks; circuit detects quantized " +
+        "step boundaries. Edge strength is converted to glow brightness via a power+exp falloff."
     override val supportsVector = false
     override val supportsAnimation = true
 
@@ -54,159 +61,173 @@ class EdgeGlowGenerator : Generator {
         "quantize" to 6f, "speed" to 0.4f, "reactivity" to 1.0f
     )
 
-    override fun renderCanvas(
-        canvas: Canvas, bitmap: Bitmap, params: Map<String, Any>,
-        seed: Int, palette: Palette, quality: Quality, time: Float
+    override fun bindUniforms(
+        programId: Int,
+        params: Map<String, Any>,
+        seed: Int,
+        palette: Palette,
+        quality: Quality,
+        time: Float,
+        width: Int,
+        height: Int
     ) {
-        val w = bitmap.width; val h = bitmap.height
-        val step = when (quality) { Quality.DRAFT -> 4; Quality.ULTRA -> 1; else -> 2 }
-
         val mode = (params["edgeMode"] as? String) ?: "contour"
         val scl = (params["noiseScale"] as? Number)?.toFloat() ?: 3.0f
         val edgeW = (params["edgeWidth"] as? Number)?.toFloat() ?: 1.5f
         val glowR = (params["glowRadius"] as? Number)?.toFloat() ?: 0.5f
         val glowI = (params["glowIntensity"] as? Number)?.toFloat() ?: 0.8f
-        val nOct = (params["octaves"] as? Number)?.toInt()?.coerceAtLeast(1) ?: 2
-        val Q = (params["quantize"] as? Number)?.toInt()?.coerceAtLeast(2) ?: 6
-        val spd = (params["speed"] as? Number)?.toFloat() ?: 0.4f
+        val octaves = ((params["octaves"] as? Number)?.toInt() ?: 2).coerceIn(1, 4)
+        val quantize = ((params["quantize"] as? Number)?.toInt() ?: 6).coerceAtLeast(2)
+        val speed = (params["speed"] as? Number)?.toFloat() ?: 0.4f
+        val reactivity = (params["reactivity"] as? Number)?.toFloat() ?: 1.0f
 
-        val rx = (params["reactivity"] as? Number)?.toFloat() ?: 1.0f
-        val audioAnalysis = params["_audioAnalysis"] as? AudioAnalysis
-        val audioBass = (audioAnalysis?.getBass(time) ?: 0f) * rx
-        val audioHigh = (audioAnalysis?.getHigh(time) ?: 0f) * rx
-        val effGlow = glowI * (1f + audioBass * 1.5f)
-        val effEdgeW = edgeW * (1f + audioHigh * 0.5f)
-
-        val t = time * spd
-        val modeId = when (mode) { "contour" -> 0; "gradient" -> 1; "ridge" -> 2; else -> 3 }
-        val vn = ValueNoise(seed)
-
-        // Respect user octave setting; only cap DRAFT to avoid wasted work on downsampled output
-        val maxOct = if (quality == Quality.DRAFT) nOct.coerceAtMost(2) else nOct
-
-        // Palette ramp
-        val lut = palette.buildLut(256)
-        val rampR = IntArray(256); val rampG = IntArray(256); val rampB = IntArray(256)
-        for (i in 0 until 256) {
-            rampR[i] = Color.red(lut[i]); rampG[i] = Color.green(lut[i]); rampB[i] = Color.blue(lut[i])
+        val modeId = when (mode) {
+            "contour" -> 0
+            "gradient" -> 1
+            "ridge" -> 2
+            else -> 3
         }
 
-        val halfW = w * 0.5f; val halfH = h * 0.5f
-        val invDim2 = 2f / min(w, h)
-        val circuitEps = 0.06f
+        val (seedOffX, seedOffY) = NoiseGlsl.seedToOffset(seed)
 
-        // edgeWidth scales sampling distance for gradient/ridge spatial thickness
-        val pixelStep = scl * invDim2
-        val gradEps = pixelStep * effEdgeW * 0.4f
-        val ridgeEps = pixelStep * effEdgeW * 1.7f
-        val ridgeScale = 1f / max(0.0001f, ridgeEps * ridgeEps)
-        val inv2GradEps = 1f / (gradEps * 2f)
-
-        // Contour: edgeWidth controls line thickness via power exponent
-        val contourPow = max(0.5f, 4.0f - effEdgeW * 0.7f)
-
-        // Brightness LUT (matching web version)
-        val glowPow = max(0.6f, 3.0f / max(0.3f, effEdgeW))
-        val hasGlowR = glowR > 0.01f
-        val glowFalloff = if (hasGlowR) 3f / glowR else 200f
-        val softMul = if (hasGlowR) 0.3f + glowR * 1.7f else 0f
-        val ambientGlow = if (hasGlowR) min(1f, exp(-glowFalloff) * effGlow * (0.02f + glowR * 0.2f)) else 0f
-
-        val brightnessLUT = FloatArray(256)
-        for (i in 0 until 256) {
-            val edgeVal = i / 255f
-            if (edgeVal > 0.004f) {
-                val sharp = edgeVal.pow(glowPow)
-                val soft = if (hasGlowR) exp(-((1f - edgeVal) * glowFalloff)) * softMul else 0f
-                brightnessLUT[i] = ((sharp + soft) * effGlow).coerceAtMost(1f)
-            } else {
-                brightnessLUT[i] = ambientGlow
-            }
-        }
-
-        val Qf = Q.toFloat()
-        val invQ = 1f / Qf
-        val tOff = t * 0.15f
-        val cols = ceil(w.toFloat() / step).toInt()
-        val rows = ceil(h.toFloat() / step).toInt()
-        val smallPixels = IntArray(cols * rows)
-
-        // Unified render loop (all modes rendered to small buffer)
-        for (gy in 0 until rows) {
-            val py = gy * step
-            val v = (py - halfH) * invDim2
-            for (gx in 0 until cols) {
-                val px = gx * step
-                val u = (px - halfW) * invDim2
-                val nx = u * scl; val ny = v * scl + tOff
-                val n = vn.fbm(nx, ny, maxOct)
-
-                val edge: Float = when (modeId) {
-                    0 -> { // contour — bright bands between iso-lines
-                        val band = n * Qf
-                        val frac = band - floor(band)
-                        val e = 1f - abs(frac * 2f - 1f)
-                        e.pow(contourPow)
-                    }
-                    1 -> { // gradient — eps scaled by edgeWidth
-                        val gxd = (vn.fbm(nx + gradEps, ny, maxOct) - vn.fbm(nx - gradEps, ny, maxOct)) * inv2GradEps
-                        val gyd = (vn.fbm(nx, ny + gradEps, maxOct) - vn.fbm(nx, ny - gradEps, maxOct)) * inv2GradEps
-                        var e = sqrt(gxd * gxd + gyd * gyd).coerceAtMost(1f)
-                        e = round(e * Qf) * invQ
-                        e * e * (3f - 2f * e)
-                    }
-                    2 -> { // ridge — eps scaled by edgeWidth
-                        val nPx = vn.fbm(nx + ridgeEps, ny, maxOct)
-                        val nMx = vn.fbm(nx - ridgeEps, ny, maxOct)
-                        val nPy = vn.fbm(nx, ny + ridgeEps, maxOct)
-                        val nMy = vn.fbm(nx, ny - ridgeEps, maxOct)
-                        val laplacian = nPx + nMx + nPy + nMy - 4f * n
-                        var e = (abs(laplacian) * ridgeScale).coerceAtMost(1f)
-                        e = round(e * Qf) * invQ
-                        e * e * (3f - 2f * e)
-                    }
-                    else -> { // circuit
-                        val nRight = vn.noise(nx + circuitEps, ny)
-                        val nDown = vn.noise(nx, ny + circuitEps)
-                        val q1 = ((n * 0.5f + 0.5f) * Qf).toInt()
-                        val q2 = ((nRight * 0.5f + 0.5f) * Qf).toInt()
-                        val q3 = ((nDown * 0.5f + 0.5f) * Qf).toInt()
-                        if (q1 != q2 || q1 != q3) 1f else 0f
-                    }
-                }
-
-                val edgeIdx = (edge * 255f).toInt().coerceIn(0, 255)
-                val brightness = brightnessLUT[edgeIdx]
-                val colorVal = (n * 0.5f + 0.5f).coerceIn(0f, 1f)
-                val idx = (colorVal * 255f).toInt()
-                val rr = (rampR[idx] * brightness).toInt().coerceIn(0, 255)
-                val gg = (rampG[idx] * brightness).toInt().coerceIn(0, 255)
-                val bb = (rampB[idx] * brightness).toInt().coerceIn(0, 255)
-                smallPixels[gy * cols + gx] = Color.rgb(rr, gg, bb)
-            }
-        }
-
-        // Bilinear upscale for all modes when step > 1
-        if (step > 1) {
-            val smallBmp = Bitmap.createBitmap(cols, rows, Bitmap.Config.ARGB_8888)
-            smallBmp.setPixels(smallPixels, 0, cols, 0, 0, cols, rows)
-            val scaled = Bitmap.createScaledBitmap(smallBmp, w, h, true)
-            val pixels = IntArray(w * h)
-            scaled.getPixels(pixels, 0, w, 0, 0, w, h)
-            bitmap.setPixels(pixels, 0, w, 0, 0, w, h)
-            smallBmp.recycle()
-            scaled.recycle()
-        } else {
-            bitmap.setPixels(smallPixels, 0, w, 0, 0, w, h)
-        }
-
-        canvas.drawBitmap(bitmap, 0f, 0f, null)
+        GLES30.glUniform1i(GLES30.glGetUniformLocation(programId, "uModeId"), modeId)
+        GLES30.glUniform1f(GLES30.glGetUniformLocation(programId, "uNoiseScale"), scl)
+        GLES30.glUniform1f(GLES30.glGetUniformLocation(programId, "uEdgeWidth"), edgeW)
+        GLES30.glUniform1f(GLES30.glGetUniformLocation(programId, "uGlowRadius"), glowR)
+        GLES30.glUniform1f(GLES30.glGetUniformLocation(programId, "uGlowIntensity"), glowI)
+        GLES30.glUniform1i(GLES30.glGetUniformLocation(programId, "uOctaves"), octaves)
+        GLES30.glUniform1i(GLES30.glGetUniformLocation(programId, "uQuantize"), quantize)
+        GLES30.glUniform1f(GLES30.glGetUniformLocation(programId, "uSpeed"), speed)
+        GLES30.glUniform1f(GLES30.glGetUniformLocation(programId, "uReactivity"), reactivity)
+        GLES30.glUniform2f(GLES30.glGetUniformLocation(programId, "uSeedOffset"), seedOffX, seedOffY)
     }
+
+    override fun fragmentShaderSource(): String = """#version 300 es
+        precision highp float;
+
+        uniform vec2 uResolution;
+        uniform float uTime;
+        uniform vec3 uAudio;
+        ${PaletteUniform.GLSL_HELPERS}
+        ${NoiseGlsl.GLSL_HELPERS}
+
+        uniform int   uModeId;
+        uniform float uNoiseScale;
+        uniform float uEdgeWidth;
+        uniform float uGlowRadius;
+        uniform float uGlowIntensity;
+        uniform int   uOctaves;
+        uniform int   uQuantize;
+        uniform float uSpeed;
+        uniform float uReactivity;
+        uniform vec2  uSeedOffset;
+
+        out vec4 fragColor;
+
+        void main() {
+            float w = uResolution.x;
+            float h = uResolution.y;
+            float minDim = min(w, h);
+            float invDim2 = 2.0 / minDim;
+            float halfW = w * 0.5;
+            float halfH = h * 0.5;
+
+            // Audio reactivity
+            float audioBass = uAudio.x * uReactivity;
+            float audioHigh = uAudio.z * uReactivity;
+            float effGlow  = uGlowIntensity * (1.0 + audioBass * 1.5);
+            float effEdgeW = uEdgeWidth     * (1.0 + audioHigh * 0.5);
+
+            float t = uTime * uSpeed;
+            float tOff = t * 0.15;
+
+            vec2 frag = gl_FragCoord.xy;
+            float u = (frag.x - halfW) * invDim2;
+            float v = (frag.y - halfH) * invDim2;
+
+            float nx = u * uNoiseScale + uSeedOffset.x;
+            float ny = v * uNoiseScale + tOff + uSeedOffset.y;
+
+            float n = fbm(vec2(nx, ny), uOctaves, 2.0, 0.5);
+
+            float pixelStep = uNoiseScale * invDim2;
+            float gradEps  = pixelStep * effEdgeW * 0.4;
+            float ridgeEps = pixelStep * effEdgeW * 1.7;
+            float ridgeScale = 1.0 / max(0.0001, ridgeEps * ridgeEps);
+            float inv2GradEps = 1.0 / (gradEps * 2.0);
+            float circuitEps = 0.06;
+
+            float Qf = float(uQuantize);
+            float invQ = 1.0 / Qf;
+            float contourPow = max(0.5, 4.0 - effEdgeW * 0.7);
+
+            float edge = 0.0;
+            if (uModeId == 0) {
+                // CONTOUR
+                float band = n * Qf;
+                float frac = band - floor(band);
+                float e = 1.0 - abs(frac * 2.0 - 1.0);
+                edge = pow(e, contourPow);
+            }
+            else if (uModeId == 1) {
+                // GRADIENT
+                float gxd = (fbm(vec2(nx + gradEps, ny), uOctaves, 2.0, 0.5)
+                           - fbm(vec2(nx - gradEps, ny), uOctaves, 2.0, 0.5)) * inv2GradEps;
+                float gyd = (fbm(vec2(nx, ny + gradEps), uOctaves, 2.0, 0.5)
+                           - fbm(vec2(nx, ny - gradEps), uOctaves, 2.0, 0.5)) * inv2GradEps;
+                float e = min(1.0, sqrt(gxd * gxd + gyd * gyd));
+                e = floor(e * Qf + 0.5) * invQ;
+                edge = e * e * (3.0 - 2.0 * e);
+            }
+            else if (uModeId == 2) {
+                // RIDGE (Laplacian)
+                float nPx = fbm(vec2(nx + ridgeEps, ny), uOctaves, 2.0, 0.5);
+                float nMx = fbm(vec2(nx - ridgeEps, ny), uOctaves, 2.0, 0.5);
+                float nPy = fbm(vec2(nx, ny + ridgeEps), uOctaves, 2.0, 0.5);
+                float nMy = fbm(vec2(nx, ny - ridgeEps), uOctaves, 2.0, 0.5);
+                float laplacian = nPx + nMx + nPy + nMy - 4.0 * n;
+                float e = min(1.0, abs(laplacian) * ridgeScale);
+                e = floor(e * Qf + 0.5) * invQ;
+                edge = e * e * (3.0 - 2.0 * e);
+            }
+            else {
+                // CIRCUIT (quantized step detection)
+                float nRight = snoise(vec2(nx + circuitEps, ny));
+                float nDown  = snoise(vec2(nx, ny + circuitEps));
+                float q1 = floor((n      * 0.5 + 0.5) * Qf);
+                float q2 = floor((nRight * 0.5 + 0.5) * Qf);
+                float q3 = floor((nDown  * 0.5 + 0.5) * Qf);
+                edge = (q1 != q2 || q1 != q3) ? 1.0 : 0.0;
+            }
+
+            // Brightness from edge value
+            float glowPow = max(0.6, 3.0 / max(0.3, effEdgeW));
+            bool  hasGlowR = uGlowRadius > 0.01;
+            float glowFalloff = hasGlowR ? (3.0 / uGlowRadius) : 200.0;
+            float softMul = hasGlowR ? (0.3 + uGlowRadius * 1.7) : 0.0;
+            float ambientGlow = hasGlowR
+                ? min(1.0, exp(-glowFalloff) * effGlow * (0.02 + uGlowRadius * 0.2))
+                : 0.0;
+
+            float brightness;
+            if (edge > 0.004) {
+                float sharp = pow(edge, glowPow);
+                float soft  = hasGlowR ? exp(-((1.0 - edge) * glowFalloff)) * softMul : 0.0;
+                brightness = min(1.0, (sharp + soft) * effGlow);
+            } else {
+                brightness = ambientGlow;
+            }
+
+            float colorVal = clamp(n * 0.5 + 0.5, 0.0, 1.0);
+            vec3 col = palette_color(colorVal) * brightness;
+            fragColor = vec4(col, 1.0);
+        }
+    """
 
     override fun estimateCost(params: Map<String, Any>, quality: Quality): Float {
         val oct = (params["octaves"] as? Number)?.toInt() ?: 2
         val mode = (params["edgeMode"] as? String) ?: "contour"
         val modeMult = when (mode) { "gradient", "ridge" -> 1.5f; "circuit" -> 1.3f; else -> 1f }
-        return (oct * 0.12f * modeMult + 0.2f).coerceIn(0.3f, 1f)
+        return (oct * 0.07f * modeMult + 0.1f).coerceIn(0.15f, 0.5f)
     }
 }
