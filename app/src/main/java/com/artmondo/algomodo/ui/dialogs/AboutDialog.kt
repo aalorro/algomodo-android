@@ -31,10 +31,10 @@ fun AboutDialog(onDismiss: () -> Unit) {
                     textAlign = TextAlign.Center
                 )
                 Spacer(Modifier.height(8.dp))
-                InfoRow("Generators", "164 across 14 families")
+                InfoRow("Generators", "177 across 15 families")
                 InfoRow("Processing", "100% local on device")
                 InfoRow("Determinism", "Same seed = same output")
-                InfoRow("Version", "v2.0.0 (Android)")
+                InfoRow("Version", "v2.1.0 (Android)")
                 InfoRow("Credits", "ArtMondo")
                 Spacer(Modifier.height(4.dp))
                 Text(

@@ -18,6 +18,35 @@ fun ChangelogDialog(onDismiss: () -> Unit) {
         text = {
             Text(
                 text = """
+v2.1.0 (Android)
+GPU Shader Pipeline:
+- New GpuGenerator interface with offscreen EGL + FBO backend. All existing CPU call sites (live preview, exports, PostFX) work unchanged.
+
+Shader Family Restored (13 generators):
+- All 13 ray-marched 3D generators reimplemented as GPU fragment shaders: Apollonian Spheres, Caustic Pool, Crystal Cavern, Geodesic, Glass Garden, Gray-Scott 3D, Heightfield Horizon, Infinite Lattice, Mandelbulb, Metaball Cluster 3D, SDF Sculpt, Tunnel Vision, Twisted Forms
+
+GPU Family Ports:
+- Noise (7 generators) — FBM, Ridged, Turbulence, Domain Warp, Simplex Field, Marble, FBM Terrain
+- Voronoi (10 generators) — Cells, Centroidal, Contours, Crackle, Depth, Mosaic, Weighted, Fractured, Neighbor Bands, Ridges
+- Escape-time Fractals (8 generators) — Mandelbrot, Julia, Multibrot, Burning Ship, Newton, Orbit Traps, Lyapunov, Fractal Interior
+
+New Multibrot Features:
+- Variant selector (standard / burning / tricorn)
+- Julia Mode with C Real/Imag controls (animation orbits the C value)
+- Manual Rotation parameter
+- Color Mode (smooth / bands) with Band Count and Color Shift
+
+Improvements:
+- Total generator count now 177 across 15 families
+- Centroidal Voronoi: Lloyd relaxation LRU-cached per (seed, count, size, metric)
+- Translucent center play-button overlay on paused canvas
+
+Bug Fixes:
+- Apollonian Spheres blank render and palette-less background
+- Voronoi Weighted: multiplicative-weight mode no longer blank
+- Voronoi Fractured: Fracture Width and Shard Shading now work
+- Voronoi Depth: most parameters now have visible effect
+
 v2.0.0 (Android)
 New Generator Families (2):
 - Pixel Art (12 generators): low-resolution generators with nearest-neighbor upscaling — Automata, City, Diffusion, Dither, Flow Field, Harmonograph, Maze, Portraits, Symmetry, Terrain, Voronoi, Worm

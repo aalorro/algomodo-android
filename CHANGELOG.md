@@ -2,6 +2,37 @@
 
 All notable changes to Algomodo will be documented in this file.
 
+## [2.1.0] - Android
+
+### GPU Shader Pipeline
+- New `GpuGenerator` interface with offscreen EGL + FBO + glReadPixels backend. Every existing CPU call site (live preview, all five export paths, PostFX) works unchanged — the runner writes pixels straight into the caller's Bitmap.
+- Compiled programs cached per shader-source hash. Thread-local context with save/restore for nesting inside another EGL context (used by video export).
+
+### Restored Shader Family (13 generators)
+- All 13 originally-CPU ray-marched 3D generators now reimplemented as GPU fragment shaders: Apollonian Spheres, Caustic Pool, Crystal Cavern, Geodesic, Glass Garden, Gray-Scott 3D, Heightfield Horizon, Infinite Lattice, Mandelbulb, Metaball Cluster 3D, SDF Sculpt, Tunnel Vision, Twisted Forms.
+
+### GPU Family Ports
+- **Noise** (7 generators): NoiseFbm, NoiseRidged, NoiseTurbulence, NoiseDomainWarp, NoiseSimplexField, DomainWarpMarble, FbmTerrain — ported to GPU shaders.
+- **Voronoi** (10 generators): VoronoiCells, CentroidalVoronoi, VoronoiContours, VoronoiCrackle, VoronoiDepth, VoronoiMosaic, VoronoiWeighted, VoronoiFractured, VoronoiNeighborBands (hybrid CPU adjacency + GPU render), VoronoiRidges — ported to GPU shaders. DelaunayMesh remains CPU (vector path).
+- **Escape-time Fractals** (8 generators): Mandelbrot, Julia, Multibrot, BurningShip, Newton, OrbitTraps, Lyapunov, FractalInterior — ported to GPU shaders. Smooth iteration colouring preserved.
+
+### New Multibrot Features
+- Variant selector (standard / burning / tricorn) for Mandelbrot-family transforms.
+- Julia Mode toggle with Julia C Real/Imag controls — in Julia mode, animation orbits the C value.
+- Manual Rotation parameter.
+- Color Mode (smooth / bands) with Band Count and Color Shift palette phase offset.
+
+### Improvements
+- Total generator count now 177 across 15 families (Shader restored).
+- Centroidal Voronoi: Lloyd relaxation now LRU-cached per (seed, count, size, metric) — runs once instead of every frame, eliminating the #1 cause of Voronoi FPS drops.
+- Translucent center play-button overlay on paused canvas.
+
+### Bug Fixes
+- Apollonian Spheres blank render and palette-less background.
+- Voronoi Weighted: multiplicative-weight mode no longer renders blank canvas.
+- Voronoi Fractured: Fracture Width and Shard Shading now have visible effect.
+- Voronoi Depth: most parameters now have visible effect (normal field was inverted).
+
 ## [2.0.0] - Android
 
 ### New Generator Families (2)
