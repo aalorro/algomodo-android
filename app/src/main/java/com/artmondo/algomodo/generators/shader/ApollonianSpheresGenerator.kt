@@ -33,7 +33,7 @@ class ApollonianSpheresGenerator : GpuGenerator {
 
     override val parameterSchema: List<Parameter> = listOf(
         Parameter.NumberParam("Camera Dist", "cameraDistance", ParamGroup.COMPOSITION,
-            "Distance of camera from origin", 1f, 12f, 0.5f, 4f),
+            "Distance of camera from origin", 1f, 12f, 0.5f, 3.5f),
         Parameter.NumberParam("FOV", "fov", ParamGroup.COMPOSITION,
             "Field of view in degrees", 20f, 120f, 5f, 40f),
         Parameter.NumberParam("Camera Angle", "cameraAngle", ParamGroup.COMPOSITION,
@@ -64,7 +64,7 @@ class ApollonianSpheresGenerator : GpuGenerator {
     )
 
     override fun getDefaultParams(): Map<String, Any> = mapOf(
-        "cameraDistance" to 4f, "fov" to 40f, "cameraAngle" to 0f, "cameraHeight" to 0.5f,
+        "cameraDistance" to 3.5f, "fov" to 40f, "cameraAngle" to 0f, "cameraHeight" to 0.5f,
         "lightAngle" to 45f, "lightHeight" to 0.8f, "exposure" to 1.2f, "speed" to 0.5f,
         "packingStyle" to "Classic", "iterations" to 8f, "sphereSize" to 0.3f,
         "rimGlow" to 0.5f, "roughness" to 0.4f, "audioReact" to 0.4f

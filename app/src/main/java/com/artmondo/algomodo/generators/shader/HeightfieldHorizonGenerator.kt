@@ -195,15 +195,42 @@ class HeightfieldHorizonGenerator : GpuGenerator {
             float bassBoost = 1.0 + 0.25 * uAudio.x * uAudioReact;
             float h = 0.0;
             if (uBiome == 1) {
-                // Dunes
-                float n = fbm(s * 0.5, 4, 2.0, 0.5);     // 0..1
-                float ridges = abs(sin(s.x * 2.0 + n * 3.0)) * 0.5;
-                h = (n * 0.6 + ridges * 0.4) * uTerrainHeight;
+                // Dunes — smooth wind-parallel ridges with asymmetric crest
+                // bias. We deliberately AVOID abs(sin(.)) because the sharp
+                // V-cusps at sin=0 read as crevices rather than dune troughs.
+                // Instead use (sin*0.5+0.5) so the wave is non-negative and
+                // rounded at both crest and trough, then apply a mild gamma
+                // to lift the crest peaks while keeping troughs flat (mimics
+                // the asymmetric windward/leeward profile of real dunes).
+                float n = fbm(s * 0.35, 4, 2.0, 0.5);    // 0..1, slow base undulation
+                float warp = (n - 0.5) * 4.0;            // FBM phase warp
+                float primary = sin(s.x * 1.1 + warp) * 0.5 + 0.5;
+                // Pow biases the wave toward the crests (asymmetric profile).
+                primary = pow(primary, 0.7);
+                // Cross-axis modulation breaks up the perfect parallel look.
+                float cross = sin(s.y * 0.45 + n * 2.5) * 0.5 + 0.5;
+                // High-freq fine sand grain on the surface.
+                float grain = fbm(s * 2.5, 3, 2.0, 0.45) * 0.08;
+                h = (primary * 0.65 + cross * 0.2 + n * 0.15 + grain) * uTerrainHeight * 1.3;
             } else if (uBiome == 2) {
-                // AlienPlateaus
-                float n = fbm(s * 0.8, 3, 2.0, 0.5) * 2.0 - 1.0; // -1..1
-                float plateau = clamp(n * 3.0, -1.0, 1.0) * 0.5 + 0.5;
-                h = plateau * uTerrainHeight;
+                // AlienPlateaus — stepped terraces with cliff-sharp tier
+                // edges. Quantising the FBM into discrete elevation steps
+                // produces the layered mesa geology that reads as "alien".
+                // A small per-tier detail noise keeps tier surfaces from
+                // looking perfectly flat, and a touch of edge smoothing
+                // avoids extreme aliasing on cliff silhouettes.
+                float n = fbm(s * 0.6, 4, 2.0, 0.5);     // 0..1
+                const float tiers = 5.0;
+                float scaled = n * tiers;
+                float tierIdx = floor(scaled);
+                float tierFrac = scaled - tierIdx;
+                // Sharp cliff: stay flat for most of the tier, then ramp up
+                // hard near the top so the next tier line is crisp.
+                float edge = smoothstep(0.88, 0.98, tierFrac);
+                float terraced = (tierIdx + edge) / tiers;
+                // High-frequency rocky surface detail on each tier.
+                float detail = (fbm(s * 3.0, 3, 2.0, 0.5) - 0.5) * 0.08;
+                h = (terraced + detail) * uTerrainHeight * 1.4;
             } else if (uBiome == 3) {
                 // Archipelago
                 float n = fbm(s * 0.6, 5, 2.0, 0.5);     // 0..1

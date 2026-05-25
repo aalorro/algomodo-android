@@ -265,9 +265,13 @@ class MetaballCluster3dGenerator : GpuGenerator {
                 vec3 v = normalize(ro - pHit);
 
                 // Diffuse + specular (Phong-ish).
+                // NB: must NOT name this `half` — `half` is a reserved keyword
+                // in GLSL ES 3.0 (reserved for future half-precision types)
+                // and using it as an identifier silently breaks the shader
+                // compile, which leaves the whole generator blank.
                 float diff = max(dot(n, ld), 0.0);
-                vec3 half = normalize(ld + v);
-                float spec = pow(max(dot(n, half), 0.0), 40.0);
+                vec3 halfV = normalize(ld + v);
+                float spec = pow(max(dot(n, halfV), 0.0), 40.0);
                 float ambient = 0.2;
 
                 // Palette lookup driven by surface position and audio mid band.

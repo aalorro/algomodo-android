@@ -243,11 +243,12 @@ class MainViewModel @Inject constructor(
             }
 
         val familyDefaults = FAMILY_DEFAULT_PARAMS[generator.family].orEmpty()
+        val generatorDefaults = GENERATOR_DEFAULT_PARAMS[generator.id].orEmpty()
         val newParams = mutableMapOf<String, Any>()
         for (param in generator.parameterSchema) {
             when (param) {
                 is Parameter.NumberParam -> {
-                    if (param.key in ALWAYS_DEFAULT_PARAMS || param.key in familyDefaults) {
+                    if (param.key in ALWAYS_DEFAULT_PARAMS || param.key in familyDefaults || param.key in generatorDefaults) {
                         newParams[param.key] = param.default
                     } else {
                         newParams[param.key] = safeRandomStep(param, rng)
@@ -257,7 +258,7 @@ class MainViewModel @Inject constructor(
                     newParams[param.key] = rng.boolean()
                 }
                 is Parameter.SelectParam -> {
-                    if (param.key in ALWAYS_DEFAULT_PARAMS || param.key in familyDefaults) {
+                    if (param.key in ALWAYS_DEFAULT_PARAMS || param.key in familyDefaults || param.key in generatorDefaults) {
                         newParams[param.key] = param.default
                     } else {
                         val choices = param.options.filter { it != "none" }.ifEmpty { param.options }
@@ -351,6 +352,11 @@ class MainViewModel @Inject constructor(
     private val FAMILY_DEFAULT_PARAMS = mapOf(
         "fractals" to setOf("zoom")
     )
+    // Params that keep their default only for specific generator ids
+    private val GENERATOR_DEFAULT_PARAMS = mapOf(
+        "shader-apollonian-spheres" to setOf("cameraDistance"),
+        "shader-geodesic-3d" to setOf("cameraDistance")
+    )
 
     /**
      * Randomize a NumberParam to a safe range — avoids the bottom 15% of
@@ -390,12 +396,13 @@ class MainViewModel @Inject constructor(
             }
 
         val familyDefaults = FAMILY_DEFAULT_PARAMS[gen.family].orEmpty()
+        val generatorDefaults = GENERATOR_DEFAULT_PARAMS[gen.id].orEmpty()
         val newParams = s.params.toMutableMap()
         for (param in gen.parameterSchema) {
             if (param.key in s.lockedParams) continue
             when (param) {
                 is Parameter.NumberParam -> {
-                    if (param.key in ALWAYS_DEFAULT_PARAMS || param.key in familyDefaults) {
+                    if (param.key in ALWAYS_DEFAULT_PARAMS || param.key in familyDefaults || param.key in generatorDefaults) {
                         newParams[param.key] = param.default
                     } else {
                         newParams[param.key] = safeRandomStep(param, rng)
@@ -405,7 +412,7 @@ class MainViewModel @Inject constructor(
                     newParams[param.key] = rng.boolean()
                 }
                 is Parameter.SelectParam -> {
-                    if (param.key in ALWAYS_DEFAULT_PARAMS || param.key in familyDefaults) {
+                    if (param.key in ALWAYS_DEFAULT_PARAMS || param.key in familyDefaults || param.key in generatorDefaults) {
                         newParams[param.key] = param.default
                     } else {
                         val choices = param.options.filter { it != "none" }.ifEmpty { param.options }
@@ -451,11 +458,12 @@ class MainViewModel @Inject constructor(
             }
 
         val familyDefaults = FAMILY_DEFAULT_PARAMS[gen.family].orEmpty()
+        val generatorDefaults = GENERATOR_DEFAULT_PARAMS[gen.id].orEmpty()
         val newParams = mutableMapOf<String, Any>()
         for (param in gen.parameterSchema) {
             when (param) {
                 is Parameter.NumberParam -> {
-                    if (param.key in ALWAYS_DEFAULT_PARAMS || param.key in familyDefaults) {
+                    if (param.key in ALWAYS_DEFAULT_PARAMS || param.key in familyDefaults || param.key in generatorDefaults) {
                         newParams[param.key] = param.default
                     } else {
                         newParams[param.key] = safeRandomStep(param, rng)
@@ -463,7 +471,7 @@ class MainViewModel @Inject constructor(
                 }
                 is Parameter.BooleanParam -> newParams[param.key] = rng.boolean()
                 is Parameter.SelectParam -> {
-                    if (param.key in ALWAYS_DEFAULT_PARAMS || param.key in familyDefaults) {
+                    if (param.key in ALWAYS_DEFAULT_PARAMS || param.key in familyDefaults || param.key in generatorDefaults) {
                         newParams[param.key] = param.default
                     } else {
                         // Filter out "none" — surprise me should always pick an active option
