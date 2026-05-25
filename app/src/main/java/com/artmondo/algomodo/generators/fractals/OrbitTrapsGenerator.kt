@@ -1,17 +1,26 @@
 package com.artmondo.algomodo.generators.fractals
 
-import android.graphics.Bitmap
-import android.graphics.Canvas
-import android.graphics.Paint
-import android.graphics.Rect
+import android.opengl.GLES30
 import com.artmondo.algomodo.data.palettes.Palette
-import com.artmondo.algomodo.generators.Generator
+import com.artmondo.algomodo.generators.GpuGenerator
 import com.artmondo.algomodo.generators.ParamGroup
 import com.artmondo.algomodo.generators.Parameter
 import com.artmondo.algomodo.generators.Quality
-import kotlin.math.*
+import com.artmondo.algomodo.rendering.gl.PaletteUniform
+import kotlin.math.abs
+import kotlin.math.cos
+import kotlin.math.pow
+import kotlin.math.sin
 
-class OrbitTrapsGenerator : Generator {
+/**
+ * GPU port. Orbit-trap Mandelbrot — 8 trap shapes, 5 colour modes, 4 movement
+ * modes. Animation (centre/zoom/rotation/trap-size modulation) computed
+ * CPU-side. Per-pixel iteration + trap-distance + colouring done shader-side.
+ *
+ * Periodicity detection dropped (uniform branching is more expensive on GPU
+ * than the rare interior-pixel saving).
+ */
+class OrbitTrapsGenerator : GpuGenerator {
 
     override val id = "fractal-orbit-traps"
     override val family = "fractals"
@@ -19,22 +28,13 @@ class OrbitTrapsGenerator : Generator {
     override val definition =
         "Orbit trap fractal — Mandelbrot iteration colored by proximity of orbit points to geometric trap shapes."
     override val algorithmNotes =
-        "Runs standard Mandelbrot iteration but colors by minimum distance from orbit points to a geometric trap. " +
-        "Includes stalk traps for organic branching, spiral traps, and line traps. Uses logarithmic distance mapping " +
-        "for rich contrast. Animation uses dive, drift, pulse, or orbit camera modes."
+        "GPU fragment shader. Mandelbrot iteration measures minimum orbit distance to a trap shape " +
+        "(point / circle / cross / ring / square / stalk / line / spiral). Colour modes blend distance, " +
+        "angle, iteration, and layered glow. Animation pans toward seed-picked hotspots."
     override val supportsVector = false
     override val supportsAnimation = true
 
     companion object {
-        private const val TRAP_POINT = 0
-        private const val TRAP_CIRCLE = 1
-        private const val TRAP_CROSS = 2
-        private const val TRAP_RING = 3
-        private const val TRAP_SQUARE = 4
-        private const val TRAP_STALK = 5
-        private const val TRAP_LINE = 6
-        private const val TRAP_SPIRAL = 7
-
         private val ZOOM_TARGETS = arrayOf(
             doubleArrayOf(-0.7435669, 0.1314023),
             doubleArrayOf(-0.1011, 0.9563),
@@ -43,16 +43,6 @@ class OrbitTrapsGenerator : Generator {
             doubleArrayOf(0.285, 0.01),
             doubleArrayOf(-0.745, 0.113),
         )
-
-        private const val BAILOUT_SQ = 64.0
-        private const val TWO_PI = 2.0 * Math.PI
-
-        // Color mode codes
-        private const val CM_DISTANCE = 0
-        private const val CM_ANGLE = 1
-        private const val CM_ITERATION = 2
-        private const val CM_COMPOSITE = 3
-        private const val CM_LAYERED = 4
     }
 
     override val parameterSchema: List<Parameter> = listOf(
@@ -97,20 +87,10 @@ class OrbitTrapsGenerator : Generator {
         "zoomDepth" to 60f,
     )
 
-    private val filterPaint = Paint(Paint.FILTER_BITMAP_FLAG)
-
-    override fun renderCanvas(
-        canvas: Canvas,
-        bitmap: Bitmap,
-        params: Map<String, Any>,
-        seed: Int,
-        palette: Palette,
-        quality: Quality,
-        time: Float
+    override fun bindUniforms(
+        programId: Int, params: Map<String, Any>, seed: Int, palette: Palette,
+        quality: Quality, time: Float, width: Int, height: Int
     ) {
-        val w = bitmap.width
-        val h = bitmap.height
-
         val trapShape = (params["trapShape"] as? String) ?: "stalk"
         var trapSize = (params["trapSize"] as? Number)?.toDouble() ?: 0.5
         val baseCx = (params["centerX"] as? Number)?.toDouble() ?: -0.5
@@ -132,19 +112,15 @@ class OrbitTrapsGenerator : Generator {
             Quality.ULTRA -> if (isAnim) baseMaxIter.coerceAtMost(96) else (baseMaxIter * 2).coerceAtMost(256)
         }
 
-        val trapCode = when (trapShape) {
-            "point" -> TRAP_POINT; "circle" -> TRAP_CIRCLE; "cross" -> TRAP_CROSS
-            "ring" -> TRAP_RING; "square" -> TRAP_SQUARE; "stalk" -> TRAP_STALK
-            "line" -> TRAP_LINE; "spiral" -> TRAP_SPIRAL; else -> TRAP_STALK
+        val trapId = when (trapShape) {
+            "point" -> 0; "circle" -> 1; "cross" -> 2; "ring" -> 3
+            "square" -> 4; "stalk" -> 5; "line" -> 6; "spiral" -> 7; else -> 5
         }
-        val colorModeCode = when (colorMode) {
-            "distance" -> CM_DISTANCE; "angle" -> CM_ANGLE; "iteration" -> CM_ITERATION
-            "composite" -> CM_COMPOSITE; "layered" -> CM_LAYERED; else -> CM_LAYERED
+        val colorModeId = when (colorMode) {
+            "distance" -> 0; "angle" -> 1; "iteration" -> 2; "composite" -> 3
+            "layered" -> 4; else -> 4
         }
-        val doLayered = colorModeCode == CM_LAYERED
-        val needsAngle = colorModeCode == CM_ANGLE || colorModeCode == CM_COMPOSITE || doLayered
 
-        // --- Animation: compute view center, zoom, trap rotation/size modulation ---
         val target = ZOOM_TARGETS[abs(seed) % ZOOM_TARGETS.size]
         var cx: Double; var cy: Double; var viewZoom: Double
         var trapRotation = 0.0
@@ -170,8 +146,7 @@ class OrbitTrapsGenerator : Generator {
                 }
                 "pulse" -> {
                     trapSize += sin(t * speed * 0.4) * 0.4 + sin(t * speed * 0.23) * 0.15
-                    viewZoom = zoomParam
-                    cx = baseCx; cy = baseCy
+                    viewZoom = zoomParam; cx = baseCx; cy = baseCy
                     trapRotation = sin(t * speed * 0.25) * 1.5
                 }
                 "orbit" -> {
@@ -188,252 +163,144 @@ class OrbitTrapsGenerator : Generator {
             cx = baseCx; cy = baseCy; viewZoom = zoomParam
         }
 
-        val cosRot = cos(trapRotation)
-        val sinRot = sin(trapRotation)
-        val hasRotation = trapRotation != 0.0
+        val cosRot = cos(trapRotation).toFloat()
+        val sinRot = sin(trapRotation).toFloat()
 
-        val minDim = min(w, h).toDouble()
-        val pixelSize = 3.0 / (viewZoom * minDim)
-        val halfW = w * 0.5
-        val halfH = h * 0.5
-        val invMaxIter = 1.0 / maxIter
-        val invTrapNorm = 1.0 / (trapSize + 0.5)
+        val minDim = minOf(width, height).toDouble()
+        val pixelSize = (3.0 / (viewZoom * minDim)).toFloat()
 
-        // Palette LUT
-        val lutMax = 255
-        val paletteLut = IntArray(256) { palette.lerpColor(it.toFloat() / lutMax) }
+        GLES30.glUniform2f(GLES30.glGetUniformLocation(programId, "uCenter"), cx.toFloat(), cy.toFloat())
+        GLES30.glUniform1f(GLES30.glGetUniformLocation(programId, "uPixelSize"), pixelSize)
+        GLES30.glUniform2f(GLES30.glGetUniformLocation(programId, "uRot"), cosRot, sinRot)
+        GLES30.glUniform1i(GLES30.glGetUniformLocation(programId, "uTrap"), trapId)
+        GLES30.glUniform1f(GLES30.glGetUniformLocation(programId, "uTrapSize"), trapSize.toFloat())
+        GLES30.glUniform1i(GLES30.glGetUniformLocation(programId, "uColorMode"), colorModeId)
+        GLES30.glUniform1i(GLES30.glGetUniformLocation(programId, "uMaxIter"), maxIter)
+    }
 
-        // Adaptive resolution during animation
-        val renderW = if (isAnim) (w * 3 / 5).coerceAtLeast(w / 2) else w
-        val renderH = if (isAnim) (h * 3 / 5).coerceAtLeast(h / 2) else h
-        val scaleX = w.toDouble() / renderW
-        val scaleY = h.toDouble() / renderH
+    override fun fragmentShaderSource(): String = """#version 300 es
+        precision highp float;
 
-        val renderPixels = IntArray(renderW * renderH)
+        uniform vec2 uResolution;
+        uniform float uTime;
+        uniform vec3 uAudio;
+        ${PaletteUniform.GLSL_HELPERS}
 
-        val cores = Runtime.getRuntime().availableProcessors().coerceIn(2, 8)
-        val threads = Array(cores) { threadIdx ->
-            Thread {
-                val y0 = threadIdx * renderH / cores
-                val y1 = (threadIdx + 1) * renderH / cores
+        uniform vec2 uCenter;
+        uniform float uPixelSize;
+        uniform vec2 uRot;
+        uniform int uTrap;
+        uniform float uTrapSize;
+        uniform int uColorMode;     // 0 dist, 1 angle, 2 iter, 3 composite, 4 layered
+        uniform int uMaxIter;
 
-                for (py in y0 until y1) {
-                    val cImag0 = cy + (py * scaleY - halfH) * pixelSize
-                    val rowOff = py * renderW
+        const float BAILOUT_SQ = 64.0;
+        const float PI_F = 3.1415927;
+        const float TWO_PI_F = 6.2831853;
 
-                    for (px in 0 until renderW) {
-                        val cReal0 = cx + (px * scaleX - halfW) * pixelSize
+        out vec4 fragColor;
 
-                        var zr = 0.0; var zi = 0.0
-                        var iter = 0
-                        var minDist = 1e30
-                        var minTZr = 0.0; var minTZi = 0.0
-                        var minIter = 0
-                        var sumInvDist = 0.0
+        float trapDist(vec2 z) {
+            if (uTrap == 0) return length(z - vec2(uTrapSize, 0.0));
+            if (uTrap == 1) return abs(length(z) - uTrapSize);
+            if (uTrap == 2) return min(abs(z.x), abs(z.y));
+            if (uTrap == 3) {
+                float r = length(z);
+                float ringD = mod(r, uTrapSize);
+                return min(ringD, uTrapSize - ringD);
+            }
+            if (uTrap == 4) return abs(max(abs(z.x), abs(z.y)) - uTrapSize);
+            if (uTrap == 5) return z.x > 0.0 ? abs(z.y) : 1e8;
+            if (uTrap == 6) return abs(z.x - z.y) * 0.7071;
+            // Spiral
+            float r = length(z);
+            float theta = atan(z.y, z.x);
+            float ad = abs(mod(r - uTrapSize * (theta + PI_F) / TWO_PI_F, uTrapSize));
+            return min(ad, uTrapSize - ad);
+        }
 
-                        // Cardioid / period-2 bulb check — skips ~25% of interior
-                        val q = (cReal0 - 0.25) * (cReal0 - 0.25) + cImag0 * cImag0
-                        if (q * (q + (cReal0 - 0.25)) < 0.25 * cImag0 * cImag0 ||
-                            (cReal0 + 1.0) * (cReal0 + 1.0) + cImag0 * cImag0 < 0.0625) {
-                            iter = maxIter
-                        }
+        void main() {
+            vec2 c = uCenter + (gl_FragCoord.xy - uResolution.xy * 0.5) * uPixelSize;
+            vec2 z = vec2(0.0);
+            int iter = 0;
+            float minDist = 1e30;
+            vec2 minTZ = vec2(0.0);
+            int minIter = 0;
+            float sumInvDist = 0.0;
 
-                        // Brent's periodicity detection state
-                        var pzr = 0.0; var pzi = 0.0
-                        var period = 8; var pCheck = 0
+            // Cardioid / period-2 bulb skip
+            float q = (c.x - 0.25) * (c.x - 0.25) + c.y * c.y;
+            bool inside = (q * (q + (c.x - 0.25)) < 0.25 * c.y * c.y) ||
+                          ((c.x + 1.0) * (c.x + 1.0) + c.y * c.y < 0.0625);
+            if (inside) iter = uMaxIter;
 
-                        while (zr * zr + zi * zi <= BAILOUT_SQ && iter < maxIter) {
-                            // Iterate z = z^2 + c FIRST, then measure trap (skip z0=0)
-                            val newZr = zr * zr - zi * zi + cReal0
-                            zi = 2.0 * zr * zi + cImag0
-                            zr = newZr
-                            iter++
+            for (int i = 0; i < 512; i++) {
+                if (i >= uMaxIter) break;
+                if (dot(z, z) > BAILOUT_SQ) break;
+                float nzr = z.x * z.x - z.y * z.y + c.x;
+                z.y = 2.0 * z.x * z.y + c.y;
+                z.x = nzr;
+                iter++;
 
-                            // Apply trap rotation
-                            val tZr: Double; val tZi: Double
-                            if (hasRotation) {
-                                tZr = zr * cosRot - zi * sinRot
-                                tZi = zr * sinRot + zi * cosRot
-                            } else {
-                                tZr = zr; tZi = zi
-                            }
+                vec2 tZ = vec2(z.x * uRot.x - z.y * uRot.y, z.x * uRot.y + z.y * uRot.x);
+                float d = trapDist(tZ);
 
-                            // Inline trap distance
-                            val dist = when (trapCode) {
-                                TRAP_POINT -> sqrt((tZr - trapSize) * (tZr - trapSize) + tZi * tZi)
-                                TRAP_CIRCLE -> abs(sqrt(tZr * tZr + tZi * tZi) - trapSize)
-                                TRAP_CROSS -> min(abs(tZr), abs(tZi))
-                                TRAP_RING -> {
-                                    val r = sqrt(tZr * tZr + tZi * tZi)
-                                    val ringD = r % trapSize
-                                    if (ringD < trapSize * 0.5) ringD else trapSize - ringD
-                                }
-                                TRAP_SQUARE -> abs(max(abs(tZr), abs(tZi)) - trapSize)
-                                TRAP_STALK -> if (tZr > 0.0) abs(tZi) else 1e8
-                                TRAP_LINE -> abs(tZr - tZi) * 0.7071
-                                TRAP_SPIRAL -> {
-                                    val r = sqrt(tZr * tZr + tZi * tZi)
-                                    val theta = atan2(tZi, tZr)
-                                    val ad = abs((r - trapSize * (theta + Math.PI) / TWO_PI) % trapSize)
-                                    if (ad < trapSize - ad) ad else trapSize - ad
-                                }
-                                else -> sqrt(tZr * tZr + tZi * tZi)
-                            }
-
-                            if (doLayered) sumInvDist += 1.0 / (1.0 + dist * dist * 10.0)
-
-                            if (dist < minDist) {
-                                minDist = dist
-                                if (needsAngle) { minTZr = tZr; minTZi = tZi }
-                                minIter = iter
-                            }
-
-                            // Periodicity check
-                            if (abs(zr - pzr) < 1e-10 && abs(zi - pzi) < 1e-10) {
-                                iter = maxIter; break
-                            }
-                            if (++pCheck >= period) {
-                                pzr = zr; pzi = zi; pCheck = 0
-                                if (period < 512) period = period shl 1
-                            }
-                        }
-
-                        // --- Color computation ---
-                        val rawDist = minDist * invTrapNorm
-                        val distT = 1.0 - exp(-rawDist * 3.0)
-
-                        var cr: Double; var cg: Double; var cb: Double
-
-                        if (iter >= maxIter) {
-                            // Interior
-                            if (doLayered && sumInvDist > 0.0) {
-                                val intT = (sumInvDist / (maxIter * 0.1)).coerceAtMost(1.0)
-                                val baseC = paletteLut[((intT * 0.5) * lutMax).toInt().coerceIn(0, lutMax)]
-                                cr = (baseC shr 16 and 0xFF) * 0.15
-                                cg = (baseC shr 8 and 0xFF) * 0.15
-                                cb = (baseC and 0xFF) * 0.15
-                            } else {
-                                val baseC = paletteLut[(distT * lutMax).toInt().coerceIn(0, lutMax)]
-                                cr = (baseC shr 16 and 0xFF) * 0.2
-                                cg = (baseC shr 8 and 0xFF) * 0.2
-                                cb = (baseC and 0xFF) * 0.2
-                            }
-                        } else {
-                            when (colorModeCode) {
-                                CM_DISTANCE -> {
-                                    val baseC = paletteLut[(distT * lutMax).toInt().coerceIn(0, lutMax)]
-                                    cr = (baseC shr 16 and 0xFF).toDouble()
-                                    cg = (baseC shr 8 and 0xFF).toDouble()
-                                    cb = (baseC and 0xFF).toDouble()
-                                    if (minDist < 0.03) {
-                                        val glow = (0.03 - minDist) * 33.33
-                                        val gs = glow * glow * 0.7
-                                        cr = min(255.0, cr + (255.0 - cr) * gs)
-                                        cg = min(255.0, cg + (255.0 - cg) * gs)
-                                        cb = min(255.0, cb + (255.0 - cb) * gs)
-                                    }
-                                }
-                                CM_ANGLE -> {
-                                    val angleT = ((atan2(minTZi, minTZr) / Math.PI) + 1.0) * 0.5 % 1.0
-                                    val baseC = paletteLut[(angleT * lutMax).toInt().coerceIn(0, lutMax)]
-                                    cr = (baseC shr 16 and 0xFF).toDouble()
-                                    cg = (baseC shr 8 and 0xFF).toDouble()
-                                    cb = (baseC and 0xFF).toDouble()
-                                    val edge = 0.85 + 0.15 * (1.0 - distT)
-                                    cr *= edge; cg *= edge; cb *= edge
-                                    if (minDist < 0.03) {
-                                        val glow = (0.03 - minDist) * 33.33
-                                        val gs = glow * glow * 0.5
-                                        cr = min(255.0, cr + (255.0 - cr) * gs)
-                                        cg = min(255.0, cg + (255.0 - cg) * gs)
-                                        cb = min(255.0, cb + (255.0 - cb) * gs)
-                                    }
-                                }
-                                CM_ITERATION -> {
-                                    val iterT = minIter * invMaxIter
-                                    val baseC = paletteLut[(iterT * lutMax).toInt().coerceIn(0, lutMax)]
-                                    cr = (baseC shr 16 and 0xFF).toDouble()
-                                    cg = (baseC shr 8 and 0xFF).toDouble()
-                                    cb = (baseC and 0xFF).toDouble()
-                                    val edge = 0.8 + 0.2 * (1.0 - distT)
-                                    cr *= edge; cg *= edge; cb *= edge
-                                    if (minDist < 0.03) {
-                                        val glow = (0.03 - minDist) * 33.33
-                                        val gs = glow * glow * 0.5
-                                        cr = min(255.0, cr + (255.0 - cr) * gs)
-                                        cg = min(255.0, cg + (255.0 - cg) * gs)
-                                        cb = min(255.0, cb + (255.0 - cb) * gs)
-                                    }
-                                }
-                                CM_LAYERED -> {
-                                    val angleT = ((atan2(minTZi, minTZr) / Math.PI) + 1.0) * 0.5 % 1.0
-                                    val layerT = if (iter > 0) (sumInvDist / (iter * 0.15)).coerceAtMost(1.0) else 0.0
-                                    val hueT = (angleT * 0.5 + layerT * 0.5) % 1.0
-                                    val baseC = paletteLut[(hueT * lutMax).toInt().coerceIn(0, lutMax)]
-                                    cr = (baseC shr 16 and 0xFF).toDouble()
-                                    cg = (baseC shr 8 and 0xFF).toDouble()
-                                    cb = (baseC and 0xFF).toDouble()
-                                    val layerGlow = (layerT * 1.5).coerceAtMost(1.0)
-                                    val edgeDim = 0.7 + 0.3 * (1.0 - distT)
-                                    val finalBright = (layerGlow * 0.7 + edgeDim * 0.3) * 1.3
-                                    cr = min(255.0, cr * finalBright)
-                                    cg = min(255.0, cg * finalBright)
-                                    cb = min(255.0, cb * finalBright)
-                                    if (minDist < 0.03) {
-                                        val glow = (0.03 - minDist) * 33.33
-                                        val gs = glow * glow * 0.7
-                                        cr = min(255.0, cr + (255.0 - cr) * gs)
-                                        cg = min(255.0, cg + (255.0 - cg) * gs)
-                                        cb = min(255.0, cb + (255.0 - cb) * gs)
-                                    }
-                                }
-                                else -> {
-                                    // Composite — angle + iteration blend
-                                    val angleT = ((atan2(minTZi, minTZr) / Math.PI) + 1.0) * 0.5 % 1.0
-                                    val iterT = minIter * invMaxIter
-                                    val blendT = (angleT * 0.6 + iterT * 0.4) % 1.0
-                                    val baseC = paletteLut[(blendT * lutMax).toInt().coerceIn(0, lutMax)]
-                                    cr = (baseC shr 16 and 0xFF).toDouble()
-                                    cg = (baseC shr 8 and 0xFF).toDouble()
-                                    cb = (baseC and 0xFF).toDouble()
-                                    val edge = 0.75 + 0.25 * (1.0 - distT)
-                                    cr *= edge; cg *= edge; cb *= edge
-                                    if (minDist < 0.03) {
-                                        val glow = (0.03 - minDist) * 33.33
-                                        val gs = glow * glow * 0.5
-                                        cr = min(255.0, cr + (255.0 - cr) * gs)
-                                        cg = min(255.0, cg + (255.0 - cg) * gs)
-                                        cb = min(255.0, cb + (255.0 - cb) * gs)
-                                    }
-                                }
-                            }
-                        }
-
-                        renderPixels[rowOff + px] =
-                            (0xFF shl 24) or
-                            (cr.toInt().coerceIn(0, 255) shl 16) or
-                            (cg.toInt().coerceIn(0, 255) shl 8) or
-                            cb.toInt().coerceIn(0, 255)
-                    }
+                if (uColorMode == 4) sumInvDist += 1.0 / (1.0 + d * d * 10.0);
+                if (d < minDist) {
+                    minDist = d;
+                    minTZ = tZ;
+                    minIter = iter;
                 }
-            }.also { it.start() }
-        }
-        threads.forEach { it.join() }
+            }
 
-        // Bilinear upscale for animation, direct copy for static
-        if (renderW < w) {
-            val smallBmp = Bitmap.createBitmap(renderW, renderH, Bitmap.Config.ARGB_8888)
-            smallBmp.setPixels(renderPixels, 0, renderW, 0, 0, renderW, renderH)
-            canvas.drawBitmap(smallBmp, null, Rect(0, 0, w, h), filterPaint)
-            smallBmp.recycle()
-        } else {
-            bitmap.setPixels(renderPixels, 0, w, 0, 0, w, h)
-            canvas.drawBitmap(bitmap, 0f, 0f, null)
-        }
-    }
+            float invMaxIter = 1.0 / float(uMaxIter);
+            float invTrapNorm = 1.0 / (uTrapSize + 0.5);
+            float rawDist = minDist * invTrapNorm;
+            float distT = 1.0 - exp(-rawDist * 3.0);
 
-    override fun estimateCost(params: Map<String, Any>, quality: Quality): Float {
-        val maxIter = (params["maxIterations"] as? Number)?.toInt() ?: 80
-        return (maxIter / 400f).coerceIn(0.2f, 1f)
-    }
+            vec3 col;
+            if (iter >= uMaxIter) {
+                if (uColorMode == 4 && sumInvDist > 0.0) {
+                    float intT = min(sumInvDist / (float(uMaxIter) * 0.1), 1.0);
+                    col = palette_color(intT * 0.5) * 0.15;
+                } else {
+                    col = palette_color(distT) * 0.2;
+                }
+            } else {
+                if (uColorMode == 0) {
+                    col = palette_color(distT);
+                } else if (uColorMode == 1) {
+                    float angleT = fract((atan(minTZ.y, minTZ.x) / PI_F + 1.0) * 0.5);
+                    col = palette_color(angleT);
+                    col *= 0.85 + 0.15 * (1.0 - distT);
+                } else if (uColorMode == 2) {
+                    float iterT = float(minIter) * invMaxIter;
+                    col = palette_color(iterT);
+                    col *= 0.8 + 0.2 * (1.0 - distT);
+                } else if (uColorMode == 3) {
+                    float angleT = fract((atan(minTZ.y, minTZ.x) / PI_F + 1.0) * 0.5);
+                    float iterT = float(minIter) * invMaxIter;
+                    float blendT = fract(angleT * 0.6 + iterT * 0.4);
+                    col = palette_color(blendT);
+                    col *= 0.75 + 0.25 * (1.0 - distT);
+                } else {
+                    float angleT = fract((atan(minTZ.y, minTZ.x) / PI_F + 1.0) * 0.5);
+                    float layerT = iter > 0 ? min(sumInvDist / (float(iter) * 0.15), 1.0) : 0.0;
+                    float hueT = fract(angleT * 0.5 + layerT * 0.5);
+                    col = palette_color(hueT);
+                    float layerGlow = min(layerT * 1.5, 1.0);
+                    float edgeDim = 0.7 + 0.3 * (1.0 - distT);
+                    float finalBright = (layerGlow * 0.7 + edgeDim * 0.3) * 1.3;
+                    col *= finalBright;
+                }
+
+                if (minDist < 0.03) {
+                    float glow = (0.03 - minDist) * 33.33;
+                    float gs = glow * glow * (uColorMode == 0 || uColorMode == 4 ? 0.7 : 0.5);
+                    col = mix(col, vec3(1.0), gs);
+                }
+            }
+            fragColor = vec4(clamp(col, 0.0, 1.0), 1.0);
+        }
+    """
 }

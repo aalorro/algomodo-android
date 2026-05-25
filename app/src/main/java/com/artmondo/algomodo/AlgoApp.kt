@@ -16,6 +16,7 @@ import com.artmondo.algomodo.generators.procedural.*
 import com.artmondo.algomodo.generators.flux.*
 import com.artmondo.algomodo.generators.pixelart.*
 import com.artmondo.algomodo.generators.physics.*
+import com.artmondo.algomodo.generators.shader.*
 import dagger.hilt.android.HiltAndroidApp
 
 @HiltAndroidApp
@@ -217,5 +218,20 @@ class AlgoApp : Application() {
         GeneratorRegistry.register(PhysicsGravityPackingGenerator())
         GeneratorRegistry.register(SpringNetworksGenerator())
         GeneratorRegistry.register(WavePropagationGenerator())
+
+        // Shader (13) — GPU fragment-shader generators
+        GeneratorRegistry.register(ApollonianSpheresGenerator())
+        GeneratorRegistry.register(CausticPoolGenerator())
+        GeneratorRegistry.register(CrystalCavernGenerator())
+        GeneratorRegistry.register(GeodesicGenerator())
+        GeneratorRegistry.register(GlassGardenGenerator())
+        GeneratorRegistry.register(GrayScott3dGenerator())
+        GeneratorRegistry.register(HeightfieldHorizonGenerator())
+        GeneratorRegistry.register(InfiniteLatticeGenerator())
+        GeneratorRegistry.register(MandelbulbGenerator())
+        GeneratorRegistry.register(MetaballCluster3dGenerator())
+        GeneratorRegistry.register(SdfSculptGenerator())
+        GeneratorRegistry.register(TunnelVisionGenerator())
+        GeneratorRegistry.register(TwistedFormsGenerator())
     }
 }

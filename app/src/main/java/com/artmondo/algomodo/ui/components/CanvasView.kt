@@ -14,10 +14,17 @@ import androidx.compose.animation.core.tween
 import androidx.compose.foundation.Canvas as ComposeCanvas
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
+import androidx.compose.foundation.clickable
+import androidx.compose.foundation.interaction.MutableInteractionSource
 import androidx.compose.foundation.layout.*
+import androidx.compose.foundation.shape.CircleShape
+import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.PlayArrow
+import androidx.compose.material3.Icon
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.clip
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.geometry.Size
 import androidx.compose.ui.graphics.Color
@@ -55,6 +62,7 @@ fun AlgoCanvas(
     showFps: Boolean,
     renderTrigger: Int,
     onPauseTimeCapture: ((Float) -> Unit)? = null,
+    onPlayClick: (() -> Unit)? = null,
     modifier: Modifier = Modifier
 ) {
     if (generator == null) {
@@ -95,18 +103,46 @@ fun AlgoCanvas(
             onPauseTimeCapture?.invoke(staticTime)
         }
 
-        StaticCanvas(
-            generator = generator,
-            params = params,
-            seed = seed,
-            palette = palette,
-            quality = quality,
-            aspectRatio = aspectRatio,
-            postFX = postFX,
-            staticTime = staticTime,
-            renderTrigger = renderTrigger,
-            modifier = modifier
-        )
+        Box(modifier = modifier) {
+            StaticCanvas(
+                generator = generator,
+                params = params,
+                seed = seed,
+                palette = palette,
+                quality = quality,
+                aspectRatio = aspectRatio,
+                postFX = postFX,
+                staticTime = staticTime,
+                renderTrigger = renderTrigger,
+                modifier = Modifier.fillMaxSize()
+            )
+
+            // Translucent center play button — visible only when animation is
+            // paused/inactive for a generator that supports animation.
+            if (generator.supportsAnimation && onPlayClick != null) {
+                Box(
+                    modifier = Modifier
+                        .align(Alignment.Center)
+                        .size(96.dp)
+                        .clip(CircleShape)
+                        .background(Color.Black.copy(alpha = 0.35f))
+                        .clickable(
+                            interactionSource = remember { MutableInteractionSource() },
+                            indication = null
+                        ) { onPlayClick() },
+                    contentAlignment = Alignment.Center
+                ) {
+                    Icon(
+                        imageVector = Icons.Filled.PlayArrow,
+                        contentDescription = "Play animation",
+                        tint = Color.White.copy(alpha = 0.85f),
+                        modifier = Modifier
+                            .size(64.dp)
+                            .offset(x = 3.dp)
+                    )
+                }
+            }
+        }
     }
 }
 

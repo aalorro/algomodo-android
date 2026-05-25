@@ -6,7 +6,7 @@ Create stunning algorithmic art using pure mathematics — noise functions, cell
 
 ## Features
 
-- **164 generators** across 14 families (animation, cellular automata, flux, fractals, geometry, graphs, image processing, noise, physics, pixel art, plotter, procedural, text, Voronoi)
+- **177 generators** across 15 families (animation, cellular automata, flux, fractals, geometry, graphs, image processing, noise, physics, pixel art, plotter, procedural, shader, text, Voronoi)
 - **Over 9.5 million unique parameter configurations** — before accounting for seeds, which multiply the space into the trillions
 - **Deterministic rendering** — same seed and parameters always produce the same output
 - **Animation support** — play, export as GIF or MP4
@@ -37,6 +37,7 @@ Create stunning algorithmic art using pure mathematics — noise functions, cell
 | Pixel Art | 12 | Pixel Voronoi, Pixel Maze, Pixel Terrain, Pixel City, Pixel Portraits, Pixel Flow Field |
 | Plotter | 15 | Circle Packing, Stippling, Contour Lines, Guilloche |
 | Procedural | 9 | Audio Reactive, SDF Raymarch, Particle Advection, Feedback Systems, Warp |
+| Shader | 13 | Mandelbulb, Apollonian Spheres, Caustic Pool, Crystal Cavern, Geodesic, Glass Garden, Gray-Scott 3D, Tunnel Vision, SDF Sculpt |
 | Text | 9 | Concrete Poetry, Matrix, Glyphs, Naive Handwriting, Procedural Cursive, Poem Layout, Text Code |
 | Voronoi | 11 | Voronoi Cells, Delaunay Mesh, Crackle, Weighted Voronoi |
 
@@ -50,7 +51,7 @@ Create stunning algorithmic art using pure mathematics — noise functions, cell
 - **Reload** — re-render with current settings (useful after changing post-FX)
 
 **Tabs:**
-1. **Generators** — browse and select from 164 generators across 14 families
+1. **Generators** — browse and select from 177 generators across 15 families
 2. **Params** — adjust parameters, lock individual params to preserve during randomization
 3. **Export** — save images, export/import recipes
 4. **Settings** — theme, quality, FPS, post-processing

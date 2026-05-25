@@ -20,7 +20,8 @@ object GeneratorRegistry {
         "voronoi" to "Voronoi",
         "procedural" to "Procedural",
         "pixel-art" to "Pixel Art",
-        "physics" to "Physics"
+        "physics" to "Physics",
+        "shader" to "Shader"
     )
 
     private val familyDescriptions = mapOf(
@@ -36,7 +37,8 @@ object GeneratorRegistry {
         "voronoi" to "Voronoi cells, Delaunay, ridges, fractured, etc.",
         "procedural" to "Warp, SDF, displacement, edge glow, feedback, particles, instanced geometry, audio-reactive",
         "pixel-art" to "Voronoi cells, symmetry, terrain, harmonograph, dither, worms, flow fields, mazes, automata, diffusion, city, portraits — all rendered at low resolution with nearest-neighbor upscaling",
-        "physics" to "Boids, cloth, fluids, n-body, electric/magnetic fields, pendulums, springs, waves, nuclear, brownian motion, gravity packing"
+        "physics" to "Boids, cloth, fluids, n-body, electric/magnetic fields, pendulums, springs, waves, nuclear, brownian motion, gravity packing",
+        "shader" to "GPU fragment-shader generators — ray-marched 3D fractals, animated caustics, and other effects that run at native framerate via OpenGL ES 3.0"
     )
 
     fun register(generator: Generator) {

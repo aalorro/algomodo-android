@@ -1,26 +1,31 @@
 package com.artmondo.algomodo.generators.voronoi
 
-import android.graphics.Bitmap
-import android.graphics.Canvas
-import android.graphics.Color
-import android.graphics.Paint
+import android.opengl.GLES30
 import com.artmondo.algomodo.core.rng.SeededRNG
 import com.artmondo.algomodo.core.rng.SimplexNoise
 import com.artmondo.algomodo.data.palettes.Palette
-import com.artmondo.algomodo.generators.Generator
+import com.artmondo.algomodo.generators.GpuGenerator
 import com.artmondo.algomodo.generators.ParamGroup
 import com.artmondo.algomodo.generators.Parameter
 import com.artmondo.algomodo.generators.Quality
-import kotlin.math.abs
-import kotlin.math.sqrt
+import com.artmondo.algomodo.rendering.gl.PaletteUniform
+import com.artmondo.algomodo.rendering.gl.VoronoiGlsl
 
 /**
- * Centroidal Voronoi tessellation via Lloyd's relaxation.
+ * GPU port. Centroidal Voronoi via Lloyd's relaxation — same as VoronoiCells
+ * but the seeds are pre-relaxed toward their cell centroids before rendering.
+ * Adds "Show Seeds" (draws a small white circle at every centroid) and "By
+ * Position" color mode (palette indexed by seed distance from origin).
  *
- * Starts with random seed points and iteratively moves each point to the
- * centroid of its Voronoi cell, producing increasingly regular cells.
+ * Lloyd relaxation is expensive (O(passes * pixels * points) per pass) so the
+ * relaxed centroids are cached per (seed, count, canvas-size, metric). Repeated
+ * renders — including animation frames — reuse the cached result and only the
+ * cheap per-frame animation drift runs on every bindUniforms call.
+ *
+ * The Show Seeds dot is drawn analytically in the fragment shader via a
+ * near-zero f1 test.
  */
-class CentroidalVoronoiGenerator : Generator {
+class CentroidalVoronoiGenerator : GpuGenerator {
 
     override val id = "centroidal-voronoi"
     override val family = "voronoi"
@@ -28,15 +33,15 @@ class CentroidalVoronoiGenerator : Generator {
     override val definition =
         "Centroidal Voronoi tessellation where Lloyd's relaxation iteratively moves seed points to their cell centroids, producing regular honeycomb-like patterns."
     override val algorithmNotes =
-        "Initial points from SeededRNG. Each relaxation step assigns every sampled pixel to its nearest seed point, " +
-        "accumulates centroids, then moves points. The number of relaxation steps controls regularity. " +
-        "Supports flat, gradient, and outlined cell rendering styles. Animation gently oscillates points via noise."
+        "GPU shader. CPU pre-runs Lloyd relaxation once (5 passes) and caches the result; subsequent frames reuse " +
+        "the cached centroids and only the simplex-noise animation drift is recomputed. The fragment shader does " +
+        "a brute-force nearest/second-nearest scan. Show Seeds draws a 3px white dot at each centroid by checking " +
+        "pixel-to-nearest distance."
     override val supportsVector = false
     override val supportsAnimation = true
 
     override val parameterSchema = listOf(
         Parameter.NumberParam("Cell Count", "cellCount", ParamGroup.COMPOSITION, "", 5f, 200f, 5f, 50f),
-        Parameter.NumberParam("Relaxation Steps", "relaxationSteps", ParamGroup.GEOMETRY, "Lloyd relaxation passes — more steps = more regular hexagonal cells", 0f, 15f, 1f, 5f),
         Parameter.NumberParam("Border Width", "borderWidth", ParamGroup.GEOMETRY, "", 0f, 6f, 0.5f, 1.5f),
         Parameter.BooleanParam("Show Seeds", "showSeeds", ParamGroup.GEOMETRY, "Draw the centroid seed point in each cell", false),
         Parameter.SelectParam("Color Mode", "colorMode", ParamGroup.COLOR, "", listOf("By Index", "By Distance", "By Position"), "By Index"),
@@ -46,221 +51,133 @@ class CentroidalVoronoiGenerator : Generator {
     )
 
     override fun getDefaultParams(): Map<String, Any> = mapOf(
-        "cellCount" to 50f,
-        "relaxationSteps" to 5f,
-        "borderWidth" to 1.5f,
-        "showSeeds" to false,
-        "colorMode" to "By Index",
-        "distanceMetric" to "Euclidean",
-        "animSpeed" to 0.4f,
-        "animAmp" to 0.2f
+        "cellCount" to 50f, "borderWidth" to 1.5f,
+        "showSeeds" to false, "colorMode" to "By Index",
+        "distanceMetric" to "Euclidean", "animSpeed" to 0.4f, "animAmp" to 0.2f
     )
 
-    override fun renderCanvas(
-        canvas: Canvas,
-        bitmap: Bitmap,
-        params: Map<String, Any>,
-        seed: Int,
-        palette: Palette,
-        quality: Quality,
-        time: Float
+    override fun bindUniforms(
+        programId: Int, params: Map<String, Any>, seed: Int, palette: Palette,
+        quality: Quality, time: Float, width: Int, height: Int
     ) {
-        val w = bitmap.width
-        val h = bitmap.height
-        val numPoints = (params["cellCount"] as? Number)?.toInt() ?: 50
-        if (numPoints <= 0) { canvas.drawColor(Color.BLACK); return }
-        val relaxSteps = (params["relaxationSteps"] as? Number)?.toInt() ?: 5
-        val showCentroids = params["showSeeds"] as? Boolean ?: false
+        val numPoints = ((params["cellCount"] as? Number)?.toInt() ?: 50)
+            .coerceIn(1, VoronoiGlsl.MAX_POINTS)
+        val showSeeds = (params["showSeeds"] as? Boolean) ?: false
         val borderWidth = (params["borderWidth"] as? Number)?.toFloat() ?: 1.5f
-        val showBorder = borderWidth > 0f
         val colorMode = (params["colorMode"] as? String) ?: "By Index"
-        val distanceMetric = (params["distanceMetric"] as? String) ?: "Euclidean"
+        val metric = (params["distanceMetric"] as? String) ?: "Euclidean"
         val animSpeed = (params["animSpeed"] as? Number)?.toFloat() ?: 0.4f
         val animAmp = (params["animAmp"] as? Number)?.toFloat() ?: 0.2f
 
-        val metricId = when (distanceMetric.lowercase()) {
-            "manhattan" -> 1; "chebyshev" -> 2; else -> 0
-        }
-        val isEuclidean = metricId == 0
+        val metricId = VoronoiGlsl.metricId(metric)
         val colorModeId = when (colorMode) { "By Distance" -> 1; "By Position" -> 2; else -> 0 }
 
-        val rng = SeededRNG(seed)
-        val noise = SimplexNoise(seed)
-        val px = FloatArray(numPoints)
-        val py = FloatArray(numPoints)
-        for (i in 0 until numPoints) {
-            px[i] = rng.random() * w
-            py[i] = rng.random() * h
-        }
+        val cached = getRelaxedPoints(seed, numPoints, width, height, metricId)
+        val px = cached.px.copyOf()
+        val py = cached.py.copyOf()
+        VoronoiGlsl.animatePoints(px, py, numPoints, width, height,
+            SimplexNoise(seed), time, animSpeed, animAmp,
+            keyStep = 0.5f, baseX = 10f, baseY = 110f, driftScale = 0.02f)
 
-        // Lloyd relaxation (brute-force at coarse sampling — acceptable for few passes)
-        val sampleStep = when (quality) { Quality.DRAFT -> 4; Quality.BALANCED -> 3; Quality.ULTRA -> 2 }
-        for (step in 0 until relaxSteps) {
-            val sumX = FloatArray(numPoints)
-            val sumY = FloatArray(numPoints)
-            val count = IntArray(numPoints)
-            for (sy in 0 until h step sampleStep) {
-                val yf = sy.toFloat()
-                for (sx in 0 until w step sampleStep) {
-                    val xf = sx.toFloat()
-                    var bd = Float.MAX_VALUE; var bi = 0
-                    for (i in 0 until numPoints) {
-                        val dx = xf - px[i]; val dy = yf - py[i]
-                        val d = if (isEuclidean) dx * dx + dy * dy
-                                else if (metricId == 1) abs(dx) + abs(dy)
-                                else maxOf(abs(dx), abs(dy))
-                        if (d < bd) { bd = d; bi = i }
-                    }
-                    sumX[bi] += xf; sumY[bi] += yf; count[bi]++
-                }
-            }
-            for (i in 0 until numPoints) {
-                if (count[i] > 0) { px[i] = sumX[i] / count[i]; py[i] = sumY[i] / count[i] }
-            }
-        }
+        val packed = VoronoiGlsl.packPoints(px, py, numPoints)
 
-        // Animate
-        if (time > 0f) {
-            val speed = animSpeed / 0.4f; val amp = animAmp / 0.2f
-            val wf = w.toFloat(); val hf = h.toFloat()
-            for (i in 0 until numPoints) {
-                px[i] = (px[i] + noise.noise2D(i * 0.5f + 10f, time * 0.2f * speed) * wf * 0.02f * amp).coerceIn(0f, wf - 1f)
-                py[i] = (py[i] + noise.noise2D(i * 0.5f + 110f, time * 0.2f * speed) * hf * 0.02f * amp).coerceIn(0f, hf - 1f)
-            }
-        }
-
-        // ── Spatial grid (3×3 search window) ──
-        val gridSize = (maxOf(w, h).toFloat() / sqrt(numPoints.toFloat())).coerceAtLeast(8f)
-        val invGridSize = 1f / gridSize
-        val gridCols = (w * invGridSize).toInt() + 1
-        val gridRows = (h * invGridSize).toInt() + 1
-        val gcM1 = gridCols - 1; val grM1 = gridRows - 1
-        val gridHeads = IntArray(gridCols * gridRows) { -1 }
-        val gridNext = IntArray(numPoints) { -1 }
-        for (i in 0 until numPoints) {
-            val gx = minOf((px[i] * invGridSize).toInt(), gcM1)
-            val gy = minOf((py[i] * invGridSize).toInt(), grM1)
-            val cell = gy * gridCols + gx
-            gridNext[i] = gridHeads[cell]; gridHeads[cell] = i
-        }
-
-        val colors = palette.colorInts()
-        val colorsSize = colors.size
-        val lut = if (colorModeId != 0) palette.buildLut(256) else null
-        val pixels = IntArray(w * h)
-        val renderStep = when (quality) { Quality.DRAFT -> 2; else -> 1 }
-
-        if (isEuclidean && !showBorder && colorModeId == 0) {
-            // ── FAST PATH: Euclidean + By Index + no borders ──
-            for (row in 0 until h step renderStep) {
-                val y = row.toFloat()
-                val rowOff = row * w
-                val gy = minOf((y * invGridSize).toInt(), grM1)
-                val cyMin = maxOf(gy - 1, 0); val cyMax = minOf(gy + 1, grM1)
-                for (col in 0 until w step renderStep) {
-                    val x = col.toFloat()
-                    val gx = minOf((x * invGridSize).toInt(), gcM1)
-                    val cxMin = maxOf(gx - 1, 0); val cxMax = minOf(gx + 1, gcM1)
-                    var bestDist = Float.MAX_VALUE; var bestIdx = 0
-                    for (cy in cyMin..cyMax) {
-                        val ro = cy * gridCols
-                        for (cx in cxMin..cxMax) {
-                            var idx = gridHeads[ro + cx]
-                            while (idx >= 0) {
-                                val dx = x - px[idx]; val dy = y - py[idx]
-                                val d = dx * dx + dy * dy
-                                if (d < bestDist) { bestDist = d; bestIdx = idx }
-                                idx = gridNext[idx]
-                            }
-                        }
-                    }
-                    val color = colors[bestIdx % colorsSize]
-                    if (renderStep == 1) {
-                        pixels[rowOff + col] = color
-                    } else {
-                        val i0 = rowOff + col
-                        pixels[i0] = color
-                        if (col + 1 < w) pixels[i0 + 1] = color
-                        if (row + 1 < h) { pixels[i0 + w] = color; if (col + 1 < w) pixels[i0 + w + 1] = color }
-                    }
-                }
-            }
-        } else {
-            // ── GENERAL PATH ──
-            val avgCellSize = if (colorModeId == 1) sqrt((w.toFloat() * h.toFloat()) / numPoints) else 0f
-            val diagonal = if (colorModeId == 2) sqrt((w * w + h * h).toFloat()) else 1f
-            val edgeThresh = borderWidth * 2f
-            val edgeThreshSq = edgeThresh * edgeThresh
-            for (row in 0 until h step renderStep) {
-                val y = row.toFloat()
-                val rowOff = row * w
-                val gy = minOf((y * invGridSize).toInt(), grM1)
-                val cyMin = maxOf(gy - 1, 0); val cyMax = minOf(gy + 1, grM1)
-                for (col in 0 until w step renderStep) {
-                    val x = col.toFloat()
-                    val gx = minOf((x * invGridSize).toInt(), gcM1)
-                    val cxMin = maxOf(gx - 1, 0); val cxMax = minOf(gx + 1, gcM1)
-                    var bestDist = Float.MAX_VALUE; var secondDist = Float.MAX_VALUE; var bestIdx = 0
-                    for (cy in cyMin..cyMax) {
-                        val ro = cy * gridCols
-                        for (cx in cxMin..cxMax) {
-                            var idx = gridHeads[ro + cx]
-                            while (idx >= 0) {
-                                val dx = x - px[idx]; val dy = y - py[idx]
-                                val d = if (isEuclidean) dx * dx + dy * dy
-                                        else if (metricId == 1) abs(dx) + abs(dy)
-                                        else maxOf(abs(dx), abs(dy))
-                                if (d < bestDist) { secondDist = bestDist; bestDist = d; bestIdx = idx }
-                                else if (d < secondDist) { secondDist = d }
-                                idx = gridNext[idx]
-                            }
-                        }
-                    }
-                    val sqrtBest = if (isEuclidean && (showBorder || colorModeId == 1)) sqrt(bestDist) else 0f
-                    val isEdge = showBorder && if (isEuclidean)
-                        secondDist < bestDist + edgeThreshSq + 2f * edgeThresh * sqrtBest
-                    else (secondDist - bestDist) < edgeThresh
-                    val color = if (isEdge) Color.BLACK
-                    else when (colorModeId) {
-                        1 -> {
-                            val dist = if (isEuclidean) sqrtBest else bestDist
-                            lut!![(minOf(dist / avgCellSize, 1f) * 255f).toInt().coerceIn(0, 255)]
-                        }
-                        2 -> {
-                            val t = (sqrt(px[bestIdx] * px[bestIdx] + py[bestIdx] * py[bestIdx]) / diagonal).coerceIn(0f, 1f)
-                            lut!![(t * 255f).toInt().coerceIn(0, 255)]
-                        }
-                        else -> colors[bestIdx % colorsSize]
-                    }
-                    if (renderStep == 1) {
-                        pixels[rowOff + col] = color
-                    } else {
-                        val i0 = rowOff + col
-                        pixels[i0] = color
-                        if (col + 1 < w) pixels[i0 + 1] = color
-                        if (row + 1 < h) { pixels[i0 + w] = color; if (col + 1 < w) pixels[i0 + w + 1] = color }
-                    }
-                }
-            }
-        }
-
-        bitmap.setPixels(pixels, 0, w, 0, 0, w, h)
-        canvas.drawBitmap(bitmap, 0f, 0f, null)
-
-        if (showCentroids) {
-            val paint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
-                color = Color.WHITE
-                style = Paint.Style.FILL
-            }
-            for (i in 0 until numPoints) {
-                canvas.drawCircle(px[i], py[i], 3f, paint)
-            }
-        }
+        GLES30.glUniform2fv(GLES30.glGetUniformLocation(programId, "uPoints"),
+            VoronoiGlsl.MAX_POINTS, packed, 0)
+        GLES30.glUniform1i(GLES30.glGetUniformLocation(programId, "uPointCount"), numPoints)
+        GLES30.glUniform1i(GLES30.glGetUniformLocation(programId, "uMetric"), metricId)
+        GLES30.glUniform1f(GLES30.glGetUniformLocation(programId, "uBorderWidth"), borderWidth)
+        GLES30.glUniform1i(GLES30.glGetUniformLocation(programId, "uShowSeeds"), if (showSeeds) 1 else 0)
+        GLES30.glUniform1i(GLES30.glGetUniformLocation(programId, "uColorMode"), colorModeId)
     }
 
-    override fun estimateCost(params: Map<String, Any>, quality: Quality): Float {
-        val n = (params["cellCount"] as? Number)?.toFloat() ?: 50f
-        val steps = (params["relaxationSteps"] as? Number)?.toFloat() ?: 5f
-        return ((n * steps) / 7500f).coerceIn(0.2f, 1f)
+    override fun fragmentShaderSource(): String = """#version 300 es
+        precision highp float;
+
+        uniform vec2 uResolution;
+        uniform float uTime;
+        uniform vec3 uAudio;
+        ${PaletteUniform.GLSL_HELPERS}
+        ${VoronoiGlsl.GLSL_HELPERS}
+
+        uniform float uBorderWidth;
+        uniform int uShowSeeds;
+        uniform int uColorMode;   // 0 = index, 1 = distance, 2 = position
+
+        out vec4 fragColor;
+
+        void main() {
+            vec2 p = gl_FragCoord.xy;
+            vec4 f = voronoiF1F2(p);
+            float f1Lin = (uMetric == 0) ? sqrt(f.x) : f.x;
+            float f2Lin = (uMetric == 0) ? sqrt(f.y) : f.y;
+
+            float edgeThresh = uBorderWidth * 2.0;
+            bool isEdge = (uBorderWidth > 0.0) && ((f2Lin - f1Lin) < edgeThresh);
+
+            vec3 col;
+            if (isEdge) {
+                col = vec3(0.0);
+            } else if (uColorMode == 1) {
+                float avgCellSize = sqrt(uResolution.x * uResolution.y / max(float(uPointCount), 1.0));
+                float t = clamp(f1Lin / avgCellSize, 0.0, 1.0);
+                col = palette_color(t);
+            } else if (uColorMode == 2) {
+                int idx = int(f.z + 0.5);
+                vec2 sp = uPoints[idx];
+                float diagonal = sqrt(uResolution.x * uResolution.x + uResolution.y * uResolution.y);
+                float t = clamp(length(sp) / diagonal, 0.0, 1.0);
+                col = palette_color(t);
+            } else {
+                float t = mod(f.z, 5.0) / 4.0;
+                col = palette_color(t);
+            }
+
+            // Show seeds — paint a small white dot anywhere within 3 pixels of
+            // the nearest centroid (overrides everything else).
+            if (uShowSeeds == 1 && f1Lin < 3.0) {
+                col = vec3(1.0);
+            }
+
+            fragColor = vec4(col, 1.0);
+        }
+    """
+
+    // ── Relaxed-centroid cache ──
+    //
+    // Lloyd's relaxation is by far the slowest part of this generator (the
+    // grid scan is O(passes * px * py * numPoints) and we run it 5 times).
+    // The relaxed positions only depend on (seed, numPoints, width, height,
+    // metric) — they're independent of time, animation, palette, etc. — so
+    // we memoise them and reuse across frames. Animation drift is applied to
+    // a fresh copy on each render so the cache itself is never mutated.
+    private data class RelaxKey(
+        val seed: Int, val numPoints: Int,
+        val width: Int, val height: Int,
+        val metricId: Int
+    )
+    private data class RelaxedPoints(val px: FloatArray, val py: FloatArray)
+
+    private val relaxCache = object : LinkedHashMap<RelaxKey, RelaxedPoints>(8, 0.75f, true) {
+        override fun removeEldestEntry(eldest: MutableMap.MutableEntry<RelaxKey, RelaxedPoints>?): Boolean =
+            size > 16
+    }
+
+    private fun getRelaxedPoints(
+        seed: Int, numPoints: Int, width: Int, height: Int, metricId: Int
+    ): RelaxedPoints {
+        val key = RelaxKey(seed, numPoints, width, height, metricId)
+        synchronized(relaxCache) { relaxCache[key] }?.let { return it }
+
+        val rng = SeededRNG(seed)
+        val px = FloatArray(numPoints); val py = FloatArray(numPoints)
+        VoronoiGlsl.scatterPoints(px, py, numPoints, width, height, rng)
+        VoronoiGlsl.lloydRelax(px, py, numPoints, width, height, metricId, passes = RELAX_PASSES)
+        val entry = RelaxedPoints(px, py)
+        synchronized(relaxCache) { relaxCache[key] = entry }
+        return entry
+    }
+
+    companion object {
+        private const val RELAX_PASSES = 5
     }
 }

@@ -1,16 +1,20 @@
 package com.artmondo.algomodo.generators.noise
 
-import android.graphics.Bitmap
-import android.graphics.Canvas
-import com.artmondo.algomodo.core.rng.SimplexNoise
+import android.opengl.GLES30
 import com.artmondo.algomodo.data.palettes.Palette
-import com.artmondo.algomodo.generators.Generator
+import com.artmondo.algomodo.generators.GpuGenerator
 import com.artmondo.algomodo.generators.ParamGroup
 import com.artmondo.algomodo.generators.Parameter
 import com.artmondo.algomodo.generators.Quality
-import kotlin.math.*
+import com.artmondo.algomodo.rendering.gl.NoiseGlsl
+import com.artmondo.algomodo.rendering.gl.PaletteUniform
 
-class FbmTerrainGenerator : Generator {
+/**
+ * GPU port of the FBM terrain visualizer. Smooth/ridged/terraced styles,
+ * domain warping at independent scale, contrast remap, and an optional
+ * center-biased gradient color mode.
+ */
+class FbmTerrainGenerator : GpuGenerator {
 
     override val id = "fbm-terrain"
     override val family = "noise"
@@ -18,8 +22,8 @@ class FbmTerrainGenerator : Generator {
     override val definition =
         "Fractal Brownian Motion terrain visualization that maps layered noise to palette colors like a topographic height map."
     override val algorithmNotes =
-        "Multi-octave FBM noise per pixel with domain warping. " +
-        "'ridged' mode inverts abs(noise) for mountain ridges. " +
+        "GPU shader. Multi-octave FBM noise per pixel with domain warping. " +
+        "'ridged' mode uses (1 - |noise|)^2 for mountain ridges. " +
         "'terraced' mode quantises into elevation steps. " +
         "Contrast scales the value range. Color modes: height (full palette), gradient (center-biased)."
     override val supportsVector = false
@@ -47,110 +51,130 @@ class FbmTerrainGenerator : Generator {
         "animMode" to "drift", "speed" to 0.5f
     )
 
-    override fun renderCanvas(
-        canvas: Canvas, bitmap: Bitmap, params: Map<String, Any>,
-        seed: Int, palette: Palette, quality: Quality, time: Float
+    override fun bindUniforms(
+        programId: Int, params: Map<String, Any>, seed: Int, palette: Palette,
+        quality: Quality, time: Float, width: Int, height: Int
     ) {
-        val w = bitmap.width; val h = bitmap.height
         val scale = (params["scale"] as? Number)?.toFloat() ?: 2f
-        val octaves = (params["octaves"] as? Number)?.toInt() ?: 4
+        val octaves = ((params["octaves"] as? Number)?.toInt() ?: 4).coerceIn(1, 10)
         val lacunarity = (params["lacunarity"] as? Number)?.toFloat() ?: 2f
         val gain = (params["gain"] as? Number)?.toFloat() ?: 0.5f
         val warpStrength = (params["warpStrength"] as? Number)?.toFloat() ?: 0.5f
         val warpScale = (params["warpScale"] as? Number)?.toFloat() ?: 2f
         val style = (params["style"] as? String) ?: "smooth"
-        val terraceLevels = (params["terraceLevels"] as? Number)?.toInt() ?: 8
+        val terraceLevels = ((params["terraceLevels"] as? Number)?.toInt() ?: 8).coerceAtLeast(2)
         val contrast = (params["contrast"] as? Number)?.toFloat() ?: 1f
         val colorMode = (params["colorMode"] as? String) ?: "height"
         val animMode = (params["animMode"] as? String) ?: "drift"
         val speed = (params["speed"] as? Number)?.toFloat() ?: 0.5f
 
-        val noise = SimplexNoise(seed)
-        val pixels = IntArray(w * h)
-        val invScale = scale / w.toFloat()
-        val warpInvScale = warpScale / w.toFloat()
-        val cx = w / 2f * invScale; val cy = h / 2f * invScale
+        val styleId = when (style) { "ridged" -> 1; "terraced" -> 2; else -> 0 }
+        val colorModeId = if (colorMode == "gradient") 1 else 0
+        val animModeId = when (animMode) { "rotate" -> 1; "pulse" -> 2; else -> 0 }
+        val (seedOffX, seedOffY) = NoiseGlsl.seedToOffset(seed)
 
-        val step = if (quality == Quality.DRAFT) 2 else 1
+        GLES30.glUniform1f(GLES30.glGetUniformLocation(programId, "uScale"), scale)
+        GLES30.glUniform1i(GLES30.glGetUniformLocation(programId, "uOctaves"), octaves)
+        GLES30.glUniform1f(GLES30.glGetUniformLocation(programId, "uLacunarity"), lacunarity)
+        GLES30.glUniform1f(GLES30.glGetUniformLocation(programId, "uGain"), gain)
+        GLES30.glUniform1f(GLES30.glGetUniformLocation(programId, "uWarpStrength"), warpStrength)
+        GLES30.glUniform1f(GLES30.glGetUniformLocation(programId, "uWarpScale"), warpScale)
+        GLES30.glUniform1i(GLES30.glGetUniformLocation(programId, "uStyle"), styleId)
+        GLES30.glUniform1i(GLES30.glGetUniformLocation(programId, "uTerraceLevels"), terraceLevels)
+        GLES30.glUniform1f(GLES30.glGetUniformLocation(programId, "uContrast"), contrast)
+        GLES30.glUniform1i(GLES30.glGetUniformLocation(programId, "uColorMode"), colorModeId)
+        GLES30.glUniform1i(GLES30.glGetUniformLocation(programId, "uAnimMode"), animModeId)
+        GLES30.glUniform1f(GLES30.glGetUniformLocation(programId, "uSpeed"), speed)
+        GLES30.glUniform2f(GLES30.glGetUniformLocation(programId, "uSeedOffset"), seedOffX, seedOffY)
+    }
 
-        for (py in 0 until h step step) {
-            for (px in 0 until w step step) {
-                var nx = px * invScale
-                var ny = py * invScale
+    override fun fragmentShaderSource(): String = """#version 300 es
+        precision highp float;
 
-                // Animation
-                when (animMode) {
-                    "drift" -> { nx += time * speed * 0.3f; ny += time * speed * 0.2f }
-                    "rotate" -> {
-                        val dx = nx - cx; val dy = ny - cy
-                        val angle = time * speed * 0.3f
-                        nx = cx + dx * cos(angle) - dy * sin(angle)
-                        ny = cy + dx * sin(angle) + dy * cos(angle)
-                    }
-                    "pulse" -> {
-                        val s = 1f + 0.2f * sin(time * speed)
-                        nx = cx + (nx - cx) * s; ny = cy + (ny - cy) * s
-                        nx += time * speed * 0.1f
-                    }
-                }
+        uniform vec2 uResolution;
+        uniform float uTime;
+        uniform vec3 uAudio;
+        ${PaletteUniform.GLSL_HELPERS}
+        ${NoiseGlsl.GLSL_HELPERS}
 
-                // Domain warp
-                if (warpStrength > 0f) {
-                    val wx = noise.fbm(px * warpInvScale + 5.2f, py * warpInvScale + 1.3f, 3, lacunarity, gain)
-                    val wy = noise.fbm(px * warpInvScale + 1.7f, py * warpInvScale + 9.2f, 3, lacunarity, gain)
-                    nx += wx * warpStrength; ny += wy * warpStrength
-                }
+        uniform float uScale;
+        uniform int uOctaves;
+        uniform float uLacunarity;
+        uniform float uGain;
+        uniform float uWarpStrength;
+        uniform float uWarpScale;
+        uniform int uStyle;          // 0 smooth, 1 ridged, 2 terraced
+        uniform int uTerraceLevels;
+        uniform float uContrast;
+        uniform int uColorMode;      // 0 height, 1 gradient
+        uniform int uAnimMode;       // 0 drift, 1 rotate, 2 pulse
+        uniform float uSpeed;
+        uniform vec2 uSeedOffset;
 
-                var value = when (style) {
-                    "ridged" -> noise.ridged(nx, ny, octaves, lacunarity, gain)
-                    else -> noise.fbm(nx, ny, octaves, lacunarity, gain)
-                }
+        out vec4 fragColor;
 
-                // Normalise
-                value = when (style) {
-                    "ridged" -> value.coerceIn(0f, 1f)
-                    else -> ((value + 1f) * 0.5f).coerceIn(0f, 1f)
-                }
+        void main() {
+            float invScale = uScale / uResolution.x;
+            float warpInvScale = uWarpScale / uResolution.x;
+            vec2 p = gl_FragCoord.xy * invScale;
+            vec2 c = vec2(uResolution.x * 0.5, uResolution.y * 0.5) * invScale;
+            vec2 warpSrc = gl_FragCoord.xy * warpInvScale;
 
-                // Contrast
-                if (contrast != 1f) {
-                    value = ((value - 0.5f) * contrast + 0.5f).coerceIn(0f, 1f)
-                }
-
-                // Terracing
-                if (style == "terraced") {
-                    value = (floor(value * terraceLevels) / (terraceLevels - 1).coerceAtLeast(1)).coerceIn(0f, 1f)
-                }
-
-                // Color mode
-                val t = when (colorMode) {
-                    "gradient" -> {
-                        // Center-biased: remap so midtones spread wider
-                        val centered = (value - 0.5f) * 2f // [-1, 1]
-                        ((centered * abs(centered) + 1f) * 0.5f).coerceIn(0f, 1f)
-                    }
-                    else -> value
-                }
-
-                val color = palette.lerpColor(t)
-
-                if (step == 1) {
-                    pixels[py * w + px] = color
-                } else {
-                    for (dy in 0 until step) for (dx in 0 until step) {
-                        val fx = px + dx; val fy = py + dy
-                        if (fx < w && fy < h) pixels[fy * w + fx] = color
-                    }
-                }
+            // Animation
+            if (uAnimMode == 1) {
+                vec2 d = p - c;
+                float ang = uTime * uSpeed * 0.3;
+                float cs = cos(ang); float sn = sin(ang);
+                p = c + vec2(d.x * cs - d.y * sn, d.x * sn + d.y * cs);
+            } else if (uAnimMode == 2) {
+                float s = 1.0 + 0.2 * sin(uTime * uSpeed);
+                p = c + (p - c) * s;
+                p.x += uTime * uSpeed * 0.1;
+            } else {
+                p.x += uTime * uSpeed * 0.3;
+                p.y += uTime * uSpeed * 0.2;
             }
+
+            p += uSeedOffset;
+            warpSrc += uSeedOffset;
+
+            // Domain warp (independent warpScale, 3-octave fbm)
+            if (uWarpStrength > 0.0) {
+                float wx = fbm(warpSrc + vec2(5.2, 1.3), 3, uLacunarity, uGain);
+                float wy = fbm(warpSrc + vec2(1.7, 9.2), 3, uLacunarity, uGain);
+                p += vec2(wx, wy) * uWarpStrength;
+            }
+
+            // Style sampling
+            float value;
+            if (uStyle == 1) {
+                value = ridgedNoise(p, uOctaves, uLacunarity, uGain);
+                value = clamp(value, 0.0, 1.0);
+            } else {
+                value = fbm(p, uOctaves, uLacunarity, uGain);
+                value = clamp((value + 1.0) * 0.5, 0.0, 1.0);
+            }
+
+            // Contrast
+            if (uContrast != 1.0) {
+                value = clamp((value - 0.5) * uContrast + 0.5, 0.0, 1.0);
+            }
+
+            // Terracing — only applies in terraced style (CPU branches on style==terraced)
+            if (uStyle == 2) {
+                float tl = float(uTerraceLevels);
+                float denom = max(tl - 1.0, 1.0);
+                value = clamp(floor(value * tl) / denom, 0.0, 1.0);
+            }
+
+            // Colour mode
+            float t = value;
+            if (uColorMode == 1) {
+                float centered = (value - 0.5) * 2.0;
+                t = clamp((centered * abs(centered) + 1.0) * 0.5, 0.0, 1.0);
+            }
+
+            fragColor = vec4(palette_color(t), 1.0);
         }
-
-        bitmap.setPixels(pixels, 0, w, 0, 0, w, h)
-        canvas.drawBitmap(bitmap, 0f, 0f, null)
-    }
-
-    override fun estimateCost(params: Map<String, Any>, quality: Quality): Float {
-        val octaves = (params["octaves"] as? Number)?.toInt() ?: 4
-        return (octaves / 8f).coerceIn(0.3f, 1f)
-    }
+    """
 }

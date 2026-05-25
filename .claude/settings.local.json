@@ -15,7 +15,10 @@
       "Bash(./gradlew:*)",
       "Bash(python3:*)",
       "Bash(/dev/null:*)",
-      "Bash(wc:*)"
+      "Bash(wc:*)",
+      "Bash(gh api:*)",
+      "WebFetch(domain:github.com)",
+      "WebSearch"
     ]
   }
 }

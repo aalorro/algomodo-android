@@ -1,16 +1,23 @@
 package com.artmondo.algomodo.generators.noise
 
-import android.graphics.Bitmap
-import android.graphics.Canvas
-import com.artmondo.algomodo.core.rng.SimplexNoise
+import android.opengl.GLES30
 import com.artmondo.algomodo.data.palettes.Palette
-import com.artmondo.algomodo.generators.Generator
+import com.artmondo.algomodo.generators.GpuGenerator
 import com.artmondo.algomodo.generators.ParamGroup
 import com.artmondo.algomodo.generators.Parameter
 import com.artmondo.algomodo.generators.Quality
-import kotlin.math.*
+import com.artmondo.algomodo.rendering.gl.NoiseGlsl
+import com.artmondo.algomodo.rendering.gl.PaletteUniform
 
-class NoiseFbmGenerator : Generator {
+/**
+ * GPU-rendered FBM simplex noise. Pure pixel-parallel: every pixel evaluates
+ * multi-octave simplex noise (with optional domain warp), maps through a
+ * power curve, and looks up the palette in either smooth or banded mode.
+ *
+ * Ported from the original CPU implementation; param schema, defaults and
+ * id are preserved so existing presets continue to load.
+ */
+class NoiseFbmGenerator : GpuGenerator {
 
     override val id = "noise-fbm"
     override val family = "noise"
@@ -18,7 +25,7 @@ class NoiseFbmGenerator : Generator {
     override val definition =
         "Pure Fractal Brownian Motion noise rendered pixel-by-pixel with configurable colour mapping."
     override val algorithmNotes =
-        "Each pixel is evaluated as multi-octave FBM simplex noise. " +
+        "Each pixel is evaluated as multi-octave FBM simplex noise on the GPU. " +
         "'palette' mode smoothly interpolates through the palette. " +
         "'bands' mode quantises the noise into discrete contour bands. " +
         "Domain warping, power curve, and multiple animation modes are supported."
@@ -44,90 +51,132 @@ class NoiseFbmGenerator : Generator {
         "bandCount" to 8f, "animMode" to "drift", "speed" to 0.5f
     )
 
-    override fun renderCanvas(
-        canvas: Canvas, bitmap: Bitmap, params: Map<String, Any>,
-        seed: Int, palette: Palette, quality: Quality, time: Float
+    override fun bindUniforms(
+        programId: Int,
+        params: Map<String, Any>,
+        seed: Int,
+        palette: Palette,
+        quality: Quality,
+        time: Float,
+        width: Int,
+        height: Int
     ) {
-        val w = bitmap.width; val h = bitmap.height
         val scale = (params["scale"] as? Number)?.toFloat() ?: 2f
-        val octaves = (params["octaves"] as? Number)?.toInt() ?: 6
+        val octaves = ((params["octaves"] as? Number)?.toInt() ?: 6).coerceIn(1, 10)
         val lacunarity = (params["lacunarity"] as? Number)?.toFloat() ?: 2f
         val gain = (params["gain"] as? Number)?.toFloat() ?: 0.5f
         val warpAmount = (params["warpAmount"] as? Number)?.toFloat() ?: 0f
         val power = (params["power"] as? Number)?.toFloat() ?: 1.0f
         val colorMode = (params["colorMode"] as? String) ?: "palette"
-        val bandCount = (params["bandCount"] as? Number)?.toInt() ?: 8
+        val bandCount = ((params["bandCount"] as? Number)?.toInt() ?: 8).coerceAtLeast(1)
         val animMode = (params["animMode"] as? String) ?: "drift"
         val speed = (params["speed"] as? Number)?.toFloat() ?: 0.5f
 
-        val noise = SimplexNoise(seed)
-        val pixels = IntArray(w * h)
-        val invScale = scale / w.toFloat()
-        val cx = w / 2f * invScale; val cy = h / 2f * invScale
-
-        val step = if (quality == Quality.DRAFT) 2 else 1
-
-        for (py in 0 until h step step) {
-            for (px in 0 until w step step) {
-                var nx = px * invScale
-                var ny = py * invScale
-
-                // Animation
-                when (animMode) {
-                    "drift" -> { nx += time * speed * 0.4f; ny += time * speed * 0.25f }
-                    "rotate" -> {
-                        val dx = nx - cx; val dy = ny - cy
-                        val angle = time * speed * 0.3f
-                        val cosA = cos(angle); val sinA = sin(angle)
-                        nx = cx + dx * cosA - dy * sinA
-                        ny = cy + dx * sinA + dy * cosA
-                    }
-                    "pulse" -> {
-                        val s = 1f + 0.2f * sin(time * speed)
-                        nx = cx + (nx - cx) * s; ny = cy + (ny - cy) * s
-                        nx += time * speed * 0.1f
-                    }
-                }
-
-                // Domain warp
-                if (warpAmount > 0f) {
-                    val wx = noise.fbm(nx + 5.2f, ny + 1.3f, 3, lacunarity, gain)
-                    val wy = noise.fbm(nx + 1.7f, ny + 9.2f, 3, lacunarity, gain)
-                    nx += wx * warpAmount; ny += wy * warpAmount
-                }
-
-                var value = noise.fbm(nx, ny, octaves, lacunarity, gain)
-                var t = ((value + 1f) * 0.5f).coerceIn(0f, 1f)
-
-                // Power curve
-                if (power != 1f) t = t.pow(power)
-
-                // Color mapping
-                val color = when (colorMode) {
-                    "bands" -> {
-                        val band = (t * bandCount).toInt().coerceIn(0, bandCount - 1)
-                        palette.lerpColor(band.toFloat() / (bandCount - 1).coerceAtLeast(1))
-                    }
-                    else -> palette.lerpColor(t)
-                }
-
-                if (step == 1) {
-                    pixels[py * w + px] = color
-                } else {
-                    for (dy in 0 until step) for (dx in 0 until step) {
-                        val fx = px + dx; val fy = py + dy
-                        if (fx < w && fy < h) pixels[fy * w + fx] = color
-                    }
-                }
-            }
+        val animModeId = when (animMode) {
+            "rotate" -> 1
+            "pulse" -> 2
+            else -> 0 // drift
         }
+        val colorModeId = if (colorMode == "bands") 1 else 0
 
-        bitmap.setPixels(pixels, 0, w, 0, 0, w, h)
-        canvas.drawBitmap(bitmap, 0f, 0f, null)
+        val (seedOffX, seedOffY) = NoiseGlsl.seedToOffset(seed)
+
+        GLES30.glUniform1f(GLES30.glGetUniformLocation(programId, "uScale"), scale)
+        GLES30.glUniform1i(GLES30.glGetUniformLocation(programId, "uOctaves"), octaves)
+        GLES30.glUniform1f(GLES30.glGetUniformLocation(programId, "uLacunarity"), lacunarity)
+        GLES30.glUniform1f(GLES30.glGetUniformLocation(programId, "uGain"), gain)
+        GLES30.glUniform1f(GLES30.glGetUniformLocation(programId, "uWarpAmount"), warpAmount)
+        GLES30.glUniform1f(GLES30.glGetUniformLocation(programId, "uPower"), power)
+        GLES30.glUniform1i(GLES30.glGetUniformLocation(programId, "uColorMode"), colorModeId)
+        GLES30.glUniform1i(GLES30.glGetUniformLocation(programId, "uBandCount"), bandCount)
+        GLES30.glUniform1i(GLES30.glGetUniformLocation(programId, "uAnimMode"), animModeId)
+        GLES30.glUniform1f(GLES30.glGetUniformLocation(programId, "uSpeed"), speed)
+        GLES30.glUniform2f(GLES30.glGetUniformLocation(programId, "uSeedOffset"), seedOffX, seedOffY)
     }
 
-    override fun estimateCost(params: Map<String, Any>, quality: Quality): Float {
-        val octaves = (params["octaves"] as? Number)?.toInt() ?: 6
-        return (octaves / 10f).coerceIn(0.3f, 1f)
-    }
+    override fun fragmentShaderSource(): String = """#version 300 es
+        precision highp float;
+
+        uniform vec2 uResolution;
+        uniform float uTime;
+        uniform vec3 uAudio;
+        ${PaletteUniform.GLSL_HELPERS}
+        ${NoiseGlsl.GLSL_HELPERS}
+
+        uniform float uScale;
+        uniform int uOctaves;
+        uniform float uLacunarity;
+        uniform float uGain;
+        uniform float uWarpAmount;
+        uniform float uPower;
+        uniform int uColorMode;   // 0 = palette (smooth), 1 = bands
+        uniform int uBandCount;
+        uniform int uAnimMode;    // 0 = drift, 1 = rotate, 2 = pulse
+        uniform float uSpeed;
+        uniform vec2 uSeedOffset;
+
+        out vec4 fragColor;
+
+        void main() {
+            // Mirror CPU coordinate convention:
+            //   invScale = scale / w
+            //   nx = px * invScale, ny = py * invScale
+            //   cx = w/2 * invScale, cy = h/2 * invScale
+            float invScale = uScale / uResolution.x;
+            vec2 p = gl_FragCoord.xy * invScale;
+            vec2 c = vec2(uResolution.x * 0.5, uResolution.y * 0.5) * invScale;
+
+            // Animation
+            if (uAnimMode == 0) {
+                // drift
+                p.x += uTime * uSpeed * 0.4;
+                p.y += uTime * uSpeed * 0.25;
+            } else if (uAnimMode == 1) {
+                // rotate around centre
+                vec2 d = p - c;
+                float ang = uTime * uSpeed * 0.3;
+                float cs = cos(ang);
+                float sn = sin(ang);
+                p = c + vec2(d.x * cs - d.y * sn, d.x * sn + d.y * cs);
+            } else {
+                // pulse — oscillating scale around centre, slow drift
+                float s = 1.0 + 0.2 * sin(uTime * uSpeed);
+                p = c + (p - c) * s;
+                p.x += uTime * uSpeed * 0.1;
+            }
+
+            // Seed offset moves the noise field — different seeds, different patterns.
+            p += uSeedOffset;
+
+            // Domain warp (matches CPU: 3-octave fbm of offset coords)
+            if (uWarpAmount > 0.0) {
+                float wx = fbm(p + vec2(5.2, 1.3), 3, uLacunarity, uGain);
+                float wy = fbm(p + vec2(1.7, 9.2), 3, uLacunarity, uGain);
+                p += vec2(wx, wy) * uWarpAmount;
+            }
+
+            float value = fbm(p, uOctaves, uLacunarity, uGain);
+            float t = clamp((value + 1.0) * 0.5, 0.0, 1.0);
+
+            // Power curve
+            if (uPower != 1.0) {
+                t = pow(t, uPower);
+            }
+
+            // Colour mapping
+            vec3 col;
+            if (uColorMode == 1) {
+                // Bands
+                float bc = float(uBandCount);
+                float band = floor(t * bc);
+                band = clamp(band, 0.0, bc - 1.0);
+                float denom = max(bc - 1.0, 1.0);
+                col = palette_color(band / denom);
+            } else {
+                col = palette_color(t);
+            }
+
+            fragColor = vec4(col, 1.0);
+        }
+    """
 }

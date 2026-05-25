@@ -1,16 +1,20 @@
 package com.artmondo.algomodo.generators.noise
 
-import android.graphics.Bitmap
-import android.graphics.Canvas
-import com.artmondo.algomodo.core.rng.SimplexNoise
+import android.opengl.GLES30
 import com.artmondo.algomodo.data.palettes.Palette
-import com.artmondo.algomodo.generators.Generator
+import com.artmondo.algomodo.generators.GpuGenerator
 import com.artmondo.algomodo.generators.ParamGroup
 import com.artmondo.algomodo.generators.Parameter
 import com.artmondo.algomodo.generators.Quality
-import kotlin.math.*
+import com.artmondo.algomodo.rendering.gl.NoiseGlsl
+import com.artmondo.algomodo.rendering.gl.PaletteUniform
 
-class DomainWarpMarbleGenerator : Generator {
+/**
+ * GPU port. Marble pattern = sin((wx + wy) * bands + turb * PI) where wx/wy
+ * is the doubly-domain-warped coordinate. Optional turbulence readout for
+ * chaotic variation.
+ */
+class DomainWarpMarbleGenerator : GpuGenerator {
 
     override val id = "domain-warp-marble"
     override val family = "noise"
@@ -18,10 +22,9 @@ class DomainWarpMarbleGenerator : Generator {
     override val definition =
         "Marble-textured domain warp using sine waves perturbed by noise to create realistic veining."
     override val algorithmNotes =
-        "Core pattern: sin(x * bands + turbulence * fbm(warped coords)). " +
-        "Coordinates are warped by noise displacement (optionally double-warped). " +
-        "Vein sharpness controls sine falloff. Turbulence mode uses abs(noise) for chaotic patterns. " +
-        "Multiple animation modes: flow, drift, pulse."
+        "GPU shader. Core pattern: sin((wx + wy) * bands + turb * π) where the coordinate has " +
+        "been domain-warped (optionally twice) by fbm noise. Turbulence mode uses abs(noise) " +
+        "for chaotic variation. Vein sharpness pow()s the final palette parameter."
     override val supportsVector = false
     override val supportsAnimation = true
 
@@ -46,16 +49,15 @@ class DomainWarpMarbleGenerator : Generator {
         "animMode" to "flow", "speed" to 0.5f
     )
 
-    override fun renderCanvas(
-        canvas: Canvas, bitmap: Bitmap, params: Map<String, Any>,
-        seed: Int, palette: Palette, quality: Quality, time: Float
+    override fun bindUniforms(
+        programId: Int, params: Map<String, Any>, seed: Int, palette: Palette,
+        quality: Quality, time: Float, width: Int, height: Int
     ) {
-        val w = bitmap.width; val h = bitmap.height
         val scale = (params["scale"] as? Number)?.toFloat() ?: 2.5f
         val warpStrength = (params["warpStrength"] as? Number)?.toFloat() ?: 1.2f
         val warpScale = (params["warpScale"] as? Number)?.toFloat() ?: 2.0f
         val bands = (params["bands"] as? Number)?.toFloat() ?: 6f
-        val octaves = (params["octaves"] as? Number)?.toInt() ?: 5
+        val octaves = ((params["octaves"] as? Number)?.toInt() ?: 5).coerceIn(1, 10)
         val gain = (params["gain"] as? Number)?.toFloat() ?: 0.5f
         val veinSharpness = (params["veinSharpness"] as? Number)?.toFloat() ?: 1.0f
         val useTurbulence = (params["turbulence"] as? Boolean) ?: false
@@ -63,98 +65,119 @@ class DomainWarpMarbleGenerator : Generator {
         val animMode = (params["animMode"] as? String) ?: "flow"
         val speed = (params["speed"] as? Number)?.toFloat() ?: 0.5f
 
-        val noise = SimplexNoise(seed)
-        val pixels = IntArray(w * h)
-        val invScale = scale / w.toFloat()
-        val warpInvScale = warpScale / w.toFloat()
+        val animModeId = when (animMode) { "drift" -> 1; "pulse" -> 2; else -> 0 } // flow=0
+        val (seedOffX, seedOffY) = NoiseGlsl.seedToOffset(seed)
 
-        // Decorrelation offsets
-        val warpOffX = 3.7f; val warpOffY = 7.1f
-        val warpOff2X = 11.3f; val warpOff2Y = 2.8f
+        GLES30.glUniform1f(GLES30.glGetUniformLocation(programId, "uScale"), scale)
+        GLES30.glUniform1f(GLES30.glGetUniformLocation(programId, "uWarpStrength"), warpStrength)
+        GLES30.glUniform1f(GLES30.glGetUniformLocation(programId, "uWarpScale"), warpScale)
+        GLES30.glUniform1f(GLES30.glGetUniformLocation(programId, "uBands"), bands)
+        GLES30.glUniform1i(GLES30.glGetUniformLocation(programId, "uOctaves"), octaves)
+        GLES30.glUniform1f(GLES30.glGetUniformLocation(programId, "uGain"), gain)
+        GLES30.glUniform1f(GLES30.glGetUniformLocation(programId, "uVeinSharpness"), veinSharpness)
+        GLES30.glUniform1i(GLES30.glGetUniformLocation(programId, "uTurbulence"), if (useTurbulence) 1 else 0)
+        GLES30.glUniform1i(GLES30.glGetUniformLocation(programId, "uDoubleWarp"), if (doubleWarp) 1 else 0)
+        GLES30.glUniform1i(GLES30.glGetUniformLocation(programId, "uAnimMode"), animModeId)
+        GLES30.glUniform1f(GLES30.glGetUniformLocation(programId, "uSpeed"), speed)
+        GLES30.glUniform2f(GLES30.glGetUniformLocation(programId, "uSeedOffset"), seedOffX, seedOffY)
+    }
 
-        // Animation offsets
-        val flowTimeA = time * speed * 0.2f
-        val flowTimeB = time * speed * 0.15f
-        val effectiveWarp = if (animMode == "pulse")
-            warpStrength * (1f + 0.4f * sin(time * speed * 0.7f)) else warpStrength
+    override fun fragmentShaderSource(): String = """#version 300 es
+        precision highp float;
 
-        val step = if (quality == Quality.DRAFT) 2 else 1
+        uniform vec2 uResolution;
+        uniform float uTime;
+        uniform vec3 uAudio;
+        ${PaletteUniform.GLSL_HELPERS}
+        ${NoiseGlsl.GLSL_HELPERS}
 
-        for (py in 0 until h step step) {
-            for (px in 0 until w step step) {
-                var baseX = px * invScale
-                var baseY = py * invScale
+        uniform float uScale;
+        uniform float uWarpStrength;
+        uniform float uWarpScale;
+        uniform float uBands;
+        uniform int uOctaves;
+        uniform float uGain;
+        uniform float uVeinSharpness;
+        uniform int uTurbulence;     // bool
+        uniform int uDoubleWarp;     // bool
+        uniform int uAnimMode;       // 0 flow, 1 drift, 2 pulse
+        uniform float uSpeed;
+        uniform vec2 uSeedOffset;
 
-                // Base animation
-                when (animMode) {
-                    "drift" -> { baseX += time * speed * 0.25f; baseY += time * speed * 0.15f }
-                    "flow" -> { baseX += time * speed * 0.08f; baseY += time * speed * 0.05f }
-                    // pulse: handled via effectiveWarp
-                    else -> { baseX += time * speed * 0.08f; baseY += time * speed * 0.05f }
-                }
+        out vec4 fragColor;
 
-                // First domain warp
-                val warpSrcX = px * warpInvScale
-                val warpSrcY = py * warpInvScale
-                val warp1X: Float; val warp1Y: Float
-                if (animMode == "flow") {
-                    warp1X = noise.fbm(warpSrcX + warpOffX + flowTimeA, warpSrcY + warpOffY + flowTimeB, octaves, 2f, gain) * effectiveWarp
-                    warp1Y = noise.fbm(warpSrcX + warpOffY + flowTimeB, warpSrcY + warpOffX + flowTimeA, octaves, 2f, gain) * effectiveWarp
-                } else {
-                    warp1X = noise.fbm(warpSrcX + warpOffX, warpSrcY + warpOffY, octaves, 2f, gain) * effectiveWarp
-                    warp1Y = noise.fbm(warpSrcX + warpOffY, warpSrcY + warpOffX, octaves, 2f, gain) * effectiveWarp
-                }
-                var wx = baseX + warp1X
-                var wy = baseY + warp1Y
+        const float PI = 3.14159265359;
+        const vec2 W_OFF1A = vec2(3.7, 7.1);
+        const vec2 W_OFF1B = vec2(7.1, 3.7);
+        const vec2 W_OFF2A = vec2(11.3, 2.8);
+        const vec2 W_OFF2B = vec2(2.8, 11.3);
 
-                // Optional second warp pass
-                if (doubleWarp) {
-                    val warp2X: Float; val warp2Y: Float
-                    if (animMode == "flow") {
-                        warp2X = noise.fbm(wx + warpOff2X + flowTimeB * 0.7f, wy + warpOff2Y + flowTimeA * 0.7f, 3, 2f, gain) * effectiveWarp * 0.5f
-                        warp2Y = noise.fbm(wx + warpOff2Y + flowTimeA * 0.7f, wy + warpOff2X + flowTimeB * 0.7f, 3, 2f, gain) * effectiveWarp * 0.5f
-                    } else {
-                        warp2X = noise.fbm(wx + warpOff2X, wy + warpOff2Y, 3, 2f, gain) * effectiveWarp * 0.5f
-                        warp2Y = noise.fbm(wx + warpOff2Y, wy + warpOff2X, 3, 2f, gain) * effectiveWarp * 0.5f
-                    }
-                    wx += warp2X; wy += warp2Y
-                }
+        void main() {
+            float invScale = uScale / uResolution.x;
+            float warpInvScale = uWarpScale / uResolution.x;
+            vec2 base = gl_FragCoord.xy * invScale;
+            vec2 warpSrc = gl_FragCoord.xy * warpInvScale;
 
-                // Noise perturbation
-                val turb = if (useTurbulence)
-                    noise.turbulence(wx, wy, octaves, 2f, gain)
-                else
-                    noise.fbm(wx, wy, octaves, 2f, gain)
-                val turbScale = if (useTurbulence) turb * 2f else turb
-
-                // Classic marble: sin(coordinate * bands + noise perturbation)
-                val marble = sin((wx + wy) * bands + turbScale * PI.toFloat())
-
-                // Normalise [-1, 1] to [0, 1] then apply vein sharpness
-                var t = ((marble + 1f) * 0.5f).coerceIn(0f, 1f)
-                if (veinSharpness != 1f) {
-                    t = t.pow(veinSharpness)
-                }
-
-                val color = palette.lerpColor(t)
-
-                if (step == 1) {
-                    pixels[py * w + px] = color
-                } else {
-                    for (dy in 0 until step) for (dx in 0 until step) {
-                        val fx = px + dx; val fy = py + dy
-                        if (fx < w && fy < h) pixels[fy * w + fx] = color
-                    }
-                }
+            // Base animation (mirrors CPU)
+            if (uAnimMode == 1) {
+                base.x += uTime * uSpeed * 0.25;
+                base.y += uTime * uSpeed * 0.15;
+            } else {
+                // flow and pulse both use the slow drift
+                base.x += uTime * uSpeed * 0.08;
+                base.y += uTime * uSpeed * 0.05;
             }
+
+            base += uSeedOffset;
+            warpSrc += uSeedOffset;
+
+            // Pulse modulates warp strength
+            float effWarp = uWarpStrength;
+            if (uAnimMode == 2) {
+                effWarp *= 1.0 + 0.4 * sin(uTime * uSpeed * 0.7);
+            }
+
+            float flowTimeA = uTime * uSpeed * 0.2;
+            float flowTimeB = uTime * uSpeed * 0.15;
+
+            // First warp pass
+            float w1x, w1y;
+            if (uAnimMode == 0) {
+                w1x = fbm(warpSrc + W_OFF1A + vec2(flowTimeA, flowTimeB), uOctaves, 2.0, uGain) * effWarp;
+                w1y = fbm(warpSrc + W_OFF1B + vec2(flowTimeB, flowTimeA), uOctaves, 2.0, uGain) * effWarp;
+            } else {
+                w1x = fbm(warpSrc + W_OFF1A, uOctaves, 2.0, uGain) * effWarp;
+                w1y = fbm(warpSrc + W_OFF1B, uOctaves, 2.0, uGain) * effWarp;
+            }
+            vec2 w = base + vec2(w1x, w1y);
+
+            // Optional second warp pass
+            if (uDoubleWarp == 1) {
+                float w2x, w2y;
+                if (uAnimMode == 0) {
+                    w2x = fbm(w + W_OFF2A + vec2(flowTimeB * 0.7, flowTimeA * 0.7), 3, 2.0, uGain) * effWarp * 0.5;
+                    w2y = fbm(w + W_OFF2B + vec2(flowTimeA * 0.7, flowTimeB * 0.7), 3, 2.0, uGain) * effWarp * 0.5;
+                } else {
+                    w2x = fbm(w + W_OFF2A, 3, 2.0, uGain) * effWarp * 0.5;
+                    w2y = fbm(w + W_OFF2B, 3, 2.0, uGain) * effWarp * 0.5;
+                }
+                w += vec2(w2x, w2y);
+            }
+
+            // Noise perturbation
+            float turb = (uTurbulence == 1)
+                ? turbulenceNoise(w, uOctaves, 2.0, uGain)
+                : fbm(w, uOctaves, 2.0, uGain);
+            float turbScale = (uTurbulence == 1) ? turb * 2.0 : turb;
+
+            // Classic marble: sin((wx + wy) * bands + turbScale * PI)
+            float marble = sin((w.x + w.y) * uBands + turbScale * PI);
+
+            float t = clamp((marble + 1.0) * 0.5, 0.0, 1.0);
+            if (uVeinSharpness != 1.0) t = pow(t, uVeinSharpness);
+
+            vec3 col = palette_color(t);
+            fragColor = vec4(col, 1.0);
         }
-
-        bitmap.setPixels(pixels, 0, w, 0, 0, w, h)
-        canvas.drawBitmap(bitmap, 0f, 0f, null)
-    }
-
-    override fun estimateCost(params: Map<String, Any>, quality: Quality): Float {
-        val doubleWarp = (params["doubleWarp"] as? Boolean) ?: true
-        return if (doubleWarp) 0.7f else 0.5f
-    }
+    """
 }
