@@ -169,6 +169,13 @@ class ApollonianSpheresGenerator : GpuGenerator {
         // Folds with abs + descending sort, then sphere-inverts inside the
         // invariant ball. Audio-modulated invariant radius lets the bass
         // "breathe" the packing.
+        //
+        // NOTE on the sort: Mali/Adreno mobile GLSL ES drivers do not reliably
+        // honour swizzle self-assignment (`q.xy = q.yx`) — the read and write
+        // are not guaranteed to be sequenced through a temporary, so the swap
+        // silently fails on some devices. Without the descending sort the IFS
+        // never enters its invariant ball, scale stays 1, and the entire
+        // fractal renders as empty space. Use explicit temp-variable swaps.
         float apollonianDE(vec3 p, float cosRot, float sinRot, float invR2) {
             // Pre-rotation about Y to spin the fractal as time advances.
             vec3 q = vec3(p.x * cosRot + p.z * sinRot,
@@ -179,9 +186,10 @@ class ApollonianSpheresGenerator : GpuGenerator {
                 if (i >= uIterations) break;
                 q = abs(q);
                 // Descending sort (largest into x, smallest into z).
-                if (q.x < q.y) q.xy = q.yx;
-                if (q.x < q.z) q.xz = q.zx;
-                if (q.y < q.z) q.yz = q.zy;
+                float tmp;
+                if (q.x < q.y) { tmp = q.x; q.x = q.y; q.y = tmp; }
+                if (q.x < q.z) { tmp = q.x; q.x = q.z; q.z = tmp; }
+                if (q.y < q.z) { tmp = q.y; q.y = q.z; q.z = tmp; }
                 q -= uOffset;
                 float r2 = dot(q, q);
                 if (r2 < invR2) {
@@ -205,9 +213,10 @@ class ApollonianSpheresGenerator : GpuGenerator {
             for (int i = 0; i < 16; i++) {
                 if (i >= uIterations) break;
                 q = abs(q);
-                if (q.x < q.y) q.xy = q.yx;
-                if (q.x < q.z) q.xz = q.zx;
-                if (q.y < q.z) q.yz = q.zy;
+                float tmp;
+                if (q.x < q.y) { tmp = q.x; q.x = q.y; q.y = tmp; }
+                if (q.x < q.z) { tmp = q.x; q.x = q.z; q.z = tmp; }
+                if (q.y < q.z) { tmp = q.y; q.y = q.z; q.z = tmp; }
                 q -= uOffset;
                 float r2 = dot(q, q);
                 minR2 = min(minR2, r2);
@@ -319,13 +328,15 @@ class ApollonianSpheresGenerator : GpuGenerator {
                 col = baseColor * shade * ao + rimColor * fresnel;
                 col *= uExposure;
             } else {
-                // Sky gradient: deep blue/purple, no fractal hit.
-                float v = 0.5 * (rd.y + 1.0);
-                vec3 top = vec3(0.05, 0.05, 0.12);
-                vec3 bot = vec3(0.12, 0.08, 0.15);
+                // Sky gradient driven by the active palette so background
+                // recolours with the user's choice. Slight darkening keeps
+                // the fractal silhouette readable against the sky.
+                float v = clamp(0.5 * (rd.y + 1.0), 0.0, 1.0);
+                vec3 top = palette_color(0.15) * 0.45;
+                vec3 bot = palette_color(0.85) * 0.30;
                 col = mix(bot, top, v);
 
-                // Subtle palette tint reacting to highs for sparkle.
+                // Subtle palette sparkle reacting to highs.
                 col += palette_color(0.5 + 0.5 * uv.y) * 0.05 * uAudio.z * uAudioReact;
                 col *= uExposure;
             }
