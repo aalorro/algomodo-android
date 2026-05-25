@@ -1,17 +1,24 @@
 package com.artmondo.algomodo.generators.fractals
 
-import android.graphics.Bitmap
-import android.graphics.Canvas
-import android.graphics.Paint
-import android.graphics.Rect
+import android.opengl.GLES30
 import com.artmondo.algomodo.data.palettes.Palette
-import com.artmondo.algomodo.generators.Generator
+import com.artmondo.algomodo.generators.GpuGenerator
 import com.artmondo.algomodo.generators.ParamGroup
 import com.artmondo.algomodo.generators.Parameter
 import com.artmondo.algomodo.generators.Quality
-import kotlin.math.*
+import com.artmondo.algomodo.rendering.gl.PaletteUniform
+import kotlin.math.abs
+import kotlin.math.cos
+import kotlin.math.max
+import kotlin.math.min
+import kotlin.math.sin
 
-class LyapunovGenerator : Generator {
+/**
+ * GPU port. Lyapunov stability map. Sequence pattern (max length 6) uploaded
+ * as int array. Per-pixel warmup + measurement done in fragment shader using
+ * built-in log(). The CPU's fastLn shortcut isn't needed on GPU.
+ */
+class LyapunovGenerator : GpuGenerator {
 
     override val id = "fractal-lyapunov"
     override val family = "fractals"
@@ -19,9 +26,9 @@ class LyapunovGenerator : Generator {
     override val definition =
         "Stability map of alternating logistic maps — the Lyapunov exponent at each (a,b) point reveals striking organic stripe patterns at the boundary between order and chaos."
     override val algorithmNotes =
-        "For each pixel mapped to (a,b) in logistic map parameter space, iterates x = r*x*(1-x) where r alternates between a and b according to a sequence string (e.g. \"AB\", \"AABB\"). " +
-        "After warmup iterations, accumulates the Lyapunov exponent lambda = (1/N)*sum(log|r*(1-2x)|). " +
-        "lambda < 0 indicates stable periodic orbits (coloured by palette), lambda > 0 indicates chaos (dark), and lambda ~ 0 marks the fractal boundary."
+        "GPU fragment shader. Iterates logistic map x = r*x*(1-x) with r alternating per sequence " +
+        "(AB / AABB / ...). Accumulates λ = (1/N) Σ log|r(1-2x)|. λ<0 → stable (palette), " +
+        "λ>0 → chaotic (dark in stability mode, complementary palette in symmetric)."
     override val supportsVector = false
     override val supportsAnimation = true
 
@@ -34,7 +41,6 @@ class LyapunovGenerator : Generator {
             "AABAB"  to intArrayOf(0, 0, 1, 0, 1),
             "ABBAAB" to intArrayOf(0, 1, 1, 0, 0, 1),
         )
-
         private val TARGETS = arrayOf(
             doubleArrayOf(3.2, 3.4),
             doubleArrayOf(3.0, 3.5),
@@ -42,20 +48,8 @@ class LyapunovGenerator : Generator {
             doubleArrayOf(3.4, 3.2),
             doubleArrayOf(2.6, 3.0),
         )
-
-        private const val LAMBDA_MAX = 2.0
-        private const val LUT_SIZE = 1024
-        private const val LUT_MAX = LUT_SIZE - 1
-
-        /** Fast ln() via IEEE 754 bit decomposition — ~3% max error, fine for visualization. */
-        @JvmStatic
-        private fun fastLn(x: Double): Double {
-            val bits = java.lang.Double.doubleToRawLongBits(x)
-            val exp = ((bits ushr 52) and 0x7FFL) - 1023L
-            val mantissaBits = (bits and 0x000FFFFFFFFFFFFFL) or 0x3FF0000000000000L
-            val m = java.lang.Double.longBitsToDouble(mantissaBits) - 1.0
-            return (exp + m * (1.4426950408889634 - m * 0.7213475204444817)) * 0.6931471805599453
-        }
+        private const val MAX_SEQ_LEN = 6
+        private const val LAMBDA_MAX = 2.0f
     }
 
     override val parameterSchema: List<Parameter> = listOf(
@@ -97,25 +91,14 @@ class LyapunovGenerator : Generator {
         "speed" to 0.5f,
     )
 
-    private val filterPaint = Paint(Paint.FILTER_BITMAP_FLAG)
-
-    override fun renderCanvas(
-        canvas: Canvas,
-        bitmap: Bitmap,
-        params: Map<String, Any>,
-        seed: Int,
-        palette: Palette,
-        quality: Quality,
-        time: Float
+    override fun bindUniforms(
+        programId: Int, params: Map<String, Any>, seed: Int, palette: Palette,
+        quality: Quality, time: Float, width: Int, height: Int
     ) {
-        val w = bitmap.width
-        val h = bitmap.height
         val isAnim = time > 0f
-
         val seqKey = (params["sequence"] as? String) ?: "AB"
         val seq = SEQUENCES[seqKey] ?: SEQUENCES["AB"]!!
         val seqLen = seq.size
-        val isAB = seqLen == 2 && seq[0] == 0 && seq[1] == 1
 
         var cA = (params["centerA"] as? Number)?.toDouble() ?: 3.0
         var cB = (params["centerB"] as? Number)?.toDouble() ?: 3.0
@@ -126,7 +109,6 @@ class LyapunovGenerator : Generator {
         val colorCycles = max(1, (params["colorCycles"] as? Number)?.toInt() ?: 2)
         val spd = (params["speed"] as? Number)?.toDouble() ?: 0.5
 
-        // Quality scaling
         val warmup = if (isAnim) max(16, baseWarmup / 4)
             else if (quality == Quality.ULTRA) baseWarmup
             else max(16, baseWarmup / 2)
@@ -134,7 +116,6 @@ class LyapunovGenerator : Generator {
             else if (quality == Quality.DRAFT) max(16, baseIter / 2)
             else baseIter
 
-        // Animation: drift through parameter space
         if (isAnim) {
             val target = TARGETS[abs(seed) % TARGETS.size]
             val drift = time * spd * 0.06
@@ -143,12 +124,9 @@ class LyapunovGenerator : Generator {
             viewZoom *= (1.0 + sin(time * spd * 0.05) * 0.3)
         }
 
-        // Viewport clamped to [0,4]x[0,4]
         val viewSize = min(4.0, 4.0 / viewZoom)
-        var aMin = cA - viewSize * 0.5
-        var aMax = aMin + viewSize
-        var bMin = cB - viewSize * 0.5
-        var bMax = bMin + viewSize
+        var aMin = cA - viewSize * 0.5; var aMax = aMin + viewSize
+        var bMin = cB - viewSize * 0.5; var bMax = bMin + viewSize
         if (aMin < 0) { aMax -= aMin; aMin = 0.0 }
         if (aMax > 4) { aMin -= (aMax - 4); aMax = 4.0 }
         if (bMin < 0) { bMax -= bMin; bMin = 0.0 }
@@ -156,191 +134,119 @@ class LyapunovGenerator : Generator {
         aMin = max(0.0, aMin); aMax = min(4.0, aMax)
         bMin = max(0.0, bMin); bMax = min(4.0, bMax)
 
-        // Animation: reduced resolution, upscaled. Static non-DRAFT: 1.5× SSAA for smooth edges.
-        val renderW: Int
-        val renderH: Int
-        if (isAnim) {
-            renderW = (w * 4 / 5).coerceAtLeast(w / 2)
-            renderH = (h * 4 / 5).coerceAtLeast(h / 2)
-        } else if (quality == Quality.DRAFT) {
-            renderW = w; renderH = h
-        } else {
-            renderW = w * 3 / 2; renderH = h * 3 / 2
+        val colorModeId = when (colorMode) {
+            "stability" -> 0; "magnitude" -> 1; else -> 2
         }
 
-        val pxSizeX = (aMax - aMin) / renderW
-        val pxSizeY = (bMax - bMin) / renderH
-        val startA = aMin
-        val startB = bMax // B axis inverted (top = bMax)
+        // Pack sequence into int[MAX_SEQ_LEN]
+        val seqPacked = IntArray(MAX_SEQ_LEN)
+        for (i in 0 until min(seqLen, MAX_SEQ_LEN)) seqPacked[i] = seq[i]
 
-        // Build color LUTs
-        val stableLUT = IntArray(LUT_SIZE)
-        val chaoticLUT = IntArray(LUT_SIZE)
-        val lutMax = LUT_MAX
-        for (i in 0 until LUT_SIZE) {
-            val t = ((i.toFloat() / LUT_SIZE) * colorCycles) % 1f
-            val baseColor = palette.lerpColor(t)
-            stableLUT[i] = baseColor
+        GLES30.glUniform2f(GLES30.glGetUniformLocation(programId, "uAMin"), aMin.toFloat(), aMax.toFloat())
+        GLES30.glUniform2f(GLES30.glGetUniformLocation(programId, "uBMin"), bMin.toFloat(), bMax.toFloat())
+        GLES30.glUniform1i(GLES30.glGetUniformLocation(programId, "uWarmup"), warmup)
+        GLES30.glUniform1i(GLES30.glGetUniformLocation(programId, "uIterations"), iterations)
+        GLES30.glUniform1iv(GLES30.glGetUniformLocation(programId, "uSeq"), MAX_SEQ_LEN, seqPacked, 0)
+        GLES30.glUniform1i(GLES30.glGetUniformLocation(programId, "uSeqLen"), seqLen)
+        GLES30.glUniform1i(GLES30.glGetUniformLocation(programId, "uColorMode"), colorModeId)
+        GLES30.glUniform1f(GLES30.glGetUniformLocation(programId, "uColorCycles"), colorCycles.toFloat())
+    }
 
-            // Complementary: rotate RGB channels (R→B, G→R, B→G)
-            val cr = baseColor and 0xFF           // blue channel
-            val cg = (baseColor shr 16) and 0xFF  // red channel
-            val cb = (baseColor shr 8) and 0xFF   // green channel
-            chaoticLUT[i] = (0xFF shl 24) or (cr shl 16) or (cg shl 8) or cb
-        }
-        val black = (0xFF shl 24) // black with full alpha
+    override fun fragmentShaderSource(): String = """#version 300 es
+        precision highp float;
 
-        val invLambdaMax = 1.0 / LAMBDA_MAX
-        val invIter = 1.0 / iterations
-        val totalIter = warmup + iterations
-        val earlyThreshold = LAMBDA_MAX * iterations * 1.5
+        uniform vec2 uResolution;
+        uniform float uTime;
+        uniform vec3 uAudio;
+        ${PaletteUniform.GLSL_HELPERS}
 
-        // Pre-tile sequence for generic path
-        val seqTiled = if (!isAB) IntArray(totalIter) { seq[it % seqLen] } else null
+        #define MAX_SEQ 6
 
-        val renderPixels = IntArray(renderW * renderH)
+        uniform vec2 uAMin;   // x=aMin, y=aMax
+        uniform vec2 uBMin;   // x=bMin, y=bMax
+        uniform int uWarmup;
+        uniform int uIterations;
+        uniform int uSeq[MAX_SEQ];
+        uniform int uSeqLen;
+        uniform int uColorMode;     // 0 stability, 1 magnitude, 2 symmetric
+        uniform float uColorCycles;
 
-        val isStability = colorMode == "stability"
-        val isMagnitude = colorMode == "magnitude"
+        const float LAMBDA_MAX = 2.0;
 
-        val cores = Runtime.getRuntime().availableProcessors().coerceIn(2, 8)
-        val threads = Array(cores) { threadIdx ->
-            Thread {
-                val y0 = threadIdx * renderH / cores
-                val y1 = (threadIdx + 1) * renderH / cores
+        out vec4 fragColor;
 
-                for (gy in y0 until y1) {
-                    val bVal = startB - gy * pxSizeY
-                    val rowOff = gy * renderW
+        void main() {
+            // Y inverted: top = bMax. uv.y=0 at bottom of bitmap.
+            vec2 uv = gl_FragCoord.xy / uResolution.xy;
+            float a = uAMin.x + uv.x * (uAMin.y - uAMin.x);
+            float b = uBMin.y - uv.y * (uBMin.y - uBMin.x);
 
-                    for (gx in 0 until renderW) {
-                        val a = startA + gx * pxSizeX
-                        var xn = 0.5
-                        val lambda: Double
+            float xn = 0.5;
+            bool diverged = false;
+            int seqIdx = 0;
 
-                        if (isAB) {
-                            // ═══ AB FAST PATH: loop unrolled by 2 ═══
-                            var diverged = false
-                            val wp = warmup shr 1
-                            for (i in 0 until wp) {
-                                xn = a * xn * (1.0 - xn)
-                                xn = bVal * xn * (1.0 - xn)
-                                if (i and 3 == 3 && (xn < -0.01 || xn > 1.01 || xn.isNaN())) {
-                                    diverged = true; break
-                                }
-                            }
-                            if (!diverged && warmup and 1 != 0) xn = a * xn * (1.0 - xn)
+            // Warmup
+            for (int i = 0; i < 1024; i++) {
+                if (i >= uWarmup) break;
+                float r = (uSeq[seqIdx] == 0) ? a : b;
+                xn = r * xn * (1.0 - xn);
+                seqIdx++;
+                if (seqIdx >= uSeqLen) seqIdx = 0;
+                if ((i & 7) == 7 && (xn < -0.01 || xn > 1.01 || isnan(xn))) {
+                    diverged = true; break;
+                }
+            }
 
-                            if (diverged) {
-                                lambda = LAMBDA_MAX
-                            } else {
-                                var lyapSum = 0.0
-                                val mp = iterations shr 1
-                                var earlyOut = false
-                                for (p in 0 until mp) {
-                                    val rxn0 = a * xn
-                                    xn = rxn0 * (1.0 - xn)
-                                    val d0 = a - 2.0 * rxn0
-                                    val ad0 = abs(d0)
-                                    lyapSum += if (ad0 > 1e-12) fastLn(ad0) else -30.0
-
-                                    val rxn1 = bVal * xn
-                                    xn = rxn1 * (1.0 - xn)
-                                    val d1 = bVal - 2.0 * rxn1
-                                    val ad1 = abs(d1)
-                                    lyapSum += if (ad1 > 1e-12) fastLn(ad1) else -30.0
-
-                                    if (p and 7 == 7) {
-                                        if (xn < -0.01 || xn > 1.01 || xn.isNaN()) {
-                                            lyapSum += 30.0 * (iterations - (p + 1) * 2)
-                                            earlyOut = true; break
-                                        }
-                                        if (lyapSum > earlyThreshold || lyapSum < -earlyThreshold) break
-                                    }
-                                }
-                                if (!earlyOut && iterations and 1 != 0) {
-                                    val rxn = a * xn
-                                    xn = rxn * (1.0 - xn)
-                                    val d = a - 2.0 * rxn
-                                    val ad = abs(d)
-                                    lyapSum += if (ad > 1e-12) fastLn(ad) else -30.0
-                                }
-                                lambda = lyapSum * invIter
-                            }
-                        } else {
-                            // ═══ GENERIC PATH for non-AB sequences ═══
-                            val st = seqTiled!!
-                            var diverged = false
-                            for (i in 0 until warmup) {
-                                val r = if (st[i] == 0) a else bVal
-                                xn = r * xn * (1.0 - xn)
-                                if (i and 7 == 7 && (xn < -0.01 || xn > 1.01 || xn.isNaN())) {
-                                    diverged = true; break
-                                }
-                            }
-
-                            if (diverged) {
-                                lambda = LAMBDA_MAX
-                            } else {
-                                var lyapSum = 0.0
-                                for (i in warmup until totalIter) {
-                                    val r = if (st[i] == 0) a else bVal
-                                    val rxn = r * xn
-                                    xn = rxn * (1.0 - xn)
-                                    if (i and 7 == 7 && (xn < -0.01 || xn > 1.01 || xn.isNaN())) {
-                                        lyapSum += 30.0 * (totalIter - i)
-                                        break
-                                    }
-                                    val deriv = r - 2.0 * rxn
-                                    val ad = abs(deriv)
-                                    lyapSum += if (ad > 1e-12) fastLn(ad) else -30.0
-                                    if (i and 15 == 15 && (lyapSum > earlyThreshold || lyapSum < -earlyThreshold)) break
-                                }
-                                lambda = lyapSum * invIter
-                            }
-                        }
-
-                        // Color mapping via LUT
-                        val px32: Int = if (isStability) {
-                            if (lambda < 0.0) {
-                                stableLUT[(min(1.0, -lambda * invLambdaMax) * lutMax).toInt().coerceIn(0, lutMax)]
-                            } else {
-                                black
-                            }
-                        } else if (isMagnitude) {
-                            val t = min(1.0, max(0.0, (lambda * invLambdaMax + 1.0) * 0.5))
-                            stableLUT[(t * lutMax).toInt().coerceIn(0, lutMax)]
-                        } else {
-                            // Symmetric
-                            if (lambda < 0.0) {
-                                stableLUT[(min(1.0, -lambda * invLambdaMax) * lutMax).toInt().coerceIn(0, lutMax)]
-                            } else {
-                                chaoticLUT[(min(1.0, lambda * invLambdaMax) * lutMax).toInt().coerceIn(0, lutMax)]
-                            }
-                        }
-
-                        renderPixels[rowOff + gx] = px32
+            float lambda;
+            if (diverged) {
+                lambda = LAMBDA_MAX;
+            } else {
+                float lyapSum = 0.0;
+                int measured = 0;
+                for (int i = 0; i < 1024; i++) {
+                    if (i >= uIterations) break;
+                    float r = (uSeq[seqIdx] == 0) ? a : b;
+                    float rxn = r * xn;
+                    xn = rxn * (1.0 - xn);
+                    seqIdx++;
+                    if (seqIdx >= uSeqLen) seqIdx = 0;
+                    float deriv = r - 2.0 * rxn;
+                    float ad = abs(deriv);
+                    lyapSum += (ad > 1e-12) ? log(ad) : -30.0;
+                    measured++;
+                    if ((i & 7) == 7 && (xn < -0.01 || xn > 1.01 || isnan(xn))) {
+                        lyapSum += 30.0 * float(uIterations - i - 1);
+                        break;
                     }
                 }
-            }.also { it.start() }
-        }
-        threads.forEach { it.join() }
+                lambda = lyapSum / float(uIterations);
+            }
 
-        // Bilinear scale (up for animation, down for SSAA), or direct copy
-        if (renderW != w || renderH != h) {
-            val sb = Bitmap.createBitmap(renderW, renderH, Bitmap.Config.ARGB_8888)
-            sb.setPixels(renderPixels, 0, renderW, 0, 0, renderW, renderH)
-            canvas.drawBitmap(sb, null, Rect(0, 0, w, h), filterPaint)
-            sb.recycle()
-        } else {
-            bitmap.setPixels(renderPixels, 0, w, 0, 0, w, h)
-            canvas.drawBitmap(bitmap, 0f, 0f, null)
-        }
-    }
+            float invLambdaMax = 1.0 / LAMBDA_MAX;
+            vec3 col;
 
-    override fun estimateCost(params: Map<String, Any>, quality: Quality): Float {
-        val warmup = (params["warmup"] as? Number)?.toInt() ?: 100
-        val iterations = (params["iterations"] as? Number)?.toInt() ?: 200
-        return ((warmup + iterations) * 0.5f / 350f).coerceIn(0.2f, 1f)
-    }
+            if (uColorMode == 0) {
+                if (lambda < 0.0) {
+                    float t = fract(min(1.0, -lambda * invLambdaMax) * uColorCycles);
+                    col = palette_color(t);
+                } else {
+                    col = vec3(0.0);
+                }
+            } else if (uColorMode == 1) {
+                float t = clamp((lambda * invLambdaMax + 1.0) * 0.5, 0.0, 1.0);
+                col = palette_color(fract(t * uColorCycles));
+            } else {
+                // Symmetric: complementary swap of palette channels for chaotic side
+                if (lambda < 0.0) {
+                    float t = fract(min(1.0, -lambda * invLambdaMax) * uColorCycles);
+                    col = palette_color(t);
+                } else {
+                    float t = fract(min(1.0, lambda * invLambdaMax) * uColorCycles);
+                    vec3 c = palette_color(t);
+                    col = c.brg;     // rotate channels for visual contrast
+                }
+            }
+            fragColor = vec4(col, 1.0);
+        }
+    """
 }

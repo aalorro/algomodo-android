@@ -1,16 +1,27 @@
 package com.artmondo.algomodo.generators.fractals
 
-import android.graphics.Bitmap
-import android.graphics.Canvas
-import android.graphics.Color
+import android.opengl.GLES30
 import com.artmondo.algomodo.data.palettes.Palette
-import com.artmondo.algomodo.generators.Generator
+import com.artmondo.algomodo.generators.GpuGenerator
 import com.artmondo.algomodo.generators.ParamGroup
 import com.artmondo.algomodo.generators.Parameter
 import com.artmondo.algomodo.generators.Quality
-import kotlin.math.*
+import com.artmondo.algomodo.rendering.gl.PaletteUniform
+import kotlin.math.abs
+import kotlin.math.cos
+import kotlin.math.pow
+import kotlin.math.roundToInt
+import kotlin.math.sin
 
-class MultibrotGenerator : Generator {
+/**
+ * GPU port. Multibrot z -> z^d + c. Animation (boundary dive + rotation)
+ * is computed CPU-side and uploaded as uniforms. Iteration done shader-side.
+ *
+ * Integer power path uses repeated complex multiplication; fractional power
+ * path uses polar form (sin/cos/log). Both share one iteration loop with a
+ * uniform branch.
+ */
+class MultibrotGenerator : GpuGenerator {
 
     override val id = "fractal-multibrot"
     override val family = "fractals"
@@ -18,10 +29,9 @@ class MultibrotGenerator : Generator {
     override val definition =
         "Generalization of the Mandelbrot set to arbitrary powers: z = z^d + c, producing d-1 fold symmetry."
     override val algorithmNotes =
-        "For each pixel as complex c, iterates z = z^d + c where d is the exponent parameter. " +
-        "d=2 gives the classic Mandelbrot; d=3 gives 2-fold symmetry; higher powers produce " +
-        "increasingly star-shaped fractals with d-1 lobes. Smooth coloring uses normalized iteration " +
-        "count and the escape radius is adjusted for the power."
+        "GPU fragment shader. Iterates z = z^d + c. Integer powers use repeated complex multiplication; " +
+        "fractional powers use polar form. Animation dives toward a seeded lobe at angle 2πk/(d-1) with " +
+        "gentle rotation, all computed CPU-side."
     override val supportsVector = false
     override val supportsAnimation = true
 
@@ -45,17 +55,10 @@ class MultibrotGenerator : Generator {
         "speed" to 0.5f
     )
 
-    override fun renderCanvas(
-        canvas: Canvas,
-        bitmap: Bitmap,
-        params: Map<String, Any>,
-        seed: Int,
-        palette: Palette,
-        quality: Quality,
-        time: Float
+    override fun bindUniforms(
+        programId: Int, params: Map<String, Any>, seed: Int, palette: Palette,
+        quality: Quality, time: Float, width: Int, height: Int
     ) {
-        val w = bitmap.width
-        val h = bitmap.height
         val basePower = (params["power"] as? Number)?.toDouble() ?: 3.0
         val centerX = (params["centerX"] as? Number)?.toDouble() ?: 0.0
         val centerY = (params["centerY"] as? Number)?.toDouble() ?: 0.0
@@ -71,168 +74,132 @@ class MultibrotGenerator : Generator {
         }
 
         val isAnim = time > 0f
-
-        // During animation, snap power to nearest integer to use the fast
-        // multiplication path instead of the expensive polar-form path.
+        // During animation, snap to nearest integer power (matches CPU behaviour
+        // — fast path only).
         val power = if (isAnim) basePower.roundToInt().toDouble().coerceAtLeast(2.0) else basePower
         val intPower = power.roundToInt()
         val useIntegerPath = abs(power - intPower) < 0.01 && intPower >= 2
 
         val escapeR = 2.0.pow(1.0 / (power - 1)).coerceAtLeast(2.0)
-        val escapeR2 = escapeR * escapeR
-        val lnPower = ln(power)
 
-        // ---- Animation: zoom into boundary + rotation + color cycling ----
-        val animCenterX: Double
-        val animCenterY: Double
-        val animZoom: Double
-        val cosRot: Double
-        val sinRot: Double
-
+        val animCenterX: Double; val animCenterY: Double; val animZoom: Double
+        val cosRot: Double; val sinRot: Double
         if (isAnim) {
             val t = time.toDouble() * speed
-
-            // Seed-selected target on the fractal boundary.
-            // Lobes sit at angles 2πk/(d-1); pick one and offset slightly.
             val rng = java.util.Random(seed.toLong())
             val numLobes = (intPower - 1).coerceAtLeast(1)
             val targetLobe = rng.nextInt(numLobes)
             val angleOffset = (rng.nextDouble() - 0.5) * 0.4
             val targetAngle = 2.0 * Math.PI * targetLobe / numLobes + angleOffset
-            // Aim just inside the escape radius where boundary detail is richest
             val boundaryR = escapeR * (0.82 + rng.nextDouble() * 0.12)
             val targetX = boundaryR * cos(targetAngle)
             val targetY = boundaryR * sin(targetAngle)
-
-            // Exponential zoom
             animZoom = zoom * (1.0 + t * 0.5)
-            // Smooth pan toward target (S-curve ease)
             val lerpT = (1.0 - 1.0 / (1.0 + t * 0.15)).coerceIn(0.0, 0.95)
             animCenterX = centerX + (targetX - centerX) * lerpT
             animCenterY = centerY + (targetY - centerY) * lerpT
-            // Gentle rotation
             val rotAngle = t * 0.05
-            cosRot = cos(rotAngle)
-            sinRot = sin(rotAngle)
+            cosRot = cos(rotAngle); sinRot = sin(rotAngle)
         } else {
-            animCenterX = centerX
-            animCenterY = centerY
-            animZoom = zoom
-            cosRot = 1.0
-            sinRot = 0.0
+            animCenterX = centerX; animCenterY = centerY; animZoom = zoom
+            cosRot = 1.0; sinRot = 0.0
         }
 
-        val aspect = w.toDouble() / h.toDouble()
-        val rangeY = 3.0 / animZoom
+        val aspect = width.toFloat() / height.toFloat()
+        val rangeY = (3.0 / animZoom).toFloat()
         val rangeX = rangeY * aspect
-
-        val pixels = IntArray(w * h)
-
-        val lutSize = 256
-        val lutMax = lutSize - 1
-        val paletteLut = IntArray(lutSize) { palette.lerpColor(it.toFloat() / lutMax) }
-        val darkBase = palette.lerpColor(0.0f)
-        val insideColor = Color.rgb(
-            (Color.red(darkBase) * 0.1f).toInt(),
-            (Color.green(darkBase) * 0.1f).toInt(),
-            (Color.blue(darkBase) * 0.1f).toInt()
-        )
-
         val timeShift = time * speed * 0.02f
-        val invW = 1.0 / w
-        val invH = 1.0 / h
 
-        val cores = Runtime.getRuntime().availableProcessors().coerceIn(2, 8)
-        val threads = Array(cores) { t ->
-            Thread {
-                val y0 = t * h / cores
-                val y1 = (t + 1) * h / cores
-                for (py in y0 until y1) {
-                    val rawY = (py * invH - 0.5) * rangeY
-                    for (px in 0 until w) {
-                        val rawX = (px * invW - 0.5) * rangeX
-                        val cr = animCenterX + rawX * cosRot - rawY * sinRot
-                        val ci = animCenterY + rawX * sinRot + rawY * cosRot
+        GLES30.glUniform2f(GLES30.glGetUniformLocation(programId, "uCenter"), animCenterX.toFloat(), animCenterY.toFloat())
+        GLES30.glUniform2f(GLES30.glGetUniformLocation(programId, "uRange"), rangeX, rangeY)
+        GLES30.glUniform2f(GLES30.glGetUniformLocation(programId, "uRot"), cosRot.toFloat(), sinRot.toFloat())
+        GLES30.glUniform1i(GLES30.glGetUniformLocation(programId, "uMaxIter"), scaledMaxIter)
+        GLES30.glUniform1f(GLES30.glGetUniformLocation(programId, "uPower"), power.toFloat())
+        GLES30.glUniform1i(GLES30.glGetUniformLocation(programId, "uIntPower"), if (useIntegerPath) intPower else 0)
+        GLES30.glUniform1f(GLES30.glGetUniformLocation(programId, "uEscapeR2"), (escapeR * escapeR).toFloat())
+        GLES30.glUniform1f(GLES30.glGetUniformLocation(programId, "uLnPower"), kotlin.math.ln(power).toFloat())
+        GLES30.glUniform1f(GLES30.glGetUniformLocation(programId, "uColorCycles"), colorCycles)
+        GLES30.glUniform1f(GLES30.glGetUniformLocation(programId, "uTimeShift"), timeShift)
+    }
 
-                        var zr = 0.0
-                        var zi = 0.0
-                        var iter = 0
+    override fun fragmentShaderSource(): String = """#version 300 es
+        precision highp float;
 
-                        if (useIntegerPath) {
-                            // Fast path with Brent's periodicity detection.
-                            // Interior pixels (inside the set) are the most expensive
-                            // because they always hit maxIter. Periodicity detection
-                            // catches cyclic orbits early, giving a large speedup.
-                            var refZr = 0.0
-                            var refZi = 0.0
-                            var period = 1
-                            var pCount = 0
+        uniform vec2 uResolution;
+        uniform float uTime;
+        uniform vec3 uAudio;
+        ${PaletteUniform.GLSL_HELPERS}
 
-                            while (iter < scaledMaxIter && zr * zr + zi * zi <= escapeR2) {
-                                // z = z^intPower + c via repeated complex multiplication
-                                var pr = zr
-                                var pi = zi
-                                for (k in 1 until intPower) {
-                                    val nr = pr * zr - pi * zi
-                                    val ni = pr * zi + pi * zr
-                                    pr = nr
-                                    pi = ni
-                                }
-                                zr = pr + cr
-                                zi = pi + ci
-                                iter++
+        uniform vec2 uCenter;
+        uniform vec2 uRange;
+        uniform vec2 uRot;        // cos, sin
+        uniform int uMaxIter;
+        uniform float uPower;
+        uniform int uIntPower;    // >0 = integer fast path, 0 = polar
+        uniform float uEscapeR2;
+        uniform float uLnPower;
+        uniform float uColorCycles;
+        uniform float uTimeShift;
 
-                                // Brent's cycle detection
-                                val dr = zr - refZr
-                                val di = zi - refZi
-                                if (dr * dr + di * di < 1e-20) {
-                                    iter = scaledMaxIter
-                                    break
-                                }
-                                if (++pCount >= period) {
-                                    refZr = zr
-                                    refZi = zi
-                                    pCount = 0
-                                    period = (period shl 1).coerceAtMost(512)
-                                }
-                            }
-                        } else {
-                            // Polar form for fractional powers (static renders only)
-                            while (iter < scaledMaxIter && zr * zr + zi * zi <= escapeR2) {
-                                val r = sqrt(zr * zr + zi * zi)
-                                val theta = atan2(zi, zr)
-                                val rD = r.pow(power)
-                                val dTheta = power * theta
-                                zr = rD * cos(dTheta) + cr
-                                zi = rD * sin(dTheta) + ci
-                                iter++
-                            }
-                        }
+        out vec4 fragColor;
 
-                        val color = if (iter >= scaledMaxIter) {
-                            insideColor
-                        } else {
-                            val mag = sqrt(zr * zr + zi * zi)
-                            val smoothIter = iter + 1 - ln(ln(mag)) / lnPower
-                            val rawT = ((smoothIter / scaledMaxIter * colorCycles) % 1.0).toFloat()
-                            val shifted = ((rawT + timeShift) % 1f + 1f) % 1f
-                            paletteLut[(shifted * lutMax).toInt().coerceIn(0, lutMax)]
-                        }
+        void main() {
+            vec2 uv = gl_FragCoord.xy / uResolution.xy;
+            float rawX = (uv.x - 0.5) * uRange.x;
+            float rawY = (uv.y - 0.5) * uRange.y;
+            float cr = uCenter.x + rawX * uRot.x - rawY * uRot.y;
+            float ci = uCenter.y + rawX * uRot.y + rawY * uRot.x;
 
-                        pixels[py * w + px] = color
+            float zr = 0.0;
+            float zi = 0.0;
+            int iter = 0;
+            float mag2 = 0.0;
+
+            if (uIntPower > 0) {
+                for (int i = 0; i < 512; i++) {
+                    if (i >= uMaxIter) break;
+                    mag2 = zr * zr + zi * zi;
+                    if (mag2 > uEscapeR2) break;
+                    // z = z^uIntPower via repeated complex multiplication
+                    float pr = zr;
+                    float pi = zi;
+                    for (int k = 1; k < 8; k++) {
+                        if (k >= uIntPower) break;
+                        float nr = pr * zr - pi * zi;
+                        float ni = pr * zi + pi * zr;
+                        pr = nr; pi = ni;
                     }
+                    zr = pr + cr;
+                    zi = pi + ci;
+                    iter++;
                 }
-            }.also { it.start() }
+            } else {
+                for (int i = 0; i < 512; i++) {
+                    if (i >= uMaxIter) break;
+                    mag2 = zr * zr + zi * zi;
+                    if (mag2 > uEscapeR2) break;
+                    float r = sqrt(mag2);
+                    float theta = atan(zi, zr);
+                    float rD = pow(r, uPower);
+                    float dTheta = uPower * theta;
+                    zr = rD * cos(dTheta) + cr;
+                    zi = rD * sin(dTheta) + ci;
+                    iter++;
+                }
+            }
+
+            vec3 col;
+            if (iter >= uMaxIter) {
+                col = palette_color(0.0) * 0.1;
+            } else {
+                float mag = sqrt(max(mag2, 1.001));
+                float smoothIter = float(iter) + 1.0 - log(log(mag)) / uLnPower;
+                float maxIterF = float(uMaxIter);
+                float rawT = fract(smoothIter / maxIterF * uColorCycles);
+                float shifted = fract(rawT + uTimeShift + 1.0);
+                col = palette_color(shifted);
+            }
+            fragColor = vec4(col, 1.0);
         }
-        threads.forEach { it.join() }
-
-        bitmap.setPixels(pixels, 0, w, 0, 0, w, h)
-        canvas.drawBitmap(bitmap, 0f, 0f, null)
-    }
-
-    override fun estimateCost(params: Map<String, Any>, quality: Quality): Float {
-        val maxIter = (params["maxIterations"] as? Number)?.toInt() ?: 100
-        val power = (params["power"] as? Number)?.toFloat() ?: 3f
-        return (maxIter * power / 1000f).coerceIn(0.2f, 1f)
-    }
+    """
 }

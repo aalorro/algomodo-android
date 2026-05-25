@@ -1,17 +1,19 @@
 package com.artmondo.algomodo.generators.fractals
 
-import android.graphics.Bitmap
-import android.graphics.Canvas
-import android.graphics.Color
+import android.opengl.GLES30
 import com.artmondo.algomodo.core.rng.SeededRNG
 import com.artmondo.algomodo.data.palettes.Palette
-import com.artmondo.algomodo.generators.Generator
+import com.artmondo.algomodo.generators.GpuGenerator
 import com.artmondo.algomodo.generators.ParamGroup
 import com.artmondo.algomodo.generators.Parameter
 import com.artmondo.algomodo.generators.Quality
-import kotlin.math.*
+import com.artmondo.algomodo.rendering.gl.PaletteUniform
 
-class BurningShipGenerator : Generator {
+/**
+ * GPU port. Burning Ship z = (|Re z| + i|Im z|)² + c. Animation pans toward
+ * one of six known boundary hotspots, computed CPU-side.
+ */
+class BurningShipGenerator : GpuGenerator {
 
     override val id = "fractal-burning-ship"
     override val family = "fractals"
@@ -19,9 +21,8 @@ class BurningShipGenerator : Generator {
     override val definition =
         "The Burning Ship fractal — a variant of the Mandelbrot set using absolute values before squaring, producing an asymmetric ship-like shape."
     override val algorithmNotes =
-        "For each pixel as complex c, iterates z = (|Re(z)| + i|Im(z)|)^2 + c. " +
-        "The absolute-value step breaks conjugate symmetry, creating the distinctive hull and mast structures. " +
-        "Smooth coloring uses normalized iteration count. Animation zooms toward seed-selected regions of interest."
+        "GPU fragment shader. Iterates z = (|Re z| + i|Im z|)² + c. Animation pans toward " +
+        "a seed-picked boundary hotspot while zooming. Smooth colouring via normalised iteration count."
     override val supportsVector = false
     override val supportsAnimation = true
 
@@ -52,19 +53,12 @@ class BurningShipGenerator : Generator {
         doubleArrayOf(-0.593, -0.668)
     )
 
-    override fun renderCanvas(
-        canvas: Canvas,
-        bitmap: Bitmap,
-        params: Map<String, Any>,
-        seed: Int,
-        palette: Palette,
-        quality: Quality,
-        time: Float
+    override fun bindUniforms(
+        programId: Int, params: Map<String, Any>, seed: Int, palette: Palette,
+        quality: Quality, time: Float, width: Int, height: Int
     ) {
-        val w = bitmap.width
-        val h = bitmap.height
-        val baseCenterX = (params["centerX"] as? Number)?.toDouble() ?: -0.5
-        val baseCenterY = (params["centerY"] as? Number)?.toDouble() ?: -0.5
+        val baseCx = (params["centerX"] as? Number)?.toDouble() ?: -0.5
+        val baseCy = (params["centerY"] as? Number)?.toDouble() ?: -0.5
         val baseZoom = (params["zoom"] as? Number)?.toFloat() ?: 1f
         val maxIter = (params["maxIterations"] as? Number)?.toInt() ?: 100
         val colorCycles = (params["colorCycles"] as? Number)?.toFloat() ?: 3f
@@ -78,79 +72,71 @@ class BurningShipGenerator : Generator {
 
         val rng = SeededRNG(seed)
         val target = zoomTargets[rng.integer(0, zoomTargets.size - 1)]
-
         val zoomFactor = baseZoom * (1f + time * speed * 0.5f)
         val lerpT = (1.0 - 1.0 / (1.0 + time * speed * 0.1)).coerceIn(0.0, 0.95)
-        val centerX = baseCenterX + (target[0] - baseCenterX) * lerpT
-        val centerY = baseCenterY + (target[1] - baseCenterY) * lerpT
+        val centerX = baseCx + (target[0] - baseCx) * lerpT
+        val centerY = baseCy + (target[1] - baseCy) * lerpT
 
-        val aspect = w.toDouble() / h.toDouble()
-        val rangeY = 3.0 / zoomFactor
+        val aspect = width.toFloat() / height.toFloat()
+        val rangeY = 3.0f / zoomFactor
         val rangeX = rangeY * aspect
-
-        val pixels = IntArray(w * h)
-        val ln2 = ln(2.0)
-
-        val lutSize = 256
-        val paletteLut = IntArray(lutSize) { palette.lerpColor(it.toFloat() / (lutSize - 1)) }
-        val darkBase = palette.lerpColor(0.0f)
-        val insideColor = Color.rgb(
-            (Color.red(darkBase) * 0.1f).toInt(),
-            (Color.green(darkBase) * 0.1f).toInt(),
-            (Color.blue(darkBase) * 0.1f).toInt()
-        )
-
         val timeShift = time * speed * 0.02f
-        val invW = 1.0 / w
-        val invH = 1.0 / h
 
-        val cores = Runtime.getRuntime().availableProcessors().coerceIn(2, 8)
-        val threads = Array(cores) { t ->
-            Thread {
-                val y0 = t * h / cores
-                val y1 = (t + 1) * h / cores
-                for (py in y0 until y1) {
-                    val ciBase = centerY + (py * invH - 0.5) * rangeY
-                    for (px in 0 until w) {
-                        val cr = centerX + (px * invW - 0.5) * rangeX
-                        val ci = ciBase
+        GLES30.glUniform2f(GLES30.glGetUniformLocation(programId, "uCenter"), centerX.toFloat(), centerY.toFloat())
+        GLES30.glUniform2f(GLES30.glGetUniformLocation(programId, "uRange"), rangeX, rangeY)
+        GLES30.glUniform1i(GLES30.glGetUniformLocation(programId, "uMaxIter"), scaledMaxIter)
+        GLES30.glUniform1f(GLES30.glGetUniformLocation(programId, "uColorCycles"), colorCycles)
+        GLES30.glUniform1f(GLES30.glGetUniformLocation(programId, "uTimeShift"), timeShift)
+    }
 
-                        var zr = 0.0
-                        var zi = 0.0
-                        var iter = 0
+    override fun fragmentShaderSource(): String = """#version 300 es
+        precision highp float;
 
-                        while (iter < scaledMaxIter && zr * zr + zi * zi <= 4.0) {
-                            val tmp = zr * zr - zi * zi + cr
-                            zi = 2.0 * abs(zr) * abs(zi) + ci
-                            zr = tmp
-                            iter++
-                        }
+        uniform vec2 uResolution;
+        uniform float uTime;
+        uniform vec3 uAudio;
+        ${PaletteUniform.GLSL_HELPERS}
 
-                        val color = if (iter >= scaledMaxIter) {
-                            insideColor
-                        } else {
-                            val mag2 = zr * zr + zi * zi
-                            val logZn = ln(mag2) / 2.0
-                            val nu = ln(logZn / ln2) / ln2
-                            val smoothIter = iter + 1 - nu
-                            val rawT = ((smoothIter / scaledMaxIter * colorCycles) % 1.0).toFloat()
-                            val shifted = ((rawT + timeShift) % 1f + 1f) % 1f
-                            paletteLut[(shifted * (lutSize - 1)).toInt().coerceIn(0, lutSize - 1)]
-                        }
+        uniform vec2 uCenter;
+        uniform vec2 uRange;
+        uniform int uMaxIter;
+        uniform float uColorCycles;
+        uniform float uTimeShift;
 
-                        pixels[py * w + px] = color
-                    }
-                }
-            }.also { it.start() }
+        out vec4 fragColor;
+
+        void main() {
+            vec2 uv = gl_FragCoord.xy / uResolution.xy;
+            float cr = uCenter.x + (uv.x - 0.5) * uRange.x;
+            float ci = uCenter.y + (uv.y - 0.5) * uRange.y;
+
+            const float ln2 = 0.6931472;
+            float zr = 0.0; float zi = 0.0;
+            int iter = 0;
+            float mag2 = 0.0;
+            for (int i = 0; i < 512; i++) {
+                if (i >= uMaxIter) break;
+                mag2 = zr * zr + zi * zi;
+                if (mag2 > 4.0) break;
+                float tmp = zr * zr - zi * zi + cr;
+                zi = 2.0 * abs(zr) * abs(zi) + ci;
+                zr = tmp;
+                iter++;
+            }
+
+            vec3 col;
+            if (iter >= uMaxIter) {
+                col = palette_color(0.0) * 0.1;
+            } else {
+                float logZn = log(max(mag2, 1.001)) * 0.5;
+                float nu = log(logZn / ln2) / ln2;
+                float smoothIter = float(iter) + 1.0 - nu;
+                float maxIterF = float(uMaxIter);
+                float rawT = fract(smoothIter / maxIterF * uColorCycles);
+                float shifted = fract(rawT + uTimeShift + 1.0);
+                col = palette_color(shifted);
+            }
+            fragColor = vec4(col, 1.0);
         }
-        threads.forEach { it.join() }
-
-        bitmap.setPixels(pixels, 0, w, 0, 0, w, h)
-        canvas.drawBitmap(bitmap, 0f, 0f, null)
-    }
-
-    override fun estimateCost(params: Map<String, Any>, quality: Quality): Float {
-        val maxIter = (params["maxIterations"] as? Number)?.toInt() ?: 100
-        return (maxIter / 500f).coerceIn(0.2f, 1f)
-    }
+    """
 }

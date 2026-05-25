@@ -1,18 +1,27 @@
 package com.artmondo.algomodo.generators.fractals
 
-import android.graphics.Bitmap
-import android.graphics.Canvas
-import android.graphics.Paint
-import android.graphics.Rect
+import android.opengl.GLES30
 import com.artmondo.algomodo.data.palettes.Palette
-import java.util.concurrent.atomic.AtomicBoolean
-import com.artmondo.algomodo.generators.Generator
+import com.artmondo.algomodo.generators.GpuGenerator
 import com.artmondo.algomodo.generators.ParamGroup
 import com.artmondo.algomodo.generators.Parameter
 import com.artmondo.algomodo.generators.Quality
-import kotlin.math.*
+import com.artmondo.algomodo.rendering.gl.PaletteUniform
+import kotlin.math.cos
+import kotlin.math.sin
 
-class FractalInteriorGenerator : Generator {
+/**
+ * GPU port. Interior-coloured fractals — 5 variants × 6 interior modes ×
+ * 5 trap shapes × 3 exterior modes. All branching in the fragment shader is
+ * via uniforms (predictable execution per draw call).
+ *
+ * Behavioural changes from CPU:
+ * - Ring buffer reduced from 64 → 32 entries to keep register pressure low.
+ * - Brent periodicity check dropped (uniform branch cost > saved iterations).
+ * - Trap rotation moves the trap centre instead of rotating each orbit step
+ *   (matches the CPU's `baseTrapCX*cos - baseTrapCY*sin` formulation).
+ */
+class FractalInteriorGenerator : GpuGenerator {
 
     override val id = "fractal-interior"
     override val family = "fractals"
@@ -20,11 +29,10 @@ class FractalInteriorGenerator : Generator {
     override val definition =
         "Interior coloring of fractal sets — reveals hidden structure inside the Mandelbrot set, Julia sets, and other fractals using orbit traps, period detection, and multiplier analysis."
     override val algorithmNotes =
-        "Instead of leaving interior pixels black, this generator colors them using six methods: " +
-        "orbit trap (minimum proximity to a geometric shape during iteration), period detection (cycle length of converged orbits), " +
-        "multiplier magnitude/angle (derivative product over one period cycle), interior distance estimate, and final orbit value. " +
-        "Five fractal variants: Mandelbrot, Julia, Newton (z³-1), Tricorn (conjugate), Burning Ship (abs). " +
-        "Four exterior modes control escaped-pixel appearance. Animation rotates traps and shifts Julia seed."
+        "GPU fragment shader. Five variants (Mandelbrot, Julia, Newton, Tricorn, Burning Ship) " +
+        "with six interior colouring modes (orbit trap, period detection, multiplier magnitude/argument, " +
+        "interior distance estimate, final value). Ring-buffer of 32 orbit positions retained for " +
+        "period detection. Five trap shapes, three exterior modes."
     override val supportsVector = false
     override val supportsAnimation = true
 
@@ -70,665 +78,308 @@ class FractalInteriorGenerator : Generator {
         "animSpeed" to 1f
     )
 
-    private val filterPaint = Paint(Paint.FILTER_BITMAP_FLAG)
-
-    companion object {
-        private const val VAR_MANDELBROT = 0
-        private const val VAR_JULIA = 1
-        private const val VAR_NEWTON = 2
-        private const val VAR_TRICORN = 3
-        private const val VAR_BURNING_SHIP = 4
-
-        private const val INT_TRAP = 0
-        private const val INT_PERIOD = 1
-        private const val INT_MULT_MAG = 2
-        private const val INT_MULT_ARG = 3
-        private const val INT_INTERIOR_DE = 4
-        private const val INT_FINAL_VALUE = 5
-
-        private const val TRAP_POINT = 0
-        private const val TRAP_LINE = 1
-        private const val TRAP_CROSS = 2
-        private const val TRAP_CIRCLE = 3
-        private const val TRAP_POLYGON = 4
-
-        private const val EXT_SMOOTH = 0
-        private const val EXT_BANDED = 1
-        private const val EXT_SUBTLE = 2
-
-        private const val RING_SIZE = 64
-        private const val RING_MASK = 63
-
-        private const val ESCAPE_R2 = 65536.0
-        private const val LN2 = 0.6931471805599453
-        private const val LN_ESC_R = 5.545177444479562
-
-        private const val TRAP_SKIP = 3
-
-        private val HEX_NX = doubleArrayOf(1.0, cos(PI / 3.0), cos(2.0 * PI / 3.0))
-        private val HEX_NY = doubleArrayOf(0.0, sin(PI / 3.0), sin(2.0 * PI / 3.0))
-    }
-
-    override fun renderCanvas(
-        canvas: Canvas,
-        bitmap: Bitmap,
-        params: Map<String, Any>,
-        seed: Int,
-        palette: Palette,
-        quality: Quality,
-        time: Float
+    override fun bindUniforms(
+        programId: Int, params: Map<String, Any>, seed: Int, palette: Palette,
+        quality: Quality, time: Float, width: Int, height: Int
     ) {
-        // Local cancel flag — prevents data races when live canvas and export
-        // render concurrently on the same generator singleton.
-        val cancelled = AtomicBoolean(false)
-
-        val w = bitmap.width
-        val h = bitmap.height
-
         val variantStr = (params["variant"] as? String) ?: "mandelbrot"
         val intModeStr = (params["interiorMode"] as? String) ?: "trap"
         val trapTypeStr = (params["trapType"] as? String) ?: "point"
         val extModeStr = (params["exteriorMode"] as? String) ?: "smooth"
         val maxIter = (params["maxIterations"] as? Number)?.toInt() ?: 150
-        val centerX = (params["centerX"] as? Number)?.toDouble() ?: 0.0
-        val centerY = (params["centerY"] as? Number)?.toDouble() ?: 0.0
-        val zoom = (params["zoom"] as? Number)?.toDouble() ?: 1.0
-        val baseTrapCX = (params["trapCX"] as? Number)?.toDouble() ?: 0.25
-        val baseTrapCY = (params["trapCY"] as? Number)?.toDouble() ?: 0.5
-        val baseJuliaCX = (params["juliaCX"] as? Number)?.toDouble() ?: -0.7
-        val baseJuliaCY = (params["juliaCY"] as? Number)?.toDouble() ?: 0.27
-        val trapRadius = (params["trapRadius"] as? Number)?.toDouble() ?: 0.5
-        val animSpeed = (params["animSpeed"] as? Number)?.toDouble() ?: 1.0
+        val centerX = (params["centerX"] as? Number)?.toFloat() ?: 0f
+        val centerY = (params["centerY"] as? Number)?.toFloat() ?: 0f
+        val zoom = (params["zoom"] as? Number)?.toFloat() ?: 1f
+        val baseTrapCX = (params["trapCX"] as? Number)?.toFloat() ?: 0.25f
+        val baseTrapCY = (params["trapCY"] as? Number)?.toFloat() ?: 0.5f
+        val baseJuliaCX = (params["juliaCX"] as? Number)?.toFloat() ?: -0.7f
+        val baseJuliaCY = (params["juliaCY"] as? Number)?.toFloat() ?: 0.27f
+        val trapRadius = (params["trapRadius"] as? Number)?.toFloat() ?: 0.5f
+        val animSpeed = (params["animSpeed"] as? Number)?.toFloat() ?: 1f
 
         val variant = when (variantStr) {
-            "julia" -> VAR_JULIA; "newton" -> VAR_NEWTON
-            "tricorn" -> VAR_TRICORN; "burning-ship" -> VAR_BURNING_SHIP
-            else -> VAR_MANDELBROT
+            "julia" -> 1; "newton" -> 2; "tricorn" -> 3; "burning-ship" -> 4
+            else -> 0
         }
         val intMode = when (intModeStr) {
-            "period" -> INT_PERIOD; "multiplier-mag" -> INT_MULT_MAG
-            "multiplier-arg" -> INT_MULT_ARG; "interior-de" -> INT_INTERIOR_DE
-            "final-value" -> INT_FINAL_VALUE; else -> INT_TRAP
+            "period" -> 1; "multiplier-mag" -> 2; "multiplier-arg" -> 3
+            "interior-de" -> 4; "final-value" -> 5; else -> 0
         }
         val trapType = when (trapTypeStr) {
-            "line" -> TRAP_LINE; "cross" -> TRAP_CROSS
-            "circle" -> TRAP_CIRCLE; "polygon" -> TRAP_POLYGON; else -> TRAP_POINT
+            "line" -> 1; "cross" -> 2; "circle" -> 3; "polygon" -> 4; else -> 0
         }
         val extMode = when (extModeStr) {
-            "banded" -> EXT_BANDED; "subtle" -> EXT_SUBTLE; else -> EXT_SMOOTH
+            "banded" -> 1; "subtle" -> 2; else -> 0
         }
 
-        val isDraft = quality == Quality.DRAFT
         val isAnim = time > 0f
         val scaledMaxIter = when {
             isAnim -> (maxIter / 4).coerceIn(15, 50)
-            isDraft -> (maxIter / 4).coerceIn(15, 50)
+            quality == Quality.DRAFT -> (maxIter / 4).coerceIn(15, 50)
             quality == Quality.ULTRA -> (maxIter * 1.5f).toInt()
             else -> maxIter
         }
 
-        // Animation: rotate trap, drift Julia c, color cycle
-        val trapCX: Double; val trapCY: Double
-        val juliaCX: Double; val juliaCY: Double
+        val trapCX: Float; val trapCY: Float
+        val juliaCX: Float; val juliaCY: Float
         val colorCycleOffset: Int
         if (isAnim) {
-            val trapAngle = time * 0.3 * animSpeed
-            val cosTrap = cos(trapAngle)
-            val sinTrap = sin(trapAngle)
-            trapCX = baseTrapCX * cosTrap - baseTrapCY * sinTrap
-            trapCY = baseTrapCX * sinTrap + baseTrapCY * cosTrap
-            juliaCX = baseJuliaCX + 0.1 * cos(time * 0.2 * animSpeed)
-            juliaCY = baseJuliaCY + 0.1 * sin(time * 0.2 * animSpeed)
+            val trapAngle = (time * 0.3 * animSpeed).toDouble()
+            val cosT = cos(trapAngle).toFloat()
+            val sinT = sin(trapAngle).toFloat()
+            trapCX = baseTrapCX * cosT - baseTrapCY * sinT
+            trapCY = baseTrapCX * sinT + baseTrapCY * cosT
+            juliaCX = baseJuliaCX + 0.1f * cos(time * 0.2 * animSpeed).toFloat()
+            juliaCY = baseJuliaCY + 0.1f * sin(time * 0.2 * animSpeed).toFloat()
             colorCycleOffset = (time * 30 * animSpeed).toInt() and 0xFF
         } else {
-            trapCX = baseTrapCX
-            trapCY = baseTrapCY
-            juliaCX = baseJuliaCX
-            juliaCY = baseJuliaCY
+            trapCX = baseTrapCX; trapCY = baseTrapCY
+            juliaCX = baseJuliaCX; juliaCY = baseJuliaCY
             colorCycleOffset = 0
         }
 
-        // Adaptive resolution for animation
-        val renderW: Int; val renderH: Int
-        if (isAnim) {
-            renderW = (w * 0.5).toInt().coerceAtLeast(w / 2)
-            renderH = (h * 0.5).toInt().coerceAtLeast(h / 2)
-        } else {
-            renderW = w; renderH = h
-        }
-
-        val aspect = renderW.toDouble() / renderH.toDouble()
-        val rangeY = 2.6 / zoom
+        val aspect = width.toFloat() / height.toFloat()
+        val rangeY = 2.6f / zoom
         val rangeX = rangeY * aspect
-        val invW = 1.0 / renderW
-        val invH = 1.0 / renderH
+        val trapScale = 3f / trapRadius.coerceAtLeast(0.01f)
 
-        val lutSize = 256
-        val lutMax = lutSize - 1
-        val paletteLut = IntArray(lutSize) { palette.lerpColor(it.toFloat() / lutMax) }
+        GLES30.glUniform1i(GLES30.glGetUniformLocation(programId, "uVariant"), variant)
+        GLES30.glUniform1i(GLES30.glGetUniformLocation(programId, "uIntMode"), intMode)
+        GLES30.glUniform1i(GLES30.glGetUniformLocation(programId, "uTrap"), trapType)
+        GLES30.glUniform1i(GLES30.glGetUniformLocation(programId, "uExtMode"), extMode)
+        GLES30.glUniform1i(GLES30.glGetUniformLocation(programId, "uMaxIter"), scaledMaxIter)
+        GLES30.glUniform2f(GLES30.glGetUniformLocation(programId, "uCenter"), centerX, centerY)
+        GLES30.glUniform2f(GLES30.glGetUniformLocation(programId, "uRange"), rangeX, rangeY)
+        GLES30.glUniform2f(GLES30.glGetUniformLocation(programId, "uTrapC"), trapCX, trapCY)
+        GLES30.glUniform2f(GLES30.glGetUniformLocation(programId, "uJuliaC"), juliaCX, juliaCY)
+        GLES30.glUniform1f(GLES30.glGetUniformLocation(programId, "uTrapRadius"), trapRadius)
+        GLES30.glUniform1f(GLES30.glGetUniformLocation(programId, "uTrapScale"), trapScale)
+        GLES30.glUniform1f(GLES30.glGetUniformLocation(programId, "uColorCycle"), colorCycleOffset / 256f)
+    }
 
-        // Only compute trap distances when interior mode is "trap"
-        val needsTrap = intMode == INT_TRAP
-        val needsRing = intMode != INT_TRAP && intMode != INT_FINAL_VALUE
-        // For point trap, track squared distance in inner loop (avoid sqrt per iter)
-        val pointTrapSq = needsTrap && trapType == TRAP_POINT
+    override fun fragmentShaderSource(): String = """#version 300 es
+        precision highp float;
 
-        val pixelCount = renderW * renderH
-        val renderPixels = IntArray(pixelCount)
+        uniform vec2 uResolution;
+        uniform float uTime;
+        uniform vec3 uAudio;
+        ${PaletteUniform.GLSL_HELPERS}
 
-        val trapScale = 3.0 / trapRadius.coerceAtLeast(0.01)
-        val fastIters = if (isDraft) 10 else 20
+        #define RING_SIZE 32
+        #define RING_MASK 31
 
-        // Pre-compute for smooth coloring — avoid repeated division per escaped pixel
-        val invMaxIter = 1.0 / scaledMaxIter
-        val colorCycleD = colorCycleOffset / 256.0
+        uniform int uVariant;       // 0 mandel, 1 julia, 2 newton, 3 tricorn, 4 burning
+        uniform int uIntMode;       // 0 trap, 1 period, 2 mult-mag, 3 mult-arg, 4 int-de, 5 final
+        uniform int uTrap;          // 0 point, 1 line, 2 cross, 3 circle, 4 polygon
+        uniform int uExtMode;       // 0 smooth, 1 banded, 2 subtle
+        uniform int uMaxIter;
+        uniform vec2 uCenter;
+        uniform vec2 uRange;
+        uniform vec2 uTrapC;
+        uniform vec2 uJuliaC;
+        uniform float uTrapRadius;
+        uniform float uTrapScale;
+        uniform float uColorCycle;
 
-        val cores = Runtime.getRuntime().availableProcessors().coerceIn(2, 8)
-        val threads = Array(cores) { t ->
-            Thread {
-                val y0 = t * renderH / cores
-                val y1 = (t + 1) * renderH / cores
+        const float ESCAPE_R2 = 65536.0;
+        const float LN2 = 0.6931472;
+        const float LN_ESC_R = 5.5451774;
+        const float PI_F = 3.1415927;
+        const float TWO_PI = 6.2831853;
+        const int TRAP_SKIP = 3;
 
-                val ringX = if (needsRing) DoubleArray(RING_SIZE) else null
-                val ringY = if (needsRing) DoubleArray(RING_SIZE) else null
-                val multOut = if (needsRing) DoubleArray(2) else null
+        out vec4 fragColor;
 
-                for (py in y0 until y1) {
-                    if (cancelled.get()) return@Thread
+        float trapDistance(vec2 z) {
+            vec2 d = z - uTrapC;
+            if (uTrap == 0) return dot(d, d);          // squared
+            if (uTrap == 1) return abs(d.y);
+            if (uTrap == 2) return min(abs(d.x), abs(d.y));
+            if (uTrap == 3) return abs(length(d) - uTrapRadius);
+            // polygon (hexagon)
+            float c60 = cos(PI_F / 3.0);
+            float s60 = sin(PI_F / 3.0);
+            float c120 = cos(2.0 * PI_F / 3.0);
+            float s120 = sin(2.0 * PI_F / 3.0);
+            float d0 = abs(d.x);
+            float d1 = abs(d.x * c60 + d.y * s60);
+            float d2 = abs(d.x * c120 + d.y * s120);
+            return max(0.0, max(d0, max(d1, d2)) - uTrapRadius);
+        }
 
-                    val rawY = (py * invH - 0.5) * rangeY
-                    val rowOff = py * renderW
+        vec3 cyclePalette(float t) {
+            return palette_color(fract(t + uColorCycle));
+        }
 
-                    for (px in 0 until renderW) {
-                        val rawX = (px * invW - 0.5) * rangeX
-                        val pixX = centerX + rawX
-                        val pixY = centerY + rawY
+        void main() {
+            vec2 uv = gl_FragCoord.xy / uResolution.xy;
+            vec2 pix = uCenter + (uv - 0.5) * uRange;
 
-                        var zr: Double; var zi: Double
-                        var cr: Double; var ci: Double
-                        when (variant) {
-                            VAR_JULIA -> { zr = pixX; zi = pixY; cr = juliaCX; ci = juliaCY }
-                            VAR_NEWTON -> { zr = pixX; zi = pixY; cr = 0.0; ci = 0.0 }
-                            else -> { zr = 0.0; zi = 0.0; cr = pixX; ci = pixY }
+            vec2 z, c;
+            if (uVariant == 1) { z = pix; c = uJuliaC; }
+            else if (uVariant == 2) { z = pix; c = vec2(0.0); }
+            else { z = vec2(0.0); c = pix; }
+
+            int iter = 0;
+            bool escaped = false;
+            bool newtonConverged = false;
+            float minTD = 1e30;
+
+            // Ring buffer for orbit positions (period detection)
+            vec2 ring[RING_SIZE];
+            int ringHead = 0;
+            bool needRing = (uIntMode >= 1 && uIntMode <= 4) && uVariant != 2;
+            bool needTrap = uIntMode == 0;
+
+            // Mandelbrot cardioid/bulb shortcut
+            if (uVariant == 0) {
+                float crm = c.x - 0.25;
+                float ci2 = c.y * c.y;
+                float q = crm * crm + ci2;
+                if (q * (q + crm) <= 0.25 * ci2 ||
+                    (c.x + 1.0) * (c.x + 1.0) + ci2 <= 0.0625) {
+                    iter = uMaxIter;
+                }
+            }
+
+            if (uVariant == 2) {
+                // Newton z³-1
+                for (int i = 0; i < 512; i++) {
+                    if (i >= uMaxIter) break;
+                    if (needTrap && iter >= TRAP_SKIP) {
+                        float td = trapDistance(z);
+                        if (td < minTD) minTD = td;
+                    }
+                    vec2 z2 = vec2(z.x * z.x - z.y * z.y, 2.0 * z.x * z.y);
+                    vec2 z3 = vec2(z2.x * z.x - z2.y * z.y, z2.x * z.y + z2.y * z.x);
+                    vec2 f = z3 - vec2(1.0, 0.0);
+                    vec2 fp = 3.0 * z2;
+                    float denom = dot(fp, fp);
+                    if (denom < 1e-20) break;
+                    vec2 nz = z - vec2(f.x * fp.x + f.y * fp.y, f.y * fp.x - f.x * fp.y) / denom;
+                    vec2 dn = nz - z;
+                    if (dot(dn, dn) < 1e-10) {
+                        newtonConverged = true;
+                        z = nz; iter++; break;
+                    }
+                    z = nz; iter++;
+                    if (dot(z, z) > 1e10) { escaped = true; break; }
+                }
+            } else {
+                // Escape-time variants
+                for (int i = 0; i < 512; i++) {
+                    if (i >= uMaxIter) break;
+                    if (needRing) {
+                        ring[ringHead & RING_MASK] = z;
+                        ringHead++;
+                    }
+                    if (needTrap && iter >= TRAP_SKIP) {
+                        float td = trapDistance(z);
+                        if (td < minTD) minTD = td;
+                    }
+
+                    float zr = z.x; float zi = z.y;
+                    float zr2 = zr * zr; float zi2 = zi * zi;
+
+                    if (uVariant == 4) {
+                        // Burning Ship
+                        float azr = abs(zr); float azi = abs(zi);
+                        z.y = 2.0 * azr * azi + c.y;
+                        z.x = zr2 - zi2 + c.x;
+                    } else if (uVariant == 3) {
+                        // Tricorn
+                        z.y = -2.0 * zr * zi + c.y;
+                        z.x = zr2 - zi2 + c.x;
+                    } else {
+                        // Mandelbrot / Julia
+                        z.y = 2.0 * zr * zi + c.y;
+                        z.x = zr2 - zi2 + c.x;
+                    }
+                    iter++;
+                    if (dot(z, z) > ESCAPE_R2) { escaped = true; break; }
+                }
+            }
+
+            // Point trap returned squared distance — sqrt now
+            if (needTrap && uTrap == 0 && minTD < 1e30) minTD = sqrt(minTD);
+
+            float invMaxIter = 1.0 / float(uMaxIter);
+            vec3 col;
+
+            if (uVariant == 2 && newtonConverged) {
+                // Newton converged — colour by root angle
+                float rootAngle = atan(z.y, z.x);
+                float rootIdx = fract(rootAngle / TWO_PI + 1.0);
+                float shade = clamp(1.0 - float(iter) * invMaxIter, 0.3, 1.0);
+                col = cyclePalette(rootIdx) * shade;
+            } else if (escaped) {
+                // Exterior colouring
+                if (uExtMode == 1) {
+                    // Banded
+                    float t = fract(float(iter) * 7.0 / 256.0);
+                    col = cyclePalette(t);
+                } else {
+                    float mag = sqrt(dot(z, z));
+                    float si = float(iter) + 1.0 - log(log(mag) / LN_ESC_R) / LN2;
+                    float mul = uExtMode == 2 ? 1.0 : 3.0;
+                    float t = fract(si * invMaxIter * mul);
+                    col = cyclePalette(t);
+                    if (uExtMode == 2) col *= 0.5;
+                }
+            } else {
+                // Interior colouring
+                if (uIntMode == 0) {
+                    float normalized = clamp(sqrt(minTD * uTrapScale), 0.0, 1.0);
+                    col = cyclePalette(normalized);
+                } else if (uIntMode == 5) {
+                    float mag = clamp(sqrt(dot(z, z)), 0.0, 2.0) * 0.5;
+                    float ang = fract(atan(z.y, z.x) / TWO_PI + 1.0);
+                    float combined = fract(ang * 0.7 + mag * 0.3);
+                    col = cyclePalette(combined);
+                } else {
+                    // Period / multiplier modes — detect period from ring
+                    int period = 0;
+                    if (ringHead >= 2) {
+                        int last = ringHead - 1;
+                        vec2 ref = ring[last & RING_MASK];
+                        int searchLen = min(iter, RING_SIZE - 1);
+                        for (int p = 1; p < RING_SIZE; p++) {
+                            if (p > searchLen) break;
+                            vec2 d = ring[(last - p) & RING_MASK] - ref;
+                            if (dot(d, d) < 1e-8) { period = p; break; }
                         }
+                    }
 
-                        var iter = 0
-                        var escaped = false
-                        var convergedNewton = false
-
-                        if (variant == VAR_NEWTON) {
-                            // ---- Newton z³-1 ----
-                            var minTD = Double.MAX_VALUE
-                            var ringHead = 0
-                            while (iter < scaledMaxIter) {
-                                if (ringX != null) {
-                                    ringX[ringHead and RING_MASK] = zr
-                                    ringY!![ringHead and RING_MASK] = zi
-                                    ringHead++
-                                }
-                                if (needsTrap && iter >= TRAP_SKIP) {
-                                    val dx = zr - trapCX; val dy = zi - trapCY
-                                    val td = when (trapType) {
-                                        TRAP_POINT -> dx * dx + dy * dy
-                                        TRAP_LINE -> abs(dy)
-                                        TRAP_CROSS -> min(abs(dx), abs(dy))
-                                        TRAP_CIRCLE -> abs(sqrt(dx * dx + dy * dy) - trapRadius)
-                                        TRAP_POLYGON -> {
-                                            var mx = -1e30
-                                            for (i in 0..2) {
-                                                val dot = abs(dx * HEX_NX[i] + dy * HEX_NY[i])
-                                                if (dot > mx) mx = dot
-                                            }
-                                            (mx - trapRadius).coerceAtLeast(0.0)
-                                        }
-                                        else -> dx * dx + dy * dy
-                                    }
-                                    if (td < minTD) minTD = td
-                                }
-
-                                val z2r = zr * zr - zi * zi
-                                val z2i = 2.0 * zr * zi
-                                val z3r = z2r * zr - z2i * zi
-                                val z3i = z2r * zi + z2i * zr
-                                val fr = z3r - 1.0; val fi = z3i
-                                val fpr = 3.0 * z2r; val fpi = 3.0 * z2i
-                                val denom = fpr * fpr + fpi * fpi
-                                if (denom < 1e-20) break
-
-                                val nzr = zr - (fr * fpr + fi * fpi) / denom
-                                val nzi = zi - (fi * fpr - fr * fpi) / denom
-                                val dr = nzr - zr; val di = nzi - zi
-                                if (dr * dr + di * di < 1e-10) {
-                                    convergedNewton = true; zr = nzr; zi = nzi; iter++; break
-                                }
-                                zr = nzr; zi = nzi; iter++
-                                if (zr * zr + zi * zi > 1e10) { escaped = true; break }
-                            }
-
-                            // Convert squared min distance back to actual distance for point trap
-                            if (pointTrapSq && minTD < Double.MAX_VALUE) minTD = sqrt(minTD)
-
-                            renderPixels[rowOff + px] = if (convergedNewton) {
-                                val rootAngle = atan2(zi, zr)
-                                val rootIdx = ((rootAngle / (2.0 * PI) + 1.0) % 1.0)
-                                val t = ((rootIdx * lutMax).toInt() + colorCycleOffset) and 0xFF
-                                val shade = (1.0 - iter * invMaxIter).coerceIn(0.3, 1.0)
-                                blendShade(paletteLut[t.coerceIn(0, lutMax)], shade)
-                            } else {
-                                colorInterior(intMode, minTD, trapScale, zr, zi,
-                                    ringX, ringY, ringHead, multOut, iter, scaledMaxIter,
-                                    paletteLut, lutMax, colorCycleOffset)
-                            }
+                    if (period <= 0) {
+                        col = cyclePalette(0.0);
+                    } else if (uIntMode == 1) {
+                        // Period
+                        col = cyclePalette(fract(float(period) * 37.0 / 256.0));
+                    } else {
+                        // Multiplier — product of 2z over the period
+                        vec2 prod = vec2(1.0, 0.0);
+                        int start = ringHead - period;
+                        for (int k = 0; k < RING_SIZE; k++) {
+                            if (k >= period) break;
+                            vec2 dRing = 2.0 * ring[(start + k) & RING_MASK];
+                            prod = vec2(prod.x * dRing.x - prod.y * dRing.y,
+                                        prod.x * dRing.y + prod.y * dRing.x);
+                        }
+                        float magM = clamp(sqrt(dot(prod, prod)), 0.0, 1.0);
+                        float argM = atan(prod.y, prod.x);
+                        if (uIntMode == 2) {
+                            col = cyclePalette(magM);
+                        } else if (uIntMode == 3) {
+                            col = cyclePalette(fract(argM / TWO_PI + 1.0));
                         } else {
-                            // ---- Escape-time variants ----
-
-                            // Cardioid/bulb skip for Mandelbrot
-                            if (variant == VAR_MANDELBROT) {
-                                val crm = cr - 0.25; val ci2 = ci * ci
-                                val q = crm * crm + ci2
-                                if (q * (q + crm) <= 0.25 * ci2 ||
-                                    (cr + 1.0).let { it * it } + ci2 <= 0.0625) {
-                                    renderPixels[rowOff + px] = fastInteriorColor(
-                                        intMode, cr, ci, trapType, trapCX, trapCY, trapRadius,
-                                        trapScale, pointTrapSq, fastIters,
-                                        paletteLut, lutMax, colorCycleOffset)
-                                    continue
-                                }
-                            }
-
-                            var minTD = Double.MAX_VALUE
-                            var ringHead = 0
-
-                            var refZr = 0.0; var refZi = 0.0
-                            var period = 1; var pCount = 0
-
-                            when (variant) {
-                                VAR_MANDELBROT, VAR_JULIA -> {
-                                    // Cache zr², zi² — saves 2 multiplies per iteration
-                                    var zr2 = zr * zr
-                                    var zi2 = zi * zi
-
-                                    while (iter < scaledMaxIter) {
-                                        if (ringX != null) {
-                                            ringX[ringHead and RING_MASK] = zr
-                                            ringY!![ringHead and RING_MASK] = zi
-                                            ringHead++
-                                        }
-
-                                        // Trap distance — only when interior mode is "trap"
-                                        if (needsTrap && iter >= TRAP_SKIP) {
-                                            val dx = zr - trapCX; val dy = zi - trapCY
-                                            val td = when (trapType) {
-                                                TRAP_POINT -> dx * dx + dy * dy // squared — sqrt once at end
-                                                TRAP_LINE -> abs(dy)
-                                                TRAP_CROSS -> min(abs(dx), abs(dy))
-                                                TRAP_CIRCLE -> abs(sqrt(dx * dx + dy * dy) - trapRadius)
-                                                TRAP_POLYGON -> {
-                                                    var mx = -1e30
-                                                    for (i in 0..2) {
-                                                        val dot = abs(dx * HEX_NX[i] + dy * HEX_NY[i])
-                                                        if (dot > mx) mx = dot
-                                                    }
-                                                    (mx - trapRadius).coerceAtLeast(0.0)
-                                                }
-                                                else -> dx * dx + dy * dy
-                                            }
-                                            if (td < minTD) minTD = td
-                                        }
-
-                                        // z² + c iteration using cached squares
-                                        zi = 2.0 * zr * zi + ci
-                                        zr = zr2 - zi2 + cr
-                                        iter++
-
-                                        // Update cached squares for escape check + next iter
-                                        zr2 = zr * zr
-                                        zi2 = zi * zi
-                                        if (zr2 + zi2 > ESCAPE_R2) { escaped = true; break }
-
-                                        // Brent's periodicity detection
-                                        val bdr = zr - refZr; val bdi = zi - refZi
-                                        if (bdr * bdr + bdi * bdi < 1e-20) { iter = scaledMaxIter; break }
-                                        if (++pCount >= period) {
-                                            refZr = zr; refZi = zi; pCount = 0
-                                            period = (period shl 1).coerceAtMost(512)
-                                        }
-                                    }
-                                }
-                                VAR_TRICORN -> {
-                                    var zr2 = zr * zr
-                                    var zi2 = zi * zi
-
-                                    while (iter < scaledMaxIter) {
-                                        if (ringX != null) {
-                                            ringX[ringHead and RING_MASK] = zr
-                                            ringY!![ringHead and RING_MASK] = zi
-                                            ringHead++
-                                        }
-                                        if (needsTrap && iter >= TRAP_SKIP) {
-                                            val dx = zr - trapCX; val dy = zi - trapCY
-                                            val td = when (trapType) {
-                                                TRAP_POINT -> dx * dx + dy * dy
-                                                TRAP_LINE -> abs(dy)
-                                                TRAP_CROSS -> min(abs(dx), abs(dy))
-                                                TRAP_CIRCLE -> abs(sqrt(dx * dx + dy * dy) - trapRadius)
-                                                TRAP_POLYGON -> {
-                                                    var mx = -1e30
-                                                    for (i in 0..2) {
-                                                        val dot = abs(dx * HEX_NX[i] + dy * HEX_NY[i])
-                                                        if (dot > mx) mx = dot
-                                                    }
-                                                    (mx - trapRadius).coerceAtLeast(0.0)
-                                                }
-                                                else -> dx * dx + dy * dy
-                                            }
-                                            if (td < minTD) minTD = td
-                                        }
-
-                                        // Tricorn: conj(z)² + c
-                                        zi = -2.0 * zr * zi + ci
-                                        zr = zr2 - zi2 + cr
-                                        iter++
-
-                                        zr2 = zr * zr; zi2 = zi * zi
-                                        if (zr2 + zi2 > ESCAPE_R2) { escaped = true; break }
-                                        val bdr = zr - refZr; val bdi = zi - refZi
-                                        if (bdr * bdr + bdi * bdi < 1e-20) { iter = scaledMaxIter; break }
-                                        if (++pCount >= period) {
-                                            refZr = zr; refZi = zi; pCount = 0
-                                            period = (period shl 1).coerceAtMost(512)
-                                        }
-                                    }
-                                }
-                                else -> { // BURNING_SHIP
-                                    var zr2 = zr * zr
-                                    var zi2 = zi * zi
-
-                                    while (iter < scaledMaxIter) {
-                                        if (ringX != null) {
-                                            ringX[ringHead and RING_MASK] = zr
-                                            ringY!![ringHead and RING_MASK] = zi
-                                            ringHead++
-                                        }
-                                        if (needsTrap && iter >= TRAP_SKIP) {
-                                            val dx = zr - trapCX; val dy = zi - trapCY
-                                            val td = when (trapType) {
-                                                TRAP_POINT -> dx * dx + dy * dy
-                                                TRAP_LINE -> abs(dy)
-                                                TRAP_CROSS -> min(abs(dx), abs(dy))
-                                                TRAP_CIRCLE -> abs(sqrt(dx * dx + dy * dy) - trapRadius)
-                                                TRAP_POLYGON -> {
-                                                    var mx = -1e30
-                                                    for (i in 0..2) {
-                                                        val dot = abs(dx * HEX_NX[i] + dy * HEX_NY[i])
-                                                        if (dot > mx) mx = dot
-                                                    }
-                                                    (mx - trapRadius).coerceAtLeast(0.0)
-                                                }
-                                                else -> dx * dx + dy * dy
-                                            }
-                                            if (td < minTD) minTD = td
-                                        }
-
-                                        // Burning Ship: (|Re|+i|Im|)² + c
-                                        val azr = abs(zr); val azi = abs(zi)
-                                        zi = 2.0 * azr * azi + ci
-                                        zr = zr2 - zi2 + cr  // |re|² - |im|² = re² - im²
-                                        iter++
-
-                                        zr2 = zr * zr; zi2 = zi * zi
-                                        if (zr2 + zi2 > ESCAPE_R2) { escaped = true; break }
-                                        val bdr = zr - refZr; val bdi = zi - refZi
-                                        if (bdr * bdr + bdi * bdi < 1e-20) { iter = scaledMaxIter; break }
-                                        if (++pCount >= period) {
-                                            refZr = zr; refZi = zi; pCount = 0
-                                            period = (period shl 1).coerceAtMost(512)
-                                        }
-                                    }
-                                }
-                            }
-
-                            // Convert squared min distance to actual distance for point trap
-                            if (pointTrapSq && minTD < Double.MAX_VALUE) minTD = sqrt(minTD)
-
-                            renderPixels[rowOff + px] = if (escaped) {
-                                colorExterior(extMode, zr, zi, iter, invMaxIter,
-                                    colorCycleOffset, colorCycleD, paletteLut, lutMax)
-                            } else {
-                                colorInterior(intMode, minTD, trapScale, zr, zi,
-                                    ringX, ringY, ringHead, multOut, iter, scaledMaxIter,
-                                    paletteLut, lutMax, colorCycleOffset)
-                            }
+                            // interior-de
+                            float de = clamp(1.0 - magM, 0.0, 1.0);
+                            col = cyclePalette(de);
                         }
                     }
                 }
-            }.also { it.start() }
-        }
-
-        // Join with cancellation propagation
-        try {
-            threads.forEach { it.join() }
-        } catch (_: InterruptedException) {
-            cancelled.set(true)
-            threads.forEach { it.interrupt() }
-            Thread.currentThread().interrupt()
-            return
-        }
-        if (Thread.currentThread().isInterrupted) {
-            cancelled.set(true)
-            threads.forEach { it.interrupt() }
-            return
-        }
-
-        if (renderW < w) {
-            // Bilinear upscale via Bitmap — avoids nearest-neighbor blockiness
-            val smallBmp = Bitmap.createBitmap(renderW, renderH, Bitmap.Config.ARGB_8888)
-            smallBmp.setPixels(renderPixels, 0, renderW, 0, 0, renderW, renderH)
-            canvas.drawBitmap(smallBmp, null, Rect(0, 0, w, h), filterPaint)
-            smallBmp.recycle()
-        } else {
-            bitmap.setPixels(renderPixels, 0, w, 0, 0, w, h)
-            canvas.drawBitmap(bitmap, 0f, 0f, null)
-        }
-    }
-
-    /** Exterior color for escaped pixels — extracted to avoid code duplication. */
-    private fun colorExterior(
-        extMode: Int, zr: Double, zi: Double, iter: Int, invMaxIter: Double,
-        cycleOffset: Int, cycleD: Double, lut: IntArray, lutMax: Int
-    ): Int {
-        return when (extMode) {
-            EXT_BANDED -> {
-                lut[((iter * 7 + cycleOffset) and 0xFF).coerceIn(0, lutMax)]
             }
-            EXT_SUBTLE -> {
-                val si = iter + 1.0 - ln(ln(sqrt(zr * zr + zi * zi)) / LN_ESC_R) / LN2
-                val rawT = ((si * invMaxIter + cycleD) % 1.0 + 1.0) % 1.0
-                blendShade(lut[(rawT * lutMax).toInt().coerceIn(0, lutMax)], 0.5)
-            }
-            else -> { // EXT_SMOOTH
-                val si = iter + 1.0 - ln(ln(sqrt(zr * zr + zi * zi)) / LN_ESC_R) / LN2
-                val rawT = ((si * invMaxIter * 3.0 + cycleD) % 1.0 + 1.0) % 1.0
-                lut[(rawT * lutMax).toInt().coerceIn(0, lutMax)]
-            }
+            fragColor = vec4(clamp(col, 0.0, 1.0), 1.0);
         }
-    }
-
-    /** Fast interior color for cardioid/bulb skipped pixels. */
-    private fun fastInteriorColor(
-        intMode: Int, cr: Double, ci: Double,
-        trapType: Int, trapCX: Double, trapCY: Double, trapRadius: Double,
-        trapScale: Double, pointTrapSq: Boolean, shortIters: Int,
-        lut: IntArray, lutMax: Int, cycleOffset: Int
-    ): Int {
-        // Only iterate if we need trap data or final value
-        if (intMode == INT_PERIOD) {
-            val crm = cr - 0.25; val ci2 = ci * ci
-            val q = crm * crm + ci2
-            val isCardioid = q * (q + crm) <= 0.25 * ci2
-            val period = if (isCardioid) 1 else 2
-            return lut[((period * 37 + cycleOffset) and 0xFF).coerceIn(0, lutMax)]
-        }
-
-        // For non-trap, non-final-value modes, use fallback color
-        if (intMode != INT_TRAP && intMode != INT_FINAL_VALUE) {
-            return lut[(cycleOffset and 0xFF).coerceIn(0, lutMax)]
-        }
-
-        var zr = 0.0; var zi = 0.0
-        var minTD = Double.MAX_VALUE
-        var zr2 = 0.0; var zi2 = 0.0
-
-        for (i in 0 until shortIters) {
-            zi = 2.0 * zr * zi + ci
-            zr = zr2 - zi2 + cr
-            zr2 = zr * zr; zi2 = zi * zi
-            if (intMode == INT_TRAP && i >= TRAP_SKIP) {
-                val dx = zr - trapCX; val dy = zi - trapCY
-                val td = when (trapType) {
-                    TRAP_POINT -> dx * dx + dy * dy
-                    TRAP_LINE -> abs(dy)
-                    TRAP_CROSS -> min(abs(dx), abs(dy))
-                    TRAP_CIRCLE -> abs(sqrt(dx * dx + dy * dy) - trapRadius)
-                    TRAP_POLYGON -> {
-                        var mx = -1e30
-                        for (k in 0..2) {
-                            val dot = abs(dx * HEX_NX[k] + dy * HEX_NY[k])
-                            if (dot > mx) mx = dot
-                        }
-                        (mx - trapRadius).coerceAtLeast(0.0)
-                    }
-                    else -> dx * dx + dy * dy
-                }
-                if (td < minTD) minTD = td
-            }
-        }
-
-        return when (intMode) {
-            INT_TRAP -> {
-                if (pointTrapSq && minTD < Double.MAX_VALUE) minTD = sqrt(minTD)
-                val normalized = sqrt(minTD * trapScale).coerceIn(0.0, 1.0)
-                val t = ((normalized * lutMax).toInt() + cycleOffset) and 0xFF
-                lut[t.coerceIn(0, lutMax)]
-            }
-            else -> { // INT_FINAL_VALUE
-                val mag = sqrt(zr2 + zi2).coerceIn(0.0, 2.0) / 2.0
-                val angle = ((atan2(zi, zr) / (2.0 * PI)) % 1.0 + 1.0) % 1.0
-                val t = ((((angle * 0.7 + mag * 0.3) % 1.0) * lutMax).toInt() + cycleOffset) and 0xFF
-                lut[t.coerceIn(0, lutMax)]
-            }
-        }
-    }
-
-    private fun colorInterior(
-        intMode: Int, minTD: Double, trapScale: Double,
-        finalZr: Double, finalZi: Double,
-        ringX: DoubleArray?, ringY: DoubleArray?, ringHead: Int,
-        multOut: DoubleArray?, iter: Int, maxIter: Int,
-        lut: IntArray, lutMax: Int, cycleOffset: Int
-    ): Int {
-        return when (intMode) {
-            INT_PERIOD -> {
-                val period = detectPeriod(ringX, ringY, ringHead, iter.coerceAtMost(RING_SIZE))
-                if (period <= 0) lut[(cycleOffset and 0xFF).coerceIn(0, lutMax)]
-                else {
-                    val t = ((period * 37 + cycleOffset) and 0xFF).coerceIn(0, lutMax)
-                    lut[t]
-                }
-            }
-            INT_MULT_MAG -> {
-                val period = detectPeriod(ringX, ringY, ringHead, iter.coerceAtMost(RING_SIZE))
-                if (period <= 0) lut[(cycleOffset and 0xFF).coerceIn(0, lutMax)]
-                else {
-                    computeMultiplier(ringX!!, ringY!!, ringHead, period, multOut!!)
-                    val t = ((multOut[0].coerceIn(0.0, 1.0) * lutMax).toInt() + cycleOffset) and 0xFF
-                    lut[t.coerceIn(0, lutMax)]
-                }
-            }
-            INT_MULT_ARG -> {
-                val period = detectPeriod(ringX, ringY, ringHead, iter.coerceAtMost(RING_SIZE))
-                if (period <= 0) lut[(cycleOffset and 0xFF).coerceIn(0, lutMax)]
-                else {
-                    computeMultiplier(ringX!!, ringY!!, ringHead, period, multOut!!)
-                    val normalized = ((multOut[1] / (2.0 * PI)) % 1.0 + 1.0) % 1.0
-                    val t = ((normalized * lutMax).toInt() + cycleOffset) and 0xFF
-                    lut[t.coerceIn(0, lutMax)]
-                }
-            }
-            INT_INTERIOR_DE -> {
-                val period = detectPeriod(ringX, ringY, ringHead, iter.coerceAtMost(RING_SIZE))
-                if (period <= 0) lut[(cycleOffset and 0xFF).coerceIn(0, lutMax)]
-                else {
-                    computeMultiplier(ringX!!, ringY!!, ringHead, period, multOut!!)
-                    val de = (1.0 - multOut[0]).coerceIn(0.0, 1.0)
-                    val t = ((de * lutMax).toInt() + cycleOffset) and 0xFF
-                    lut[t.coerceIn(0, lutMax)]
-                }
-            }
-            INT_FINAL_VALUE -> {
-                val mag = sqrt(finalZr * finalZr + finalZi * finalZi).coerceIn(0.0, 2.0) / 2.0
-                val angle = ((atan2(finalZi, finalZr) / (2.0 * PI)) % 1.0 + 1.0) % 1.0
-                val combined = (angle * 0.7 + mag * 0.3) % 1.0
-                val t = ((combined * lutMax).toInt() + cycleOffset) and 0xFF
-                lut[t.coerceIn(0, lutMax)]
-            }
-            else -> { // INT_TRAP
-                val normalized = sqrt(minTD * trapScale).coerceIn(0.0, 1.0)
-                val t = ((normalized * lutMax).toInt() + cycleOffset) and 0xFF
-                lut[t.coerceIn(0, lutMax)]
-            }
-        }
-    }
-
-    private fun detectPeriod(
-        ringX: DoubleArray?, ringY: DoubleArray?, ringHead: Int, count: Int
-    ): Int {
-        if (ringX == null || ringY == null || count < 2) return 0
-        val last = ringHead - 1
-        val refX = ringX[last and RING_MASK]
-        val refY = ringY[last and RING_MASK]
-        val searchLen = count.coerceAtMost(RING_SIZE - 1)
-        for (p in 1..searchLen) {
-            val idx = (last - p) and RING_MASK
-            val dx = ringX[idx] - refX
-            val dy = ringY[idx] - refY
-            if (dx * dx + dy * dy < 1e-8) return p
-        }
-        return 0
-    }
-
-    private fun computeMultiplier(
-        ringX: DoubleArray, ringY: DoubleArray, ringHead: Int, period: Int,
-        out: DoubleArray
-    ) {
-        var prodR = 1.0; var prodI = 0.0
-        val start = ringHead - period
-        for (i in 0 until period) {
-            val idx = (start + i) and RING_MASK
-            val dR = 2.0 * ringX[idx]; val dI = 2.0 * ringY[idx]
-            val nR = prodR * dR - prodI * dI
-            val nI = prodR * dI + prodI * dR
-            prodR = nR; prodI = nI
-        }
-        out[0] = sqrt(prodR * prodR + prodI * prodI).coerceIn(0.0, 1.0)
-        out[1] = atan2(prodI, prodR)
-    }
-
-    private fun blendShade(color: Int, shade: Double): Int {
-        val r = ((color shr 16 and 0xFF) * shade).toInt().coerceIn(0, 255)
-        val g = ((color shr 8 and 0xFF) * shade).toInt().coerceIn(0, 255)
-        val b = ((color and 0xFF) * shade).toInt().coerceIn(0, 255)
-        return (0xFF shl 24) or (r shl 16) or (g shl 8) or b
-    }
-
-    override fun estimateCost(params: Map<String, Any>, quality: Quality): Float {
-        val maxIter = (params["maxIterations"] as? Number)?.toInt() ?: 150
-        val intMode = (params["interiorMode"] as? String) ?: "trap"
-        val modeMul = when (intMode) {
-            "trap", "final-value" -> 1f
-            "period" -> 1.2f
-            else -> 1.5f
-        }
-        return (maxIter * modeMul / 500f).coerceIn(0.2f, 1f)
-    }
+    """
 }

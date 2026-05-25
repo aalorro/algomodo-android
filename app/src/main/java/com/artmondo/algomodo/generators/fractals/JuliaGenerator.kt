@@ -1,16 +1,20 @@
 package com.artmondo.algomodo.generators.fractals
 
-import android.graphics.Bitmap
-import android.graphics.Canvas
-import android.graphics.Color
+import android.opengl.GLES30
 import com.artmondo.algomodo.data.palettes.Palette
-import com.artmondo.algomodo.generators.Generator
+import com.artmondo.algomodo.generators.GpuGenerator
 import com.artmondo.algomodo.generators.ParamGroup
 import com.artmondo.algomodo.generators.Parameter
 import com.artmondo.algomodo.generators.Quality
-import kotlin.math.*
+import com.artmondo.algomodo.rendering.gl.PaletteUniform
+import kotlin.math.cos
+import kotlin.math.sin
 
-class JuliaGenerator : Generator {
+/**
+ * GPU port. Julia set z -> z² + c. The c parameter orbits CPU-side and is
+ * uploaded each frame. Iteration + smooth/bands colouring done shader-side.
+ */
+class JuliaGenerator : GpuGenerator {
 
     override val id = "fractal-julia"
     override val family = "fractals"
@@ -18,10 +22,9 @@ class JuliaGenerator : Generator {
     override val definition =
         "Julia set fractal for the quadratic map z -> z^2 + c, where c is a complex constant parameter."
     override val algorithmNotes =
-        "Each pixel is the initial z value; we iterate z = z^2 + c and count iterations until " +
-        "|z| > 2 or maxIterations is reached. Smooth coloring is applied using the normalized " +
-        "iteration count. The c parameter is animated over time using sin/cos to trace a smooth " +
-        "path through parameter space, creating morphing Julia sets."
+        "GPU fragment shader. Each pixel is the initial z; iterates z = z² + c until |z|>2 or max iter. " +
+        "c orbits CPU-side via Lissajous path. Smooth colouring via normalised iteration count. " +
+        "Bands mode quantises smoothIter into uBandCount steps."
     override val supportsVector = false
     override val supportsAnimation = true
 
@@ -47,17 +50,10 @@ class JuliaGenerator : Generator {
         "speed" to 0.5f
     )
 
-    override fun renderCanvas(
-        canvas: Canvas,
-        bitmap: Bitmap,
-        params: Map<String, Any>,
-        seed: Int,
-        palette: Palette,
-        quality: Quality,
-        time: Float
+    override fun bindUniforms(
+        programId: Int, params: Map<String, Any>, seed: Int, palette: Palette,
+        quality: Quality, time: Float, width: Int, height: Int
     ) {
-        val w = bitmap.width
-        val h = bitmap.height
         val baseCx = (params["cReal"] as? Number)?.toDouble() ?: -0.7
         val baseCy = (params["cImag"] as? Number)?.toDouble() ?: 0.27
         val zoom = (params["zoom"] as? Number)?.toFloat() ?: 1f
@@ -73,83 +69,76 @@ class JuliaGenerator : Generator {
             Quality.ULTRA -> (maxIter * 1.5f).toInt()
         }
 
-        // Animate c parameter: orbit around the base c value using lissajous path
         val orbitRadius = 0.12
-        val cr = baseCx + orbitRadius * sin(time.toDouble() * speed * 0.4)
-        val ci = baseCy + orbitRadius * cos(time.toDouble() * speed * 0.55)
+        val cr = (baseCx + orbitRadius * sin(time.toDouble() * speed * 0.4)).toFloat()
+        val ci = (baseCy + orbitRadius * cos(time.toDouble() * speed * 0.55)).toFloat()
 
-        val aspect = w.toFloat() / h.toFloat()
-        val rangeY = 3.0 / zoom
+        val aspect = width.toFloat() / height.toFloat()
+        val rangeY = 3.0f / zoom
         val rangeX = rangeY * aspect
 
-        val pixels = IntArray(w * h)
-        val ln2 = ln(2.0)
+        GLES30.glUniform2f(GLES30.glGetUniformLocation(programId, "uC"), cr, ci)
+        GLES30.glUniform2f(GLES30.glGetUniformLocation(programId, "uRange"), rangeX, rangeY)
+        GLES30.glUniform1i(GLES30.glGetUniformLocation(programId, "uMaxIter"), scaledMaxIter)
+        GLES30.glUniform1i(GLES30.glGetUniformLocation(programId, "uStyle"), if (colorMode == "bands") 1 else 0)
+        GLES30.glUniform1f(GLES30.glGetUniformLocation(programId, "uColorCycles"), colorCycles)
+        GLES30.glUniform1i(GLES30.glGetUniformLocation(programId, "uBandCount"), bandCount.coerceAtLeast(2))
+    }
 
-        // Precompute palette LUT
-        val lutSize = 256
-        val paletteLut = IntArray(lutSize) { palette.lerpColor(it.toFloat() / (lutSize - 1)) }
-        val darkBase = palette.lerpColor(0.5f)
-        val insideColor = Color.rgb(
-            (Color.red(darkBase) * 0.08f).toInt(),
-            (Color.green(darkBase) * 0.08f).toInt(),
-            (Color.blue(darkBase) * 0.08f).toInt()
-        )
-        val bandCountSafe = bandCount.coerceAtLeast(2)
-        val invW = 1.0 / w
-        val invH = 1.0 / h
-        val useBands = colorMode == "bands"
+    override fun fragmentShaderSource(): String = """#version 300 es
+        precision highp float;
 
-        // Parallel row processing
-        val cores = Runtime.getRuntime().availableProcessors().coerceIn(2, 8)
-        val threads = Array(cores) { t ->
-            Thread {
-                val y0 = t * h / cores
-                val y1 = (t + 1) * h / cores
-                for (py in y0 until y1) {
-                    val ziBase = (py * invH - 0.5) * rangeY
-                    for (px in 0 until w) {
-                        var zr = (px * invW - 0.5) * rangeX
-                        var zi = ziBase
+        uniform vec2 uResolution;
+        uniform float uTime;
+        uniform vec3 uAudio;
+        ${PaletteUniform.GLSL_HELPERS}
 
-                        var iter = 0
-                        while (iter < scaledMaxIter && zr * zr + zi * zi <= 4.0) {
-                            val tmp = zr * zr - zi * zi + cr
-                            zi = 2.0 * zr * zi + ci
-                            zr = tmp
-                            iter++
-                        }
+        uniform vec2 uC;
+        uniform vec2 uRange;
+        uniform int uMaxIter;
+        uniform int uStyle;       // 0 smooth, 1 bands
+        uniform float uColorCycles;
+        uniform int uBandCount;
 
-                        val color = if (iter >= scaledMaxIter) {
-                            insideColor
-                        } else {
-                            val mag2 = zr * zr + zi * zi
-                            val logZn = ln(mag2) / 2.0
-                            val nu = ln(logZn / ln2) / ln2
-                            val smoothIter = (iter + 1 - nu).toFloat()
+        out vec4 fragColor;
 
-                            if (useBands) {
-                                val band = (smoothIter * colorCycles / scaledMaxIter * bandCountSafe).toInt() % bandCountSafe
-                                val bt = band.toFloat() / (bandCountSafe - 1)
-                                paletteLut[(bt * (lutSize - 1)).toInt().coerceIn(0, lutSize - 1)]
-                            } else {
-                                val rawT = ((smoothIter / scaledMaxIter * colorCycles) % 1.0).toFloat()
-                                paletteLut[(rawT.coerceIn(0f, 1f) * (lutSize - 1)).toInt().coerceIn(0, lutSize - 1)]
-                            }
-                        }
+        void main() {
+            vec2 uv = gl_FragCoord.xy / uResolution.xy;
+            float zr = (uv.x - 0.5) * uRange.x;
+            float zi = (uv.y - 0.5) * uRange.y;
 
-                        pixels[py * w + px] = color
-                    }
+            const float ln2 = 0.6931472;
+            int iter = 0;
+            float mag2 = 0.0;
+            for (int i = 0; i < 512; i++) {
+                if (i >= uMaxIter) break;
+                mag2 = zr * zr + zi * zi;
+                if (mag2 > 4.0) break;
+                float tmp = zr * zr - zi * zi + uC.x;
+                zi = 2.0 * zr * zi + uC.y;
+                zr = tmp;
+                iter++;
+            }
+
+            vec3 col;
+            if (iter >= uMaxIter) {
+                col = palette_color(0.5) * 0.08;
+            } else {
+                float logZn = log(max(mag2, 1.001)) * 0.5;
+                float nu = log(logZn / ln2) / ln2;
+                float smoothIter = float(iter) + 1.0 - nu;
+                float maxIterF = float(uMaxIter);
+                if (uStyle == 1) {
+                    float bc = float(uBandCount);
+                    float bandIdx = floor(mod(smoothIter * uColorCycles / maxIterF * bc, bc));
+                    float t = bandIdx / max(bc - 1.0, 1.0);
+                    col = palette_color(t);
+                } else {
+                    float t = fract(smoothIter / maxIterF * uColorCycles);
+                    col = palette_color(t);
                 }
-            }.also { it.start() }
+            }
+            fragColor = vec4(col, 1.0);
         }
-        threads.forEach { it.join() }
-
-        bitmap.setPixels(pixels, 0, w, 0, 0, w, h)
-        canvas.drawBitmap(bitmap, 0f, 0f, null)
-    }
-
-    override fun estimateCost(params: Map<String, Any>, quality: Quality): Float {
-        val maxIter = (params["maxIterations"] as? Number)?.toInt() ?: 100
-        return (maxIter / 500f).coerceIn(0.2f, 1f)
-    }
+    """
 }
