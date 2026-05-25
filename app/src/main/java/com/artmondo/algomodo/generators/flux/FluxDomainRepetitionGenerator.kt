@@ -1,27 +1,29 @@
 package com.artmondo.algomodo.generators.flux
 
-import android.graphics.Bitmap
-import android.graphics.Canvas
-import android.graphics.Color
+import android.opengl.GLES30
 import com.artmondo.algomodo.audio.AudioAnalysis
 import com.artmondo.algomodo.core.rng.SeededRNG
 import com.artmondo.algomodo.data.palettes.Palette
-import com.artmondo.algomodo.generators.Generator
+import com.artmondo.algomodo.generators.GpuGenerator
 import com.artmondo.algomodo.generators.ParamGroup
 import com.artmondo.algomodo.generators.Parameter
 import com.artmondo.algomodo.generators.Quality
-import kotlin.math.*
+import com.artmondo.algomodo.rendering.gl.PaletteUniform
+import kotlin.math.floor
+import kotlin.math.sin
+import kotlin.math.sqrt
 
 /**
- * SDF shapes tiled via modulo coordinates with per-cell variation -- neon edges,
- * six motion modes (static, pulse, spin, wave, drift, explode), and crisp rendering.
+ * GPU-rendered domain repetition. Tiled SDF shapes (circle / box / star /
+ * hexagon) with six motion modes (static, pulse, spin, wave, drift, explode),
+ * crisp neon edges and exponential glow falloff.
  *
- * Cell-based iteration with per-cell hash/cos/sin/radius computed once.
- * Fast interior checks for all 4 SDF shapes skip full evaluation for ~60% of interior pixels.
- * Fast exterior discard via squared max-visible-radius skips glow-region pixels early.
- * Glow uses 256-entry exp decay LUT. Fast atan2 polynomial for star SDF.
+ * Each pixel iterates a small neighbourhood of cells (±1 normally, ±2 for
+ * drift / explode where shapes can leave their own cell) and accumulates the
+ * minimum SDF distance + associated cell colour, then evaluates a CPU-
+ * compatible interior / edge / glow shading function.
  */
-class FluxDomainRepetitionGenerator : Generator {
+class FluxDomainRepetitionGenerator : GpuGenerator {
 
     override val id = "flux-domain-repetition"
     override val family = "flux"
@@ -29,11 +31,10 @@ class FluxDomainRepetitionGenerator : Generator {
     override val definition =
         "SDF shapes tiled via modulo coordinates with per-cell variation -- neon edges, six motion modes (static, pulse, spin, wave, drift, explode), and crisp rendering"
     override val algorithmNotes =
-        "Cell-based iteration with per-cell hash/cos/sin/radius computed once. " +
-        "Fast interior checks for all 4 SDF shapes skip full evaluation for ~60% of interior pixels. " +
-        "Fast exterior discard via squared max-visible-radius skips glow-region pixels early. " +
-        "Glow uses 256-entry exp decay LUT. Palette LUT cached by key across frames. " +
-        "Auto step=2 during animation. Fast atan2 polynomial for star SDF."
+        "GPU fragment shader. Per-pixel: locate the host cell, iterate ±1 or ±2 neighbour " +
+        "cells (depending on motion mode), compute per-cell hash → radius / rotation / " +
+        "color / motion offsets, evaluate the chosen SDF, keep the minimum distance + " +
+        "owning cell colour, then shade with interior / neon-edge / exp-glow falloff."
     override val supportsVector = false
     override val supportsAnimation = true
 
@@ -125,22 +126,16 @@ class FluxDomainRepetitionGenerator : Generator {
         "reactivity" to 1.0f
     )
 
-    // 256-entry glow LUT (rebuilt each render with current edgeGlow)
-    private val glowLUT = FloatArray(256)
-
-    override fun renderCanvas(
-        canvas: Canvas,
-        bitmap: Bitmap,
+    override fun bindUniforms(
+        programId: Int,
         params: Map<String, Any>,
         seed: Int,
         palette: Palette,
         quality: Quality,
-        time: Float
+        time: Float,
+        width: Int,
+        height: Int
     ) {
-        val w = bitmap.width
-        val h = bitmap.height
-
-        // -- Parameters --
         val shapeStr = (params["shape"] as? String) ?: "circle"
         val motionStr = (params["motionMode"] as? String) ?: "wave"
         val baseCellSize = ((params["cellSize"] as? Number)?.toFloat() ?: 80f).coerceIn(30f, 200f)
@@ -152,20 +147,16 @@ class FluxDomainRepetitionGenerator : Generator {
         val spd = (params["speed"] as? Number)?.toFloat() ?: 0.5f
         val rx = (params["reactivity"] as? Number)?.toFloat() ?: 1.0f
 
-        // Audio
         val audioAnalysis = params["_audioAnalysis"] as? AudioAnalysis
         val audioBass = (audioAnalysis?.getBass(time) ?: 0f) * rx
         val audioMid = (audioAnalysis?.getMid(time) ?: 0f) * rx
         val audioHigh = (audioAnalysis?.getHigh(time) ?: 0f) * rx
 
-        val effFillRatio = (fillRatio + audioBass * 0.2f).coerceIn(0.15f, 0.95f)
-        val audioRotOffset = audioMid * 0.5f
-
         val shapeId = when (shapeStr) {
             "circle" -> 0
             "box" -> 1
             "star" -> 2
-            else -> 3 // hexagon
+            else -> 3
         }
 
         val motionId = when (motionStr) {
@@ -174,75 +165,25 @@ class FluxDomainRepetitionGenerator : Generator {
             "spin" -> 2
             "wave" -> 3
             "drift" -> 4
-            else -> 5 // explode
+            else -> 5
         }
 
         val t = time * spd
 
+        // Pulse modulates the global cell size
         val cellSize = if (motionId == 1) {
             baseCellSize * (1f + sin(t * 1.4f) * 0.06f)
         } else {
             baseCellSize
         }
-        val halfCell = cellSize * 0.5f
-        val invCellSize = 1f / cellSize
 
-        // Auto step=2 during animation for ~4x pixel reduction; step=1 for static renders
-        var step = when (quality) {
-            Quality.DRAFT -> 3
-            Quality.ULTRA -> 1
-            else -> 2
-        }
-        if (time > 0f && step < 2) step = 2
-
-        // -- Palette colors as raw RGB arrays for per-pixel blending --
-        val palColors = palette.colorInts()
-        val numColors = palColors.size
-        val colorLUT = IntArray(numColors) { palColors[it] }
-        val colorsR = IntArray(numColors) { Color.red(palColors[it]) }
-        val colorsG = IntArray(numColors) { Color.green(palColors[it]) }
-        val colorsB = IntArray(numColors) { Color.blue(palColors[it]) }
-
-        // -- Build glow LUT --
-        val glowFalloff = if (edgeGlowAmt > 0.01f) 0.08f + edgeGlowAmt * 0.22f else 0f
-        val hasGlow = glowFalloff > 0f
-        if (hasGlow) {
-            for (i in 0 until 256) {
-                glowLUT[i] = exp(-i * glowFalloff)
-            }
-        }
-
-        val edgeBandWidth = (2.5f / edgeSharp).coerceAtLeast(0.5f)
-
-        val PI_F = PI.toFloat()
-        val TAU = PI_F * 2f
-
-        val rng = SeededRNG(seed)
-        val seedBits = (rng.random() * 0x7fffffff).toInt()
-
-        // -- Visible cell range --
+        // Visible cell range and explode/wave constants (mirror CPU)
         val extend = if (motionId == 4 || motionId == 5) 2 else 1
-        val cellX0 = floor(0f * invCellSize).toInt() - extend
-        val cellY0 = floor(0f * invCellSize).toInt() - extend
-        val cellX1 = floor((w - 1).toFloat() * invCellSize).toInt() + extend
-        val cellY1 = floor((h - 1).toFloat() * invCellSize).toInt() + extend
-
-        val pixels = IntArray(w * h)
-        val bgColor = Color.BLACK
-        pixels.fill(bgColor)
-
-        // Star constants
-        val starInnerRatio = 0.38f
-        val starSegAngle = PI_F / 5f
-        val starInvSeg = 1f / starSegAngle
-        val starDblSeg = starSegAngle * 2f
-        // Hex constants
-        val hexK1 = 0.8660254037844387f
-        val hexK2 = 0.5f
-
-        // Wave / explode pre-compute
+        val cellX0 = -extend
+        val cellY0 = -extend
+        val cellX1 = floor((width - 1).toFloat() / cellSize).toInt() + extend
+        val cellY1 = floor((height - 1).toFloat() / cellSize).toInt() + extend
         val waveDiag = sqrt((cellX1.toFloat() * cellX1 + cellY1.toFloat() * cellY1)) + 1f
-        val waveInvDiag = 1f / waveDiag
         val explodeCx = (cellX0 + cellX1) * 0.5f
         val explodeCy = (cellY0 + cellY1) * 0.5f
         val explodeMaxR = sqrt(
@@ -250,316 +191,254 @@ class FluxDomainRepetitionGenerator : Generator {
             (cellY1 - explodeCy) * (cellY1 - explodeCy)
         ) + 1f
 
-        // Glow max pixel extend -- tight cap for performance
-        val glowMaxPx = if (hasGlow) min(20, (3.5f / glowFalloff).toInt()) else 0
+        val rng = SeededRNG(seed)
+        val seedBits = (rng.random() * 0x7fffffff).toInt()
 
-        // -- Cell-based iteration --
-        for (cy in cellY0..cellY1) {
-            for (cx in cellX0..cellX1) {
+        GLES30.glUniform1i(GLES30.glGetUniformLocation(programId, "uShapeId"), shapeId)
+        GLES30.glUniform1i(GLES30.glGetUniformLocation(programId, "uMotionId"), motionId)
+        GLES30.glUniform1f(GLES30.glGetUniformLocation(programId, "uCellSize"), cellSize)
+        GLES30.glUniform1f(GLES30.glGetUniformLocation(programId, "uSizeVar"), sizeVar)
+        GLES30.glUniform1f(GLES30.glGetUniformLocation(programId, "uRotVar"), rotVar)
+        GLES30.glUniform1f(GLES30.glGetUniformLocation(programId, "uFillRatio"), fillRatio)
+        GLES30.glUniform1f(GLES30.glGetUniformLocation(programId, "uEdgeGlow"), edgeGlowAmt)
+        GLES30.glUniform1f(GLES30.glGetUniformLocation(programId, "uEdgeSharp"), edgeSharp)
+        GLES30.glUniform1f(GLES30.glGetUniformLocation(programId, "uT"), t)
+        GLES30.glUniform1i(GLES30.glGetUniformLocation(programId, "uExtend"), extend)
+        GLES30.glUniform1i(GLES30.glGetUniformLocation(programId, "uSeed"), seedBits)
+        GLES30.glUniform3f(GLES30.glGetUniformLocation(programId, "uAudioBmh"), audioBass, audioMid, audioHigh)
+        GLES30.glUniform1f(GLES30.glGetUniformLocation(programId, "uWaveInvDiag"), 1f / waveDiag)
+        GLES30.glUniform2f(GLES30.glGetUniformLocation(programId, "uExplodeC"), explodeCx, explodeCy)
+        GLES30.glUniform1f(GLES30.glGetUniformLocation(programId, "uExplodeMaxR"), explodeMaxR)
+    }
 
-                // -- Per-cell hash (once, not per-pixel) --
-                val hash1 = ((cx * 73856093) xor (cy * 19349663) xor seedBits) and 0x7fffffff
-                val hashF1 = hash1.toFloat() / 0x7fffffff.toFloat()
-                val hash2 = ((cx * 83492791) xor (cy * 56198423) xor seedBits) and 0x7fffffff
-                val hashF2 = hash2.toFloat() / 0x7fffffff.toFloat()
-                val hash3 = ((cx * 12345689) xor (cy * 98765431) xor seedBits) and 0x7fffffff
-                val hashF3 = hash3.toFloat() / 0x7fffffff.toFloat()
+    override fun fragmentShaderSource(): String = """#version 300 es
+        precision highp float;
+        precision highp int;
 
-                val cellPhase = hashF3 * TAU
+        uniform vec2 uResolution;
+        uniform float uTime;
+        uniform vec3 uAudio;
+        ${PaletteUniform.GLSL_HELPERS}
 
-                // -- Motion-specific modulations --
-                var motionRadius = effFillRatio
-                var motionRotation = hashF2 * rotVar * PI_F + audioRotOffset
-                var motionOffX = 0f
-                var motionOffY = 0f
+        uniform int   uShapeId;     // 0 circle, 1 box, 2 star, 3 hex
+        uniform int   uMotionId;    // 0 static, 1 pulse, 2 spin, 3 wave, 4 drift, 5 explode
+        uniform float uCellSize;
+        uniform float uSizeVar;
+        uniform float uRotVar;
+        uniform float uFillRatio;
+        uniform float uEdgeGlow;
+        uniform float uEdgeSharp;
+        uniform float uT;           // time * speed
+        uniform int   uExtend;      // 1 or 2
+        uniform int   uSeed;        // seedBits
+        uniform vec3  uAudioBmh;    // bass, mid, high (already pre-multiplied by reactivity)
+        uniform float uWaveInvDiag;
+        uniform vec2  uExplodeC;
+        uniform float uExplodeMaxR;
 
-                when (motionId) {
-                    0 -> { /* Static */ }
-                    1 -> {
-                        val breathe = sin(t * 1.4f + cellPhase) * 0.15f
-                        motionRadius = (effFillRatio + breathe * effFillRatio).coerceIn(0.15f, 0.95f)
-                    }
-                    2 -> {
-                        val spinDir = if (hashF1 > 0.5f) 1f else -1f
-                        val spinSpeed = 0.5f + hashF3 * 1.5f
-                        motionRotation += t * spinSpeed * spinDir
-                    }
-                    3 -> {
-                        val cellDist = (cx + cy).toFloat() * waveInvDiag
-                        val wave = sin(t * 2.5f - cellDist * TAU * 2f + cellPhase * 0.3f)
-                        motionRadius = (effFillRatio + wave * 0.12f).coerceIn(0.15f, 0.95f)
-                        motionRotation += wave * 0.4f
-                    }
-                    4 -> {
-                        val driftAmp = halfCell * 0.4f
-                        motionOffX = sin(t * 0.7f + cellPhase) * driftAmp +
-                                     sin(t * 1.3f + hashF1 * TAU) * driftAmp * 0.4f
-                        motionOffY = cos(t * 0.9f + cellPhase + 1.2f) * driftAmp +
-                                     cos(t * 1.1f + hashF2 * TAU) * driftAmp * 0.4f
-                        motionRotation += t * 0.5f
-                    }
-                    else -> { // 5 = explode
-                        val ecx = cx - explodeCx
-                        val ecy = cy - explodeCy
-                        val edist = sqrt(ecx * ecx + ecy * ecy)
-                        val enorm = edist / explodeMaxR
-                        val pushPhase = sin(t * 1.2f) * 0.5f + 0.5f
-                        val pushAmp = pushPhase * halfCell * 1.2f * enorm
-                        if (edist > 0.001f) {
-                            motionOffX = (ecx / edist) * pushAmp
-                            motionOffY = (ecy / edist) * pushAmp
-                        }
-                        motionRadius = (effFillRatio * (1f - pushPhase * 0.25f * enorm) +
-                                (1f - enorm) * 0.05f).coerceIn(0.15f, 0.95f)
-                        motionRotation += t * (0.3f + enorm * 0.8f)
-                    }
-                }
+        out vec4 fragColor;
 
-                // Audio jitter for drift/wave
-                if (audioHigh > 0.01f && (motionId == 3 || motionId == 4)) {
-                    motionOffX += sin(cellPhase + t * 8f) * audioHigh * halfCell * 0.15f
-                    motionOffY += cos(cellPhase + t * 8f) * audioHigh * halfCell * 0.15f
-                }
+        const float PI_F = 3.14159265358979;
+        const float TAU = 6.28318530717958;
+        const float HEX_K1 = 0.8660254037844387;
+        const float HEX_K2 = 0.5;
+        const float STAR_INNER = 0.38;
 
-                val radius = halfCell * motionRadius * (1f + (hashF1 - 0.5f) * sizeVar)
-                val cosR = cos(motionRotation)
-                val sinR = sin(motionRotation)
-
-                val cellCenterX = cx * cellSize + halfCell + motionOffX
-                val cellCenterY = cy * cellSize + halfCell + motionOffY
-
-                // Color
-                val ci: Int = if (motionId == 3 || motionId == 5) {
-                    val colorShift = sin(t * 0.8f + cellPhase) * 0.5f + 0.5f
-                    ((hash1 + (colorShift * numColors).toInt()) % numColors)
-                } else {
-                    hash1 % numColors
-                }
-                val cellColor = colorLUT[ci]
-                val cellR = colorsR[ci]
-                val cellG = colorsG[ci]
-                val cellB = colorsB[ci]
-
-                // Neon edge color (pre-compute RGB)
-                val neonR = min(255, cellR + ((255 - cellR) * 0.6f).toInt())
-                val neonG = min(255, cellG + ((255 - cellG) * 0.6f).toInt())
-                val neonB = min(255, cellB + ((255 - cellB) * 0.6f).toInt())
-
-                // -- Fast interior thresholds --
-                // Circle: squared distance threshold
-                val circleInnerR = radius - edgeBandWidth
-                val circleInnerRSq = if (circleInnerR > 0f) circleInnerR * circleInnerR else 0f
-                // Box: half-width with interior margin
-                val boxHW = radius * 0.85f
-                val boxInnerHW = boxHW - edgeBandWidth
-                // Hex: inscribed circle radius for fast interior
-                val hexInnerR = radius * 0.866f - edgeBandWidth
-                val hexInnerRSq = if (hexInnerR > 0f) hexInnerR * hexInnerR else 0f
-                // Star: inscribed circle (inner tips)
-                val starInnerDist = radius * starInnerRatio - edgeBandWidth
-                val starInnerDistSq = if (starInnerDist > 0f) starInnerDist * starInnerDist else 0f
-
-                // -- Fast exterior discard -- max visible distance from center
-                val maxVisR = radius + edgeBandWidth + glowMaxPx
-                val maxVisRSq = maxVisR * maxVisR
-
-                // Pixel range -- tight bounding box from maxVisR
-                val pxStart = max(0, (cellCenterX - maxVisR).toInt())
-                val pyStart = max(0, (cellCenterY - maxVisR).toInt())
-                val pxEnd = min(w, (cellCenterX + maxVisR + 1f).toInt())
-                val pyEnd = min(h, (cellCenterY + maxVisR + 1f).toInt())
-
-                // Skip cells entirely off-screen
-                if (pxStart >= w || pyStart >= h || pxEnd <= 0 || pyEnd <= 0) continue
-
-                val px0 = pxStart - (pxStart % step)
-                val py0 = pyStart - (pyStart % step)
-
-                // -- Pixel loop --
-                var py = py0
-                while (py < pyEnd) {
-                    val localY = py - cellCenterY
-                    val localYSq = localY * localY
-                    val rowBase = py * w
-
-                    var px = px0
-                    while (px < pxEnd) {
-                        val localX = px - cellCenterX
-
-                        // -- Fast exterior discard (squared distance from center) --
-                        val distSqFromCenter = localX * localX + localYSq
-                        if (distSqFromCenter > maxVisRSq) {
-                            px += step
-                            continue
-                        }
-
-                        // Rotate local coords
-                        val rx2 = cosR * localX - sinR * localY
-                        val ry2 = sinR * localX + cosR * localY
-
-                        // -- Inlined SDF with fast interior checks --
-                        var d: Float
-
-                        when (shapeId) {
-                            0 -> {
-                                // Circle -- distSq already computed (unrotated space; same magnitude)
-                                if (distSqFromCenter < circleInnerRSq) {
-                                    // Deep interior -- skip SDF entirely
-                                    writeBlock(pixels, px, py, step, w, h, cellColor)
-                                    px += step
-                                    continue
-                                }
-                                d = sqrt(distSqFromCenter) - radius
-                            }
-                            1 -> {
-                                // Box -- fast interior: both abs coords inside margin
-                                val abx = abs(rx2)
-                                val aby = abs(ry2)
-                                if (boxInnerHW > 0f && abx < boxInnerHW && aby < boxInnerHW) {
-                                    writeBlock(pixels, px, py, step, w, h, cellColor)
-                                    px += step
-                                    continue
-                                }
-                                val dx = abx - boxHW
-                                val dy = aby - boxHW
-                                val odx = if (dx > 0f) dx else 0f
-                                val ody = if (dy > 0f) dy else 0f
-                                d = sqrt(odx * odx + ody * ody) +
-                                    if (dx > dy) (if (dx < 0f) dx else 0f) else (if (dy < 0f) dy else 0f)
-                            }
-                            2 -> {
-                                // Star -- fast interior via inscribed circle
-                                if (distSqFromCenter < starInnerDistSq) {
-                                    writeBlock(pixels, px, py, step, w, h, cellColor)
-                                    px += step
-                                    continue
-                                }
-                                // Fast atan2 for star angle
-                                val angle = fatan2(ry2, rx2)
-                                val dist = sqrt(rx2 * rx2 + ry2 * ry2)
-                                val innerR2 = radius * starInnerRatio
-                                val a = ((angle % starDblSeg) + starDblSeg) % starDblSeg
-                                val tt = abs(a - starSegAngle) * starInvSeg
-                                d = dist - (innerR2 + (radius - innerR2) * (1f - tt))
-                            }
-                            else -> {
-                                // Hexagon -- fast interior via inscribed circle
-                                if (distSqFromCenter < hexInnerRSq) {
-                                    writeBlock(pixels, px, py, step, w, h, cellColor)
-                                    px += step
-                                    continue
-                                }
-                                var hpx = abs(rx2)
-                                var hpy = abs(ry2)
-                                val dot = 2f * min(hexK1 * hpx + hexK2 * hpy, 0f)
-                                hpx -= dot * hexK1
-                                hpy -= dot * hexK2
-                                hpx -= hpx.coerceIn(-radius, radius)
-                                hpy -= radius
-                                d = sqrt(hpx * hpx + hpy * hpy) * if (hpy < 0f) -1f else 1f
-                            }
-                        }
-
-                        // -- Distance to color -- crisp neon edges --
-                        val rgba: Int
-
-                        if (d < -edgeBandWidth) {
-                            rgba = cellColor
-                        } else if (d < 0f) {
-                            val edgeT = 1f - (-d / edgeBandWidth)
-                            val intensity = edgeT * edgeT * edgeT
-                            val inv = 1f - intensity
-                            val rr = (cellR * inv + neonR * intensity).toInt()
-                            val gg = (cellG * inv + neonG * intensity).toInt()
-                            val bb = (cellB * inv + neonB * intensity).toInt()
-                            rgba = Color.rgb(rr, gg, bb)
-                        } else if (d < edgeBandWidth) {
-                            val edgeT = 1f - d / edgeBandWidth
-                            val intensity = edgeT * edgeT
-                            val rr = (neonR * intensity).toInt()
-                            val gg = (neonG * intensity).toInt()
-                            val bb = (neonB * intensity).toInt()
-                            rgba = Color.rgb(rr, gg, bb)
-                        } else if (hasGlow) {
-                            val falloffDist = d - edgeBandWidth
-                            if (falloffDist > 255f) {
-                                px += step
-                                continue
-                            }
-                            val glow = glowLUT[falloffDist.toInt()]
-                            if (glow < 0.008f) {
-                                px += step
-                                continue
-                            }
-                            val rr = (cellR * glow * 0.7f).toInt()
-                            val gg = (cellG * glow * 0.7f).toInt()
-                            val bb = (cellB * glow * 0.7f).toInt()
-                            rgba = Color.rgb(rr, gg, bb)
-                        } else {
-                            // outside shape, no glow -- skip
-                            px += step
-                            continue
-                        }
-
-                        // -- Write pixel(s) --
-                        writeBlock(pixels, px, py, step, w, h, rgba)
-
-                        px += step
-                    }
-                    py += step
-                }
-            }
+        // ── Per-cell integer hash (matches CPU pattern reasonably; doesn't have
+        //    to be bit-identical, just deterministic per (cx, cy, seed)).
+        uint hashCell(int cx, int cy, int constantA, int constantB) {
+            uint a = uint(cx) * uint(constantA);
+            uint b = uint(cy) * uint(constantB);
+            uint h = (a ^ b ^ uint(uSeed)) & 0x7fffffffu;
+            return h;
+        }
+        float hashF(int cx, int cy, int constantA, int constantB) {
+            return float(hashCell(cx, cy, constantA, constantB)) / float(0x7fffffff);
         }
 
-        bitmap.setPixels(pixels, 0, w, 0, 0, w, h)
-        canvas.drawBitmap(bitmap, 0f, 0f, null)
-    }
+        // ── SDFs ────────────────────────────────────────────────────────────
+        float sdCircle(vec2 p, float r) {
+            return length(p) - r;
+        }
+        float sdBox(vec2 p, float hw) {
+            vec2 d = abs(p) - vec2(hw);
+            return length(max(d, 0.0)) + min(max(d.x, d.y), 0.0);
+        }
+        float sdStar(vec2 p, float r) {
+            float angle = atan(p.y, p.x);
+            float dist = length(p);
+            float segAngle = PI_F / 5.0;
+            float dblSeg = segAngle * 2.0;
+            float innerR = r * STAR_INNER;
+            float a = mod(angle, dblSeg);
+            float tt = abs(a - segAngle) / segAngle;
+            return dist - (innerR + (r - innerR) * (1.0 - tt));
+        }
+        float sdHex(vec2 p, float r) {
+            vec2 q = abs(p);
+            float dot2 = 2.0 * min(HEX_K1 * q.x + HEX_K2 * q.y, 0.0);
+            q -= dot2 * vec2(HEX_K1, HEX_K2);
+            q.x -= clamp(q.x, -r, r);
+            q.y -= r;
+            return length(q) * sign(q.y);
+        }
+        float evalSdf(vec2 p, float r) {
+            if (uShapeId == 0) return sdCircle(p, r);
+            else if (uShapeId == 1) return sdBox(p, r * 0.85);
+            else if (uShapeId == 2) return sdStar(p, r);
+            else                    return sdHex(p, r);
+        }
+
+        // ── Per-cell motion modulation. Writes radius, rotation, offset; returns
+        //    the cell's chosen colour parameter (0..1) for palette lookup.
+        void evalCell(int cx, int cy,
+                      out float radius,
+                      out float rot,
+                      out vec2 offset,
+                      out float colorParam)
+        {
+            float hashF1 = hashF(cx, cy, 73856093, 19349663);
+            float hashF2 = hashF(cx, cy, 83492791, 56198423);
+            float hashF3 = hashF(cx, cy, 12345689, 98765431);
+            float cellPhase = hashF3 * TAU;
+
+            float halfCell = uCellSize * 0.5;
+            float effFill = clamp(uFillRatio + uAudioBmh.x * 0.2, 0.15, 0.95);
+            float audioRotOffset = uAudioBmh.y * 0.5;
+
+            float motionRadius = effFill;
+            float motionRotation = hashF2 * uRotVar * PI_F + audioRotOffset;
+            vec2 motionOff = vec2(0.0);
+
+            if (uMotionId == 1) {
+                float breathe = sin(uT * 1.4 + cellPhase) * 0.15;
+                motionRadius = clamp(effFill + breathe * effFill, 0.15, 0.95);
+            } else if (uMotionId == 2) {
+                float spinDir = (hashF1 > 0.5) ? 1.0 : -1.0;
+                float spinSpeed = 0.5 + hashF3 * 1.5;
+                motionRotation += uT * spinSpeed * spinDir;
+            } else if (uMotionId == 3) {
+                float cellDist = (float(cx) + float(cy)) * uWaveInvDiag;
+                float wave = sin(uT * 2.5 - cellDist * TAU * 2.0 + cellPhase * 0.3);
+                motionRadius = clamp(effFill + wave * 0.12, 0.15, 0.95);
+                motionRotation += wave * 0.4;
+            } else if (uMotionId == 4) {
+                float driftAmp = halfCell * 0.4;
+                motionOff.x = sin(uT * 0.7 + cellPhase) * driftAmp
+                            + sin(uT * 1.3 + hashF1 * TAU) * driftAmp * 0.4;
+                motionOff.y = cos(uT * 0.9 + cellPhase + 1.2) * driftAmp
+                            + cos(uT * 1.1 + hashF2 * TAU) * driftAmp * 0.4;
+                motionRotation += uT * 0.5;
+            } else if (uMotionId == 5) {
+                vec2 ec = vec2(float(cx), float(cy)) - uExplodeC;
+                float edist = length(ec);
+                float enorm = edist / uExplodeMaxR;
+                float pushPhase = sin(uT * 1.2) * 0.5 + 0.5;
+                float pushAmp = pushPhase * halfCell * 1.2 * enorm;
+                if (edist > 0.001) {
+                    motionOff = (ec / edist) * pushAmp;
+                }
+                motionRadius = clamp(effFill * (1.0 - pushPhase * 0.25 * enorm) + (1.0 - enorm) * 0.05,
+                                     0.15, 0.95);
+                motionRotation += uT * (0.3 + enorm * 0.8);
+            }
+
+            // Audio high-band jitter for wave / drift
+            if (uAudioBmh.z > 0.01 && (uMotionId == 3 || uMotionId == 4)) {
+                motionOff.x += sin(cellPhase + uT * 8.0) * uAudioBmh.z * halfCell * 0.15;
+                motionOff.y += cos(cellPhase + uT * 8.0) * uAudioBmh.z * halfCell * 0.15;
+            }
+
+            radius = halfCell * motionRadius * (1.0 + (hashF1 - 0.5) * uSizeVar);
+            rot = motionRotation;
+            offset = motionOff;
+
+            // Colour parameter — pick 1/5 palette stops via hash, with a colour
+            // shift over time for wave/explode (matches CPU `(hash1 + colorShift*nc) % nc`)
+            float baseIdx = floor(hashF1 * 5.0); // 0..4
+            if (uMotionId == 3 || uMotionId == 5) {
+                float shift = sin(uT * 0.8 + cellPhase) * 0.5 + 0.5; // 0..1
+                baseIdx = mod(baseIdx + floor(shift * 5.0), 5.0);
+            }
+            colorParam = baseIdx / 4.0;
+        }
+
+        void main() {
+            vec2 frag = gl_FragCoord.xy;
+            float invCell = 1.0 / uCellSize;
+
+            int baseCx = int(floor(frag.x * invCell));
+            int baseCy = int(floor(frag.y * invCell));
+
+            float edgeBandWidth = max(2.5 / uEdgeSharp, 0.5);
+            float glowFalloff = (uEdgeGlow > 0.01) ? (0.08 + uEdgeGlow * 0.22) : 0.0;
+            bool hasGlow = (glowFalloff > 0.0);
+
+            float minD = 1e9;
+            vec3  bestColor = vec3(0.0);
+
+            int E = uExtend;
+            for (int dy = -2; dy <= 2; dy++) {
+                if (dy < -E || dy > E) continue;
+                for (int dx = -2; dx <= 2; dx++) {
+                    if (dx < -E || dx > E) continue;
+
+                    int cx = baseCx + dx;
+                    int cy = baseCy + dy;
+
+                    float radius, rot, colorParam;
+                    vec2 offset;
+                    evalCell(cx, cy, radius, rot, offset, colorParam);
+
+                    float halfCell = uCellSize * 0.5;
+                    vec2 centre = vec2(float(cx) * uCellSize + halfCell,
+                                       float(cy) * uCellSize + halfCell) + offset;
+
+                    vec2 local = frag - centre;
+                    float cs = cos(rot);
+                    float sn = sin(rot);
+                    vec2 rotated = vec2(cs * local.x - sn * local.y,
+                                        sn * local.x + cs * local.y);
+
+                    float d = evalSdf(rotated, radius);
+                    if (d < minD) {
+                        minD = d;
+                        bestColor = palette_color(colorParam);
+                    }
+                }
+            }
+
+            vec3 col = vec3(0.0);
+            float d = minD;
+            vec3 neonColor = mix(bestColor, vec3(1.0), 0.6);
+
+            if (d < -edgeBandWidth) {
+                col = bestColor;
+            } else if (d < 0.0) {
+                float edgeT = 1.0 - (-d / edgeBandWidth);
+                float intensity = edgeT * edgeT * edgeT;
+                col = mix(bestColor, neonColor, intensity);
+            } else if (d < edgeBandWidth) {
+                float edgeT = 1.0 - d / edgeBandWidth;
+                float intensity = edgeT * edgeT;
+                col = neonColor * intensity;
+            } else if (hasGlow) {
+                float falloffDist = d - edgeBandWidth;
+                float glow = exp(-falloffDist * glowFalloff);
+                if (glow >= 0.008) {
+                    col = bestColor * (glow * 0.7);
+                }
+            }
+
+            fragColor = vec4(col, 1.0);
+        }
+    """
 
     override fun estimateCost(params: Map<String, Any>, quality: Quality): Float {
         val shape = (params["shape"] as? String) ?: "circle"
+        val motion = (params["motionMode"] as? String) ?: "wave"
         val shapeMul = if (shape == "star" || shape == "hexagon") 1.3f else 1f
-        val glow = (params["edgeGlow"] as? Number)?.toFloat() ?: 0.4f
-        val glowMul = if (glow > 0.01f) 1.2f else 1f
-        return (0.4f * shapeMul * glowMul).coerceIn(0.1f, 1f)
-    }
-
-    companion object {
-        /**
-         * Fast atan2 approximation -- polynomial, max error ~0.005 rad.
-         * Ported exactly from the web version.
-         */
-        @JvmStatic
-        private fun fatan2(y: Float, x: Float): Float {
-            val ax = if (x < 0f) -x else x
-            val ay = if (y < 0f) -y else y
-            val mn = if (ax < ay) ax else ay
-            val mx = if (ax < ay) ay else ax
-            val a = mn / (mx + 1e-15f)
-            val s = a * a
-            var r = ((-0.0464964749f * s + 0.15931422f) * s - 0.327622764f) * s * a + a
-            if (ay > ax) r = 1.5707963268f - r
-            if (x < 0f) r = 3.1415926536f - r
-            if (y < 0f) r = -r
-            return r
-        }
-
-        /**
-         * Write a step x step block of pixels into the pixel buffer, clamped to bitmap bounds.
-         */
-        @JvmStatic
-        private fun writeBlock(pixels: IntArray, px: Int, py: Int, step: Int, w: Int, h: Int, color: Int) {
-            if (step == 1) {
-                pixels[py * w + px] = color
-            } else {
-                val maxSy = if (py + step < h) step else h - py
-                val maxSx = if (px + step < w) step else w - px
-                for (sy in 0 until maxSy) {
-                    val rb = (py + sy) * w + px
-                    for (sx in 0 until maxSx) {
-                        pixels[rb + sx] = color
-                    }
-                }
-            }
-        }
+        val motionMul = if (motion == "drift" || motion == "explode") 2.0f else 1f
+        return (0.2f * shapeMul * motionMul).coerceIn(0.1f, 0.8f)
     }
 }
