@@ -1069,11 +1069,13 @@ class ElectricFieldGenerator : GpuGenerator {
             }
 
             // ── Render ─────────────────────────────────────────────────────
+            // Background fill (skipped for combined/equipotential — those overwrite
+            // every pixel via the GPU shader anyway).
             if (style == "particles") {
                 // Semi-transparent overlay for trail effect (rgba(10,10,10,0.12))
                 val overlayPaint = Paint().apply { color = Color.argb(31, 10, 10, 10) }
                 canvas.drawRect(0f, 0f, bitmap.width.toFloat(), bitmap.height.toFloat(), overlayPaint)
-            } else {
+            } else if (style != "equipotential" && style != "combined") {
                 canvas.drawColor(Color.rgb(10, 10, 10))
             }
 
@@ -1106,7 +1108,18 @@ class ElectricFieldGenerator : GpuGenerator {
                     drawCharges(canvas, st, colors, scale)
                 }
                 else -> {
-                    // combined
+                    // combined: equipotential heatmap (GPU) underneath +
+                    // field lines + charges on top
+                    st.potAbsMax = computePotentialAbsMax(st, w, h, fieldStrength)
+                    GpuShaderRunner.forCurrentThread().render(
+                        generator = this@ElectricFieldGenerator,
+                        bitmap = bitmap,
+                        params = params,
+                        seed = seed,
+                        palette = palette,
+                        quality = quality,
+                        time = time
+                    )
                     if (st.dirty || st.nLines == 0) {
                         traceFieldLines(st, w, h, tracerCount, traceSteps, fieldStrength)
                     }
