@@ -1119,7 +1119,11 @@ private fun ActionButtonsRow(
         }
         TooltipBox(
             positionProvider = TooltipDefaults.rememberPlainTooltipPositionProvider(),
-            tooltip = { PlainTooltip { Text("Press play to animate") } },
+            tooltip = {
+                PlainTooltip {
+                    Text(if (translucent) "Tap again to minimize" else "Tap the canvas once to maximize")
+                }
+            },
             state = playTooltipState
         ) {
             CanvasButton(
