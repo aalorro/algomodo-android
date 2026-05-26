@@ -18,6 +18,13 @@ fun ChangelogDialog(onDismiss: () -> Unit) {
         text = {
             Text(
                 text = """
+v2.2.1 (Android)
+Bug Fixes:
+- Voronoi (Fractured, Mosaic, Neighbor Bands, Ridges, Weighted): fixed blank render on phone GPUs caused by fragment-uniform-vector overflow. Shrunk shared point cap to fit phone GPU budgets without affecting cell counts.
+
+UI:
+- Bottom tabs use a smaller font and abbreviated "Gens" label on phones so all four chips fit on one line. Tablets retain the larger font and full "Generators" label.
+
 v2.2.0 (Android)
 GPU Family Ports:
 - Animation, Procedural (Displacement / EdgeGlow / Warp / SdfRaymarch), Geometry (Moire / Chladni) and Pixel Art per-pixel generators ported to GPU shaders

@@ -2,6 +2,14 @@
 
 All notable changes to Algomodo will be documented in this file.
 
+## [2.2.1] - Android
+
+### Bug Fixes
+- **Voronoi (Fractured, Mosaic, Neighbor Bands, Ridges, Weighted)**: fixed blank render on phone GPUs. The combined uniform arrays exceeded the fragment uniform-vector budget on mid-range mobile devices. Shrunk the shared point cap to fit within phone GPU limits while preserving full cell-count ranges.
+
+### UI
+- **Bottom tabs**: smaller font and abbreviated "Gens" label on phones so all four chips fit on one line without wrapping. Tablets keep the larger font and full "Generators" label.
+
 ## [2.2.0] - Android
 
 ### GPU Family Ports
