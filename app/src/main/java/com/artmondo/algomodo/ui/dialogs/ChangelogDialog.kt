@@ -18,6 +18,27 @@ fun ChangelogDialog(onDismiss: () -> Unit) {
         text = {
             Text(
                 text = """
+v2.2.0 (Android)
+GPU Family Ports:
+- Animation, Procedural (Displacement / EdgeGlow / Warp / SdfRaymarch), Geometry (Moire / Chladni) and Pixel Art per-pixel generators ported to GPU shaders
+- Flux: 4 generators ported as hybrid CPU+GPU (FluxDisplacementMap, FluxDomainRepetition, FluxMetaballs2d, FluxSimplexWarp)
+
+New Features:
+- Voronoi Cells: new Pattern parameter (Random / Jittered Grid / Hex Grid / Square Grid / Phyllotaxis / Rings); new color modes (Contour Rings, Bipolar); crispier rendering with exact palette indexing and fwidth() anti-aliased borders
+- Percolation: new modes (Bond, Directed); new color modes (Depth, Resistance, Boundary); new animation patterns (Growth, Morph)
+- Electric Field: pulsing-charge motion; equipotential mode now GPU-shaded; "combined" style now layers equipotential heatmap beneath field lines
+- Magnetic Field: new hybrid GPU magnitude and combined styles (Coulomb-summed |B| heatmap)
+- 3 new metallic palettes: Golden, Silver, Bronze
+
+UI:
+- Bottom tabs use larger bold text in amber-bordered chips for visibility
+- Maximized canvas palette strip auto-scrolls to selected palette
+- Presets floating button moved to bottom-right
+- Canvas tooltip: "Tap the canvas once to maximize" / "Tap again to minimize"
+
+Bug Fixes:
+- Auto-retry blank canvas at alternate animation time values
+
 v2.1.0 (Android)
 GPU Shader Pipeline:
 - New GpuGenerator interface with offscreen EGL + FBO backend. All existing CPU call sites (live preview, exports, PostFX) work unchanged.
