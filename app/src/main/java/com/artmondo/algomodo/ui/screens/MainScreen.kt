@@ -882,7 +882,7 @@ fun MainScreen(
 
                 BoxWithConstraints(
                     modifier = Modifier
-                        .align(Alignment.BottomStart)
+                        .align(Alignment.BottomEnd)
                         .fillMaxWidth()
                         .padding(12.dp)
                 ) {
@@ -892,6 +892,7 @@ fun MainScreen(
 
                     Row(
                         modifier = Modifier
+                            .align(Alignment.CenterEnd)
                             .offset(x = with(androidx.compose.ui.platform.LocalDensity.current) { dragOffsetX.toDp() })
                             .pointerInput(Unit) {
                                 detectDragGestures(
@@ -900,7 +901,7 @@ fun MainScreen(
                                         change.consume()
                                         isDragging = true
                                         dragOffsetX = (dragOffsetX + dragAmount.x)
-                                            .coerceIn(0f, maxDragPx)
+                                            .coerceIn(-maxDragPx, 0f)
                                     }
                                 )
                             }

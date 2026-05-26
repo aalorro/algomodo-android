@@ -28,7 +28,7 @@ class PercolationGenerator : Generator {
         "Bond: all sites present, bonds between adjacent pairs open with probability p (p_c = 0.5, Kesten 1980). " +
         "Directed: cascade from top row \u2014 each row activates only if open AND has an active parent above (with horizontal wrap). " +
         "Invasion: priority-queue BFS from seeds always opening lowest-resistance neighbor. " +
-        "Animations: sweep (sinusoidal p), growth (linear p ramp), cascade (row-by-row reveal)."
+        "Animations: sweep (sinusoidal p), growth (linear p ramp), morph (traveling wave through site values at fixed p)."
     override val supportsVector = false
     override val supportsAnimation = true
 
@@ -59,8 +59,8 @@ class PercolationGenerator : Generator {
             "How far p swings above and below the base value in sweep animation",
             0.05f, 0.4f, 0.05f, 0.2f),
         Parameter.SelectParam("Animation", "animPattern", ParamGroup.FLOW_MOTION,
-            "sweep: sinusoidal p oscillation | growth: p grows linearly 0 \u2192 target then loops | cascade: reveal grid row-by-row from top",
-            listOf("sweep", "growth", "cascade"), "sweep"),
+            "sweep: sinusoidal p oscillation | growth: p grows linearly 0 \u2192 target then loops | morph: diagonal traveling wave through the site-value landscape at fixed p \u2014 clusters dissolve and re-form fluidly",
+            listOf("sweep", "growth", "morph"), "sweep"),
         Parameter.SelectParam("Color Mode", "colorMode", ParamGroup.COLOR,
             "cluster-size: log-scaled palette by area | cluster-id: distinct color per cluster | depth: BFS depth from cluster root | resistance: site values heatmap | boundary: fractal edges | monochrome: flat",
             listOf("cluster-size", "cluster-id", "depth", "resistance", "boundary", "monochrome"), "cluster-size")
@@ -95,6 +95,7 @@ class PercolationGenerator : Generator {
     @Volatile private var reuseGridColors: IntArray? = null
     @Volatile private var reuseBfsQueue: IntArray? = null
     @Volatile private var reuseOpen: BooleanArray? = null
+    @Volatile private var reuseMorphedValues: FloatArray? = null
 
     override fun renderCanvas(
         canvas: Canvas,
@@ -125,14 +126,9 @@ class PercolationGenerator : Generator {
                 val tNorm = (phase % twoPi) / twoPi
                 tNorm * baseP
             }
-            animPattern == "cascade" -> baseP
+            animPattern == "morph" -> baseP   // morph keeps p fixed; landscape drifts instead
             else -> baseP + sweepAmp * sin(phase)
         }).coerceIn(0.01f, 1f)
-
-        val cascadeRowsRevealed = if (animPattern == "cascade" && time > 0f) {
-            val tNorm = (phase % twoPi) / twoPi
-            (tNorm * gridSize).toInt().coerceAtLeast(1).coerceAtMost(gridSize)
-        } else gridSize
 
         val w = bitmap.width
         val h = bitmap.height
@@ -161,6 +157,27 @@ class PercolationGenerator : Generator {
             }
             cachedCellValue = CellValueCache(gridSize, seed, noiseMix, noiseScale, cellValue)
         }
+
+        // ---- Morph animation: diagonal traveling wave through site values ----
+        // Keeps p fixed but shifts the underlying landscape so different cells
+        // cross the threshold each frame, dissolving and re-forming clusters.
+        val workingValues: FloatArray = if (animPattern == "morph" && time > 0f) {
+            val rmv = reuseMorphedValues
+            val wv = if (rmv != null && rmv.size >= totalCells) rmv
+                    else FloatArray(totalCells).also { reuseMorphedValues = it }
+            val morphAmp = sweepAmp * 0.5f
+            for (cy in 0 until gridSize) {
+                val sp = (cy * 0.18f)            // diagonal wave: y component
+                val rowStart = cy * gridSize
+                for (cx in 0 until gridSize) {
+                    val spatial = sp + cx * 0.18f
+                    val delta = morphAmp * sin(phase + spatial)
+                    val v = cellValue[rowStart + cx] + delta
+                    wv[rowStart + cx] = if (v < 0f) 0f else if (v > 1f) 1f else v
+                }
+            }
+            wv
+        } else cellValue
 
         // ---- Reusable cluster label array ----
         val rcl = reuseClusterLabel
@@ -200,22 +217,22 @@ class PercolationGenerator : Generator {
             "bond" -> {
                 // All sites present; cluster BFS traverses only open bonds.
                 java.util.Arrays.fill(open, 0, totalCells, true)
-                nextCluster = clusterByBondBFS(open, cellValue, gridSize, probability, clusterLabel, queue)
+                nextCluster = clusterByBondBFS(open, workingValues, gridSize, probability, clusterLabel, queue)
             }
             "directed" -> {
-                runDirectedPercolation(cellValue, gridSize, probability, seed, open)
+                runDirectedPercolation(workingValues, gridSize, probability, seed, open)
                 nextCluster = clusterByOccupancyBFS(open, gridSize, clusterLabel, queue)
             }
             "invasion" -> {
                 val cellsToOpen = (probability * totalCells).toInt().coerceIn(1, totalCells)
                 nextCluster = runInvasion(
-                    cellValue, gridSize, invasionSeedCount.coerceIn(1, 12),
+                    workingValues, gridSize, invasionSeedCount.coerceIn(1, 12),
                     seed, cellsToOpen, open, clusterLabel
                 )
             }
             else -> {
                 // site
-                for (i in 0 until totalCells) open[i] = cellValue[i] < probability
+                for (i in 0 until totalCells) open[i] = workingValues[i] < probability
                 nextCluster = clusterByOccupancyBFS(open, gridSize, clusterLabel, queue)
             }
         }
@@ -244,15 +261,6 @@ class PercolationGenerator : Generator {
             val (d, md) = computeDepths(open, clusterLabel, gridSize, queue)
             depths = d
             maxDepth = md
-        }
-
-        // Apply cascade mask AFTER clustering: rows below reveal point are hidden
-        // (clusters retain their identity so colors don't shift each frame).
-        if (animPattern == "cascade" && time > 0f && cascadeRowsRevealed < gridSize) {
-            for (y in cascadeRowsRevealed until gridSize) {
-                val rowStart = y * gridSize
-                for (x in 0 until gridSize) open[rowStart + x] = false
-            }
         }
 
         // ---- Phase 1: Compute color per grid cell ----
@@ -303,7 +311,7 @@ class PercolationGenerator : Generator {
             val cluster = clusterLabel[i]
             gridColors[i] = when (colorMode) {
                 "resistance" -> {
-                    val t = cellValue[i].coerceIn(0f, 1f)
+                    val t = workingValues[i].coerceIn(0f, 1f)
                     val base = palLut!![(t * palLutMax).toInt().coerceIn(0, palLutMax)]
                     if (open[i]) base else dimColor(base, 0.15f)
                 }
