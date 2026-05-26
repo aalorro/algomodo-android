@@ -176,7 +176,29 @@ fun HorizontalPaletteStrip(
                 )
             }
         }
+        // Auto-scroll the currently selected palette into view (mirrors VerticalPaletteSelector).
+        val selectedIndex = remember(selectedPalette.name, customPalettes) {
+            val curatedIdx = CuratedPalettes.all.indexOfFirst { it.name == selectedPalette.name }
+            if (curatedIdx >= 0) return@remember curatedIdx
+            val customIdx = customPalettes.indexOfFirst { it.name == selectedPalette.name }
+            val curatedSize = CuratedPalettes.all.size
+            if (customIdx >= 0) return@remember curatedSize + customIdx
+            val randomBase = curatedSize + customPalettes.size
+            when (selectedPalette.name) {
+                "RAND 5" -> randomBase
+                "RAND 8" -> randomBase + 1
+                "RAND 10" -> randomBase + 2
+                else -> -1
+            }
+        }
+
+        val listState = rememberLazyListState()
+        LaunchedEffect(selectedIndex) {
+            if (selectedIndex >= 0) listState.animateScrollToItem(selectedIndex)
+        }
+
         LazyRow(
+            state = listState,
             modifier = Modifier.weight(1f),
             horizontalArrangement = Arrangement.spacedBy(6.dp),
             contentPadding = PaddingValues(horizontal = 8.dp, vertical = 4.dp),
