@@ -34,12 +34,16 @@ import kotlin.math.min
 object VoronoiGlsl {
 
     /**
-     * Maximum number of points per shader. GLES 3.0 guarantees at least 896
-     * fragment uniform components; 512 vec2 points = 1024 components which
-     * exceeds the spec minimum but is comfortably within real-device limits
-     * (typical GLES 3.0 mobile devices expose 1024-4096 vectors).
+     * Maximum number of points per shader. Sized at 256 so that generators
+     * which need additional per-cell uniform arrays (uCellColors[vec3],
+     * uWeights[float], uFracturePoints[vec2], etc.) still fit within the
+     * fragment uniform-vector budget on mid-range mobile GPUs. 256 vec2
+     * points = 256 vectors per array; combined with one or two companion
+     * arrays of the same length the totals stay under the ~1024-vector
+     * budget that some phone GPUs enforce. Tablets/desktops have far more
+     * headroom but we cap here for portability.
      */
-    const val MAX_POINTS = 512
+    const val MAX_POINTS = 256
 
     const val GLSL_HELPERS = """
         const int VORONOI_MAX_POINTS = $MAX_POINTS;

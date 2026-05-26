@@ -54,6 +54,7 @@ import com.artmondo.algomodo.core.registry.GeneratorRegistry
 import com.artmondo.algomodo.ui.components.*
 import com.artmondo.algomodo.ui.dialogs.*
 import com.artmondo.algomodo.ui.theme.AccentAmber
+import androidx.compose.ui.platform.LocalConfiguration
 import androidx.compose.ui.text.font.FontWeight
 import com.artmondo.algomodo.viewmodel.ExportViewModel
 import com.artmondo.algomodo.viewmodel.MainViewModel
@@ -669,13 +670,21 @@ fun MainScreen(
 
         // ===== BOTTOM SECTION: Tabs + Content (~55% of screen) =====
 
-        // Tab bar — amber-bordered chips with bolder, larger text for legibility.
+        // Tab bar — amber-bordered chips. Font size scales down on phones so the
+        // four labels fit on one line; tablets get the larger size for legibility.
+        val isTablet = LocalConfiguration.current.smallestScreenWidthDp >= 600
+        val tabFontSize = if (isTablet) 16.sp else 12.sp
+        val tabChipHPad = if (isTablet) 10.dp else 6.dp
+        val tabChipVPad = if (isTablet) 4.dp else 3.dp
         TabRow(
             selectedTabIndex = pagerState.currentPage,
             containerColor = MaterialTheme.colorScheme.surface,
             contentColor = AccentAmber
         ) {
-            val tabLabels = listOf("Generators", "Params", "Export", "Settings")
+            val tabLabels = if (isTablet)
+                listOf("Generators", "Params", "Export", "Settings")
+            else
+                listOf("Gens", "Params", "Export", "Settings")
             tabLabels.forEachIndexed { index, label ->
                 val selected = pagerState.currentPage == index
                 Tab(
@@ -686,6 +695,8 @@ fun MainScreen(
                 ) {
                     Text(
                         label,
+                        maxLines = 1,
+                        softWrap = false,
                         modifier = Modifier
                             .padding(vertical = 8.dp, horizontal = 4.dp)
                             .border(
@@ -693,8 +704,8 @@ fun MainScreen(
                                 color = if (selected) AccentAmber else AccentAmber.copy(alpha = 0.55f),
                                 shape = RoundedCornerShape(6.dp)
                             )
-                            .padding(vertical = 4.dp, horizontal = 10.dp),
-                        fontSize = 16.sp,
+                            .padding(vertical = tabChipVPad, horizontal = tabChipHPad),
+                        fontSize = tabFontSize,
                         fontWeight = if (selected) FontWeight.Bold else FontWeight.SemiBold
                     )
                 }

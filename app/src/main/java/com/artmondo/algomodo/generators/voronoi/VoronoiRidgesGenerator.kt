@@ -33,7 +33,7 @@ class VoronoiRidgesGenerator : GpuGenerator {
     override val definition =
         "Voronoi ridge patterns where cell boundaries are rendered as glowing, sharp, or smooth luminous ridges against a dark background."
     override val algorithmNotes =
-        "GPU shader. Each octave o has cellCount * lacunarity^o points (capped at 384/octave) scattered " +
+        "GPU shader. Each octave o has cellCount * lacunarity^o points (capped at 256/octave) scattered " +
         "randomly. The shader scans every octave per pixel for F1/F2 and accumulates (1 - normalised edgeDist) * gain^o. " +
         "ridgeSharpness applies pow(intensity, s). Per-octave max edge distance is sampled CPU-side and uploaded."
     override val supportsVector = false
@@ -239,8 +239,15 @@ class VoronoiRidgesGenerator : GpuGenerator {
     """
 
     companion object {
-        const val MAX_OCTAVES = 5
-        const val MAX_POINTS_PER_OCTAVE = 384
-        const val MAX_TOTAL_POINTS = MAX_OCTAVES * MAX_POINTS_PER_OCTAVE  // 1920
+        // octaves is currently hardcoded to 1 in bindUniforms, so the
+        // uniform-vector budget only needs to cover a single octave's worth
+        // of points. Keeping these constants small (256 vec2 = 256 vectors)
+        // is critical for phone GPUs that enforce a ~1024 fragment uniform
+        // vector cap. If multi-octave support is ever re-enabled, raise
+        // MAX_OCTAVES carefully and reduce MAX_POINTS_PER_OCTAVE to keep
+        // MAX_TOTAL_POINTS modest (e.g. 4 * 128 = 512).
+        const val MAX_OCTAVES = 1
+        const val MAX_POINTS_PER_OCTAVE = 256
+        const val MAX_TOTAL_POINTS = MAX_OCTAVES * MAX_POINTS_PER_OCTAVE  // 256
     }
 }
