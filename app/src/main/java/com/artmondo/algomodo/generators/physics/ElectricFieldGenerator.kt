@@ -74,9 +74,9 @@ class ElectricFieldGenerator : GpuGenerator {
         ),
         Parameter.SelectParam(
             name = "Charge Motion", key = "chargeMotion", group = ParamGroup.FLOW_MOTION,
-            help = "static: fixed | orbit: around center | oscillate: back and forth | drift: random bounce",
-            options = listOf("static", "orbit", "oscillate", "drift"),
-            default = "static"
+            help = "pulse: magnitudes breathe in place | orbit: around center | oscillate: back and forth | drift: random bounce",
+            options = listOf("pulse", "orbit", "oscillate", "drift"),
+            default = "pulse"
         ),
         Parameter.NumberParam(
             name = "Motion Speed", key = "motionSpeed", group = ParamGroup.FLOW_MOTION,
@@ -113,7 +113,7 @@ class ElectricFieldGenerator : GpuGenerator {
         "tracerCount" to 200f,
         "traceSteps" to 400f,
         "fieldStrength" to 2f,
-        "chargeMotion" to "static",
+        "chargeMotion" to "pulse",
         "motionSpeed" to 0.5f,
         "colorMode" to "palette",
         "lineWidth" to 1f,
@@ -140,6 +140,7 @@ class ElectricFieldGenerator : GpuGenerator {
         val chargeQ: DoubleArray,
         val initX: DoubleArray,
         val initY: DoubleArray,
+        val initQ: DoubleArray,
         val driftDx: DoubleArray,
         val driftDy: DoubleArray,
         var tracerX: DoubleArray,
@@ -187,6 +188,7 @@ class ElectricFieldGenerator : GpuGenerator {
             chargeQ = DoubleArray(nCharges),
             initX = DoubleArray(nCharges),
             initY = DoubleArray(nCharges),
+            initQ = DoubleArray(nCharges),
             driftDx = DoubleArray(nCharges),
             driftDy = DoubleArray(nCharges),
             tracerX = DoubleArray(nTracers),
@@ -268,10 +270,11 @@ class ElectricFieldGenerator : GpuGenerator {
             }
         }
 
-        // Save initial positions
+        // Save initial positions and charge magnitudes (used by orbit/oscillate/pulse)
         for (i in 0 until nCharges) {
             st.initX[i] = chargeX[i]
             st.initY[i] = chargeY[i]
+            st.initQ[i] = chargeQ[i]
         }
 
         // Init drift directions
@@ -533,10 +536,22 @@ class ElectricFieldGenerator : GpuGenerator {
         val cy = h * 0.5
         val margin = 30.0
 
+        val initQ = st.initQ
+
         for (i in 0 until nCharges) {
-            if (chargeQ[i] == 0.0) continue
+            if (initQ[i] == 0.0) continue
 
             when (chargeMotion) {
+                "pulse" -> {
+                    // Magnitudes breathe between 40% and 100% of original |q|,
+                    // staggered per-charge so the array looks alive rather than
+                    // synchronously throbbing. Positions stay fixed at init.
+                    val phase = t * 2.0 + i * 0.7
+                    val env = 0.4 + 0.6 * (0.5 + 0.5 * sin(phase))
+                    chargeX[i] = initX[i]
+                    chargeY[i] = initY[i]
+                    chargeQ[i] = initQ[i] * env
+                }
                 "orbit" -> {
                     val dx = initX[i] - cx
                     val dy = initY[i] - cy
