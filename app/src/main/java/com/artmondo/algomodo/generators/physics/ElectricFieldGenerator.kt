@@ -7,16 +7,19 @@ import android.graphics.Paint
 import android.graphics.Path
 import android.graphics.Rect
 import android.graphics.Typeface
+import android.opengl.GLES30
 import com.artmondo.algomodo.audio.AudioAnalysis
 import com.artmondo.algomodo.core.rng.SeededRNG
 import com.artmondo.algomodo.data.palettes.Palette
-import com.artmondo.algomodo.generators.Generator
+import com.artmondo.algomodo.generators.GpuGenerator
 import com.artmondo.algomodo.generators.ParamGroup
 import com.artmondo.algomodo.generators.Parameter
 import com.artmondo.algomodo.generators.Quality
+import com.artmondo.algomodo.rendering.gl.GpuShaderRunner
+import com.artmondo.algomodo.rendering.gl.PaletteUniform
 import kotlin.math.*
 
-class ElectricFieldGenerator : Generator {
+class ElectricFieldGenerator : GpuGenerator {
 
     override val id = "physics-electric-field"
     override val family = "physics"
@@ -71,9 +74,9 @@ class ElectricFieldGenerator : Generator {
         ),
         Parameter.SelectParam(
             name = "Charge Motion", key = "chargeMotion", group = ParamGroup.FLOW_MOTION,
-            help = "static: fixed | orbit: around center | oscillate: back and forth | drift: random bounce",
-            options = listOf("static", "orbit", "oscillate", "drift"),
-            default = "static"
+            help = "pulse: magnitudes breathe in place | orbit: around center | oscillate: back and forth | drift: random bounce",
+            options = listOf("pulse", "orbit", "oscillate", "drift"),
+            default = "pulse"
         ),
         Parameter.NumberParam(
             name = "Motion Speed", key = "motionSpeed", group = ParamGroup.FLOW_MOTION,
@@ -110,7 +113,7 @@ class ElectricFieldGenerator : Generator {
         "tracerCount" to 200f,
         "traceSteps" to 400f,
         "fieldStrength" to 2f,
-        "chargeMotion" to "static",
+        "chargeMotion" to "pulse",
         "motionSpeed" to 0.5f,
         "colorMode" to "palette",
         "lineWidth" to 1f,
@@ -137,6 +140,7 @@ class ElectricFieldGenerator : Generator {
         val chargeQ: DoubleArray,
         val initX: DoubleArray,
         val initY: DoubleArray,
+        val initQ: DoubleArray,
         val driftDx: DoubleArray,
         val driftDy: DoubleArray,
         var tracerX: DoubleArray,
@@ -157,7 +161,9 @@ class ElectricFieldGenerator : Generator {
         var eqBitmap: Bitmap?,
         var step: Int,
         val rng: SeededRNG,
-        var dirty: Boolean
+        var dirty: Boolean,
+        // GPU equipotential normalization (potential range absMax in V units).
+        var potAbsMax: Double = 1.0
     )
 
     companion object {
@@ -168,6 +174,7 @@ class ElectricFieldGenerator : Generator {
         private const val K_COULOMB = 100.0
         private const val ABSORB_DIST_SQ = 144.0
         private const val FIELD_LINE_STEP = 3.0
+        private const val MAX_GPU_CHARGES = 16
     }
 
     private fun makeState(
@@ -181,6 +188,7 @@ class ElectricFieldGenerator : Generator {
             chargeQ = DoubleArray(nCharges),
             initX = DoubleArray(nCharges),
             initY = DoubleArray(nCharges),
+            initQ = DoubleArray(nCharges),
             driftDx = DoubleArray(nCharges),
             driftDy = DoubleArray(nCharges),
             tracerX = DoubleArray(nTracers),
@@ -262,10 +270,11 @@ class ElectricFieldGenerator : Generator {
             }
         }
 
-        // Save initial positions
+        // Save initial positions and charge magnitudes (used by orbit/oscillate/pulse)
         for (i in 0 until nCharges) {
             st.initX[i] = chargeX[i]
             st.initY[i] = chargeY[i]
+            st.initQ[i] = chargeQ[i]
         }
 
         // Init drift directions
@@ -527,10 +536,22 @@ class ElectricFieldGenerator : Generator {
         val cy = h * 0.5
         val margin = 30.0
 
+        val initQ = st.initQ
+
         for (i in 0 until nCharges) {
-            if (chargeQ[i] == 0.0) continue
+            if (initQ[i] == 0.0) continue
 
             when (chargeMotion) {
+                "pulse" -> {
+                    // Magnitudes breathe between 40% and 100% of original |q|,
+                    // staggered per-charge so the array looks alive rather than
+                    // synchronously throbbing. Positions stay fixed at init.
+                    val phase = t * 2.0 + i * 0.7
+                    val env = 0.4 + 0.6 * (0.5 + 0.5 * sin(phase))
+                    chargeX[i] = initX[i]
+                    chargeY[i] = initY[i]
+                    chargeQ[i] = initQ[i] * env
+                }
                 "orbit" -> {
                     val dx = initX[i] - cx
                     val dy = initY[i] - cy
@@ -581,6 +602,35 @@ class ElectricFieldGenerator : Generator {
             val b = (colors[i0][2] + (colors[i1][2] - colors[i0][2]) * f).toInt()
             lut[i] = Color.argb(255, r.coerceIn(0, 255), g.coerceIn(0, 255), b.coerceIn(0, 255))
         }
+    }
+
+    // ── Compute equipotential normalization range ───────────────────────────
+    // Used by the GPU equipotential path: scans a coarse grid to find absMax
+    // of V across the canvas, so the shader can normalise V into [0,1] using
+    // the same convention as the CPU `computePotentialGrid` (V is symmetric
+    // around 0 if charges sum near zero, hence absMax * 2 = full range).
+    private fun computePotentialAbsMax(st: FieldState, w: Double, h: Double, fieldStrength: Double): Double {
+        val gridScale = 8.0
+        val gw = (w / gridScale).toInt().coerceAtLeast(8)
+        val gh = (h / gridScale).toInt().coerceAtLeast(8)
+        val chargeX = st.chargeX
+        val chargeY = st.chargeY
+        val chargeQ = st.chargeQ
+        val nCharges = st.nCharges
+        val k = K_COULOMB * fieldStrength
+        var vMin = Double.POSITIVE_INFINITY
+        var vMax = Double.NEGATIVE_INFINITY
+        for (gy in 0 until gh) {
+            val py = (gy + 0.5) * gridScale
+            for (gx in 0 until gw) {
+                val px = (gx + 0.5) * gridScale
+                val v = computePotential(px, py, chargeX, chargeY, chargeQ, nCharges, k)
+                if (v < vMin) vMin = v
+                if (v > vMax) vMax = v
+            }
+        }
+        val absMax = max(abs(vMin), abs(vMax))
+        return if (absMax > 1e-10) absMax else 1.0
     }
 
     // ── Compute equipotential grid ──────────────────────────────────────────
@@ -1019,18 +1069,31 @@ class ElectricFieldGenerator : Generator {
             }
 
             // ── Render ─────────────────────────────────────────────────────
+            // Background fill (skipped for combined/equipotential — those overwrite
+            // every pixel via the GPU shader anyway).
             if (style == "particles") {
                 // Semi-transparent overlay for trail effect (rgba(10,10,10,0.12))
                 val overlayPaint = Paint().apply { color = Color.argb(31, 10, 10, 10) }
                 canvas.drawRect(0f, 0f, bitmap.width.toFloat(), bitmap.height.toFloat(), overlayPaint)
-            } else {
+            } else if (style != "equipotential" && style != "combined") {
                 canvas.drawColor(Color.rgb(10, 10, 10))
             }
 
             when (style) {
                 "equipotential" -> {
-                    computePotentialGrid(st, w, h, fieldStrength)
-                    renderEquipotential(canvas, st, w, h)
+                    // Hybrid GPU path: compute potential normalisation range CPU-side
+                    // (coarse scan), then render the full-resolution potential field
+                    // via a fragment shader, finally overlay charges with Canvas draws.
+                    st.potAbsMax = computePotentialAbsMax(st, w, h, fieldStrength)
+                    GpuShaderRunner.forCurrentThread().render(
+                        generator = this@ElectricFieldGenerator,
+                        bitmap = bitmap,
+                        params = params,
+                        seed = seed,
+                        palette = palette,
+                        quality = quality,
+                        time = time
+                    )
                     drawCharges(canvas, st, colors, scale)
                 }
                 "particles" -> {
@@ -1045,7 +1108,18 @@ class ElectricFieldGenerator : Generator {
                     drawCharges(canvas, st, colors, scale)
                 }
                 else -> {
-                    // combined
+                    // combined: equipotential heatmap (GPU) underneath +
+                    // field lines + charges on top
+                    st.potAbsMax = computePotentialAbsMax(st, w, h, fieldStrength)
+                    GpuShaderRunner.forCurrentThread().render(
+                        generator = this@ElectricFieldGenerator,
+                        bitmap = bitmap,
+                        params = params,
+                        seed = seed,
+                        palette = palette,
+                        quality = quality,
+                        time = time
+                    )
                     if (st.dirty || st.nLines == 0) {
                         traceFieldLines(st, w, h, tracerCount, traceSteps, fieldStrength)
                     }
@@ -1064,5 +1138,87 @@ class ElectricFieldGenerator : Generator {
         val tracers = pf(params, "tracerCount", 200f)
         val steps = pf(params, "traceSteps", 400f)
         return (charges * tracers * steps * 0.0001f / 1000f).coerceIn(0.1f, 1f)
+    }
+
+    // ── GPU equipotential fragment shader ───────────────────────────────────
+    // Hybrid pattern: only the "equipotential" style routes through the GPU
+    // (everything else stays on CPU). `bindUniforms` reads from the cached
+    // FieldState in the companion which `renderCanvas` has already populated
+    // and animated this frame; the shader evaluates V(p) per fragment.
+
+    override fun fragmentShaderSource(): String = """#version 300 es
+        precision highp float;
+
+        uniform vec2 uResolution;
+        uniform float uTime;
+        uniform vec3 uAudio;
+        ${PaletteUniform.GLSL_HELPERS}
+
+        uniform int   uChargeCount;
+        // xyzw = (x, y, q, _unused). Up to MAX_GPU_CHARGES = 16.
+        uniform vec4  uCharges[16];
+        uniform float uK;              // K_COULOMB * fieldStrength
+        uniform float uAbsMax;         // normalisation: V mapped to [-absMax, +absMax]
+        uniform float uMinDistSq;      // singularity clamp (matches CPU MIN_DIST_SQ)
+
+        out vec4 fragColor;
+
+        void main() {
+            // gl_FragCoord origin is bottom-left in default GL; the runner uses
+            // a Y-flipped vertex shader so gl_FragCoord matches bitmap (top-left)
+            // orientation. Charge positions are in bitmap pixel space.
+            vec2 p = gl_FragCoord.xy;
+
+            float v = 0.0;
+            for (int i = 0; i < 16; i++) {
+                if (i >= uChargeCount) break;
+                vec4 c = uCharges[i];
+                if (c.z == 0.0) continue;
+                vec2 d = p - c.xy;
+                float distSq = dot(d, d);
+                if (distSq < uMinDistSq) distSq = uMinDistSq;
+                v += uK * c.z / sqrt(distSq);
+            }
+
+            float t = clamp((v + uAbsMax) / (2.0 * uAbsMax), 0.0, 1.0);
+            vec3 col = palette_color(t);
+            fragColor = vec4(col, 1.0);
+        }
+    """
+
+    override fun bindUniforms(
+        programId: Int,
+        params: Map<String, Any>,
+        seed: Int,
+        palette: Palette,
+        quality: Quality,
+        time: Float,
+        width: Int,
+        height: Int
+    ) {
+        val st = state ?: return
+        var fieldStrength = pf(params, "fieldStrength", 2f).toDouble()
+        // Match the audio-bass boost applied in the CPU branch so values agree
+        val rx = pf(params, "reactivity", 0f)
+        val audio = params["_audioAnalysis"] as? AudioAnalysis
+        val audioBass = (audio?.getBass(time) ?: 0f) * rx
+        fieldStrength += audioBass * 1.5f
+        val k = K_COULOMB * fieldStrength
+
+        val nCharges = st.nCharges.coerceAtMost(MAX_GPU_CHARGES)
+        val packed = FloatArray(MAX_GPU_CHARGES * 4)
+        for (i in 0 until nCharges) {
+            packed[i * 4]     = st.chargeX[i].toFloat()
+            packed[i * 4 + 1] = st.chargeY[i].toFloat()
+            packed[i * 4 + 2] = st.chargeQ[i].toFloat()
+            packed[i * 4 + 3] = 0f
+        }
+
+        GLES30.glUniform1i(GLES30.glGetUniformLocation(programId, "uChargeCount"), nCharges)
+        GLES30.glUniform4fv(GLES30.glGetUniformLocation(programId, "uCharges"),
+            MAX_GPU_CHARGES, packed, 0)
+        GLES30.glUniform1f(GLES30.glGetUniformLocation(programId, "uK"), k.toFloat())
+        GLES30.glUniform1f(GLES30.glGetUniformLocation(programId, "uAbsMax"), st.potAbsMax.toFloat())
+        GLES30.glUniform1f(GLES30.glGetUniformLocation(programId, "uMinDistSq"), MIN_DIST_SQ.toFloat())
     }
 }

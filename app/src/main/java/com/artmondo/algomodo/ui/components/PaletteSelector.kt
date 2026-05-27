@@ -9,6 +9,7 @@ import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.LazyRow
 import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
@@ -175,7 +176,29 @@ fun HorizontalPaletteStrip(
                 )
             }
         }
+        // Auto-scroll the currently selected palette into view (mirrors VerticalPaletteSelector).
+        val selectedIndex = remember(selectedPalette.name, customPalettes) {
+            val curatedIdx = CuratedPalettes.all.indexOfFirst { it.name == selectedPalette.name }
+            if (curatedIdx >= 0) return@remember curatedIdx
+            val customIdx = customPalettes.indexOfFirst { it.name == selectedPalette.name }
+            val curatedSize = CuratedPalettes.all.size
+            if (customIdx >= 0) return@remember curatedSize + customIdx
+            val randomBase = curatedSize + customPalettes.size
+            when (selectedPalette.name) {
+                "RAND 5" -> randomBase
+                "RAND 8" -> randomBase + 1
+                "RAND 10" -> randomBase + 2
+                else -> -1
+            }
+        }
+
+        val listState = rememberLazyListState()
+        LaunchedEffect(selectedIndex) {
+            if (selectedIndex >= 0) listState.animateScrollToItem(selectedIndex)
+        }
+
         LazyRow(
+            state = listState,
             modifier = Modifier.weight(1f),
             horizontalArrangement = Arrangement.spacedBy(6.dp),
             contentPadding = PaddingValues(horizontal = 8.dp, vertical = 4.dp),
@@ -267,7 +290,29 @@ fun VerticalPaletteSelector(
                 )
             }
         }
+        // Compute the index of the currently selected palette so we can auto-scroll it into view.
+        val selectedIndex = remember(selectedPalette.name, customPalettes) {
+            val curatedIdx = CuratedPalettes.all.indexOfFirst { it.name == selectedPalette.name }
+            if (curatedIdx >= 0) return@remember curatedIdx
+            val customIdx = customPalettes.indexOfFirst { it.name == selectedPalette.name }
+            val curatedSize = CuratedPalettes.all.size
+            if (customIdx >= 0) return@remember curatedSize + customIdx
+            val randomBase = curatedSize + customPalettes.size
+            when (selectedPalette.name) {
+                "RAND 5" -> randomBase
+                "RAND 8" -> randomBase + 1
+                "RAND 10" -> randomBase + 2
+                else -> -1
+            }
+        }
+
+        val listState = rememberLazyListState()
+        LaunchedEffect(selectedIndex) {
+            if (selectedIndex >= 0) listState.animateScrollToItem(selectedIndex)
+        }
+
         LazyColumn(
+            state = listState,
             verticalArrangement = Arrangement.spacedBy(4.dp),
             contentPadding = PaddingValues(vertical = 4.dp, horizontal = 4.dp),
             horizontalAlignment = Alignment.CenterHorizontally
@@ -326,9 +371,14 @@ private fun VerticalPaletteChip(
     onClick: () -> Unit
 ) {
     val borderModifier = if (isSelected) {
-        Modifier.border(2.dp, MaterialTheme.colorScheme.primary, RoundedCornerShape(6.dp))
+        Modifier.border(3.dp, MaterialTheme.colorScheme.primary, RoundedCornerShape(6.dp))
     } else {
         Modifier.border(1.dp, MaterialTheme.colorScheme.surfaceVariant, RoundedCornerShape(6.dp))
+    }
+    val backgroundColor = if (isSelected) {
+        MaterialTheme.colorScheme.primary.copy(alpha = 0.18f)
+    } else {
+        Color.Transparent
     }
 
     Row(
@@ -336,6 +386,7 @@ private fun VerticalPaletteChip(
             .fillMaxWidth()
             .then(borderModifier)
             .clip(RoundedCornerShape(6.dp))
+            .background(backgroundColor)
             .clickable(onClick = onClick)
             .padding(horizontal = 6.dp, vertical = 6.dp),
         horizontalArrangement = Arrangement.spacedBy(3.dp),
@@ -363,9 +414,14 @@ private fun VerticalPaletteChipWithDelete(
     var showDelete by remember { mutableStateOf(false) }
 
     val borderModifier = if (isSelected) {
-        Modifier.border(2.dp, MaterialTheme.colorScheme.primary, RoundedCornerShape(6.dp))
+        Modifier.border(3.dp, MaterialTheme.colorScheme.primary, RoundedCornerShape(6.dp))
     } else {
         Modifier.border(1.dp, MaterialTheme.colorScheme.surfaceVariant, RoundedCornerShape(6.dp))
+    }
+    val backgroundColor = if (isSelected) {
+        MaterialTheme.colorScheme.primary.copy(alpha = 0.18f)
+    } else {
+        Color.Transparent
     }
 
     Box {
@@ -374,6 +430,7 @@ private fun VerticalPaletteChipWithDelete(
                 .fillMaxWidth()
                 .then(borderModifier)
                 .clip(RoundedCornerShape(6.dp))
+                .background(backgroundColor)
                 .combinedClickable(
                     onClick = onClick,
                     onLongClick = { if (onDelete != null) showDelete = true }

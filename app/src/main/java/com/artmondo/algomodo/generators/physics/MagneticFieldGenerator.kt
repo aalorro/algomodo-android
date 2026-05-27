@@ -7,16 +7,19 @@ import android.graphics.Paint
 import android.graphics.Path
 import android.graphics.PorterDuff
 import android.graphics.PorterDuffXfermode
+import android.opengl.GLES30
 import com.artmondo.algomodo.audio.AudioAnalysis
 import com.artmondo.algomodo.core.rng.SeededRNG
 import com.artmondo.algomodo.data.palettes.Palette
-import com.artmondo.algomodo.generators.Generator
+import com.artmondo.algomodo.generators.GpuGenerator
 import com.artmondo.algomodo.generators.ParamGroup
 import com.artmondo.algomodo.generators.Parameter
 import com.artmondo.algomodo.generators.Quality
+import com.artmondo.algomodo.rendering.gl.GpuShaderRunner
+import com.artmondo.algomodo.rendering.gl.PaletteUniform
 import kotlin.math.*
 
-class MagneticFieldGenerator : Generator {
+class MagneticFieldGenerator : GpuGenerator {
 
     override val id = "physics-magnetic-field"
     override val family = "physics"
@@ -59,8 +62,8 @@ class MagneticFieldGenerator : Generator {
         ),
         Parameter.SelectParam(
             name = "Render Style", key = "style", group = ParamGroup.COMPOSITION,
-            help = "streamlines: traced curves | arrows: direction grid | particles: flowing dots | glow: additive lines",
-            options = listOf("streamlines", "arrows", "particles", "glow"),
+            help = "streamlines: traced curves | arrows: direction grid | particles: flowing dots | glow: additive lines | magnitude: |B| heatmap (GPU) | combined: heatmap + streamlines",
+            options = listOf("streamlines", "arrows", "particles", "glow", "magnitude", "combined"),
             default = "streamlines"
         ),
         Parameter.SelectParam(
@@ -216,7 +219,23 @@ class MagneticFieldGenerator : Generator {
         }
 
         // ── Render ──────────────────────────────────────────────────────────
-        canvas.drawColor(Color.rgb(10, 10, 10))
+        // Background fill: skipped for GPU-shaded styles since the shader
+        // overwrites every pixel.
+        if (style != "magnitude" && style != "combined") {
+            canvas.drawColor(Color.rgb(10, 10, 10))
+        } else {
+            // Compute |B| max for GPU normalisation (coarse 1/8-res scan)
+            st.maxFieldMag = computeFieldMaxMag(st, wD, hD)
+            GpuShaderRunner.forCurrentThread().render(
+                generator = this@MagneticFieldGenerator,
+                bitmap = bitmap,
+                params = params,
+                seed = seed,
+                palette = palette,
+                quality = quality,
+                time = time
+            )
+        }
 
         val poleX = st.poleX
         val poleY = st.poleY
@@ -251,7 +270,7 @@ class MagneticFieldGenerator : Generator {
             strokeJoin = Paint.Join.ROUND
         }
 
-        if (style == "streamlines" || style == "glow") {
+        if (style == "streamlines" || style == "glow" || style == "combined") {
             val isGlow = style == "glow"
             strokePaint.strokeWidth = lineWidth * scale * (if (isGlow) 2.5f else 1f)
             if (isGlow) {
@@ -662,10 +681,88 @@ class MagneticFieldGenerator : Generator {
         val partX: DoubleArray, val partY: DoubleArray, val partLife: DoubleArray,
         val nParts: Int,
         var step: Int,
-        val rng: SeededRNG
+        val rng: SeededRNG,
+        var maxFieldMag: Double = 1.0
     )
 
+    // ── GPU heatmap path (magnitude / combined styles) ─────────────────────
+    private fun computeFieldMaxMag(st: MagFieldState, w: Double, h: Double): Double {
+        val gx = 32
+        val gy = ((gx * h / w).toInt()).coerceAtLeast(8)
+        var maxMag = 1e-6
+        for (j in 0 until gy) {
+            val py = (j + 0.5) * h / gy
+            for (i in 0 until gx) {
+                val px = (i + 0.5) * w / gx
+                val (bx, by) = fieldAt(px, py, st.poleX, st.poleY, st.charge, st.nPoles)
+                val m = sqrt(bx * bx + by * by)
+                if (m > maxMag) maxMag = m
+            }
+        }
+        return maxMag
+    }
+
+    override fun fragmentShaderSource(): String = """#version 300 es
+        precision highp float;
+
+        uniform vec2 uResolution;
+        uniform float uTime;
+        uniform vec3 uAudio;
+        ${PaletteUniform.GLSL_HELPERS}
+
+        uniform int   uPoleCount;
+        uniform vec3  uPoles[16];   // xy=pos (pixels), z=charge
+        uniform float uMaxMag;
+
+        out vec4 fragColor;
+
+        void main() {
+            vec2 p = gl_FragCoord.xy;
+            vec2 b = vec2(0.0);
+            for (int i = 0; i < 16; i++) {
+                if (i >= uPoleCount) break;
+                vec3 pole = uPoles[i];
+                if (pole.z == 0.0) continue;
+                vec2 d = p - pole.xy;
+                float rSq = d.x * d.x + d.y * d.y + 1.0; // softening
+                float r = sqrt(rSq);
+                float inv = pole.z / (rSq * r);
+                b += d * inv;
+            }
+            float mag = length(b);
+            float t = clamp(mag / max(uMaxMag, 1e-6), 0.0, 1.0);
+            // Mild gamma to make weak field areas visible
+            t = pow(t, 0.45);
+            fragColor = vec4(palette_color(t), 1.0);
+        }
+    """
+
+    override fun bindUniforms(
+        programId: Int,
+        params: Map<String, Any>,
+        seed: Int,
+        palette: Palette,
+        quality: Quality,
+        time: Float,
+        width: Int,
+        height: Int
+    ) {
+        val st = _state ?: return
+        val n = min(st.nPoles, MAX_GPU_POLES)
+        val packed = FloatArray(MAX_GPU_POLES * 3)
+        for (i in 0 until n) {
+            packed[i * 3]     = st.poleX[i].toFloat()
+            packed[i * 3 + 1] = st.poleY[i].toFloat()
+            packed[i * 3 + 2] = st.charge[i].toFloat()
+        }
+        GLES30.glUniform1i(GLES30.glGetUniformLocation(programId, "uPoleCount"), n)
+        GLES30.glUniform3fv(GLES30.glGetUniformLocation(programId, "uPoles"), MAX_GPU_POLES, packed, 0)
+        GLES30.glUniform1f(GLES30.glGetUniformLocation(programId, "uMaxMag"), st.maxFieldMag.toFloat())
+    }
+
     companion object {
+        private const val MAX_GPU_POLES = 16
+
         @Volatile
         private var _state: MagFieldState? = null
 

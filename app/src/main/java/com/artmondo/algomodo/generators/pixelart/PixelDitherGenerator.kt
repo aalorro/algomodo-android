@@ -1,35 +1,54 @@
 package com.artmondo.algomodo.generators.pixelart
 
-import android.graphics.Bitmap
-import android.graphics.Canvas
+import android.opengl.GLES30
 import com.artmondo.algomodo.data.palettes.Palette
-import com.artmondo.algomodo.generators.Generator
+import com.artmondo.algomodo.generators.GpuGenerator
 import com.artmondo.algomodo.generators.ParamGroup
 import com.artmondo.algomodo.generators.Parameter
 import com.artmondo.algomodo.generators.Quality
-import kotlin.math.cos
-import kotlin.math.min
-import kotlin.math.pow
-import kotlin.math.sin
-import kotlin.math.sqrt
+import com.artmondo.algomodo.rendering.gl.PaletteUniform
 
-class PixelDitherGenerator : Generator {
+/**
+ * GPU-rendered pixel-art dither. Evaluates a source function (sine-waves /
+ * radial / mandelbrot / diagonal / plasma) on a low-resolution grid, then
+ * applies ordered Bayer dithering to quantize into 2-4 palette colours.
+ *
+ * Ported from the original CPU implementation; id, parameter schema and
+ * defaults are preserved. The grid is reproduced by snapping `gl_FragCoord`
+ * to cell centres before the formula evaluation.
+ */
+class PixelDitherGenerator : GpuGenerator {
+
     override val id = "pixel-dither"
     override val family = "pixel-art"
     override val styleName = "Pixel Dither"
-    override val definition = "A smooth gradient or mathematical function rendered at low resolution with ordered Bayer dithering, creating intricate moiré-like pixel textures."
-    override val algorithmNotes = "Evaluates a source function (sine waves, radial gradient, Mandelbrot, plasma) per pixel, then applies ordered dithering with a Bayer matrix (2x2, 4x4, or 8x8) to quantize into 2–4 palette colors. The interplay between math and dither pattern creates complex textures."
+    override val definition =
+        "A smooth gradient or mathematical function rendered at low resolution with ordered Bayer dithering, creating intricate moir\u00e9-like pixel textures."
+    override val algorithmNotes =
+        "Per-pixel fragment shader on the GPU. Snaps fragment coordinates to a low-resolution grid, " +
+        "evaluates the source function (sine waves, radial gradient, Mandelbrot, plasma) per cell, " +
+        "then applies ordered dithering with a 2\u00d72/4\u00d74/8\u00d78 Bayer matrix to quantize into " +
+        "2\u20134 palette colours."
     override val supportsVector = false
     override val supportsAnimation = true
 
     override val parameterSchema = listOf(
-        Parameter.SelectParam("Source Function", "sourceFunction", ParamGroup.COMPOSITION, "Mathematical function to dither", listOf("sine-waves", "radial", "mandelbrot", "diagonal", "plasma"), "plasma"),
-        Parameter.SelectParam("Bayer Matrix", "bayerSize", ParamGroup.TEXTURE, "Dither pattern size (2x2, 4x4, 8x8)", listOf("2", "4", "8"), "4"),
-        Parameter.NumberParam("Color Levels", "numColors", ParamGroup.COLOR, "Number of output colors for dithering", 2f, 4f, 1f, 2f),
-        Parameter.NumberParam("Grid Size", "gridSize", ParamGroup.GEOMETRY, "Pixel grid resolution", 32f, 128f, 8f, 64f),
-        Parameter.NumberParam("Contrast", "contrast", ParamGroup.COLOR, "Contrast adjustment before dithering", 0.5f, 3f, 0.1f, 1.2f),
-        Parameter.NumberParam("Anim Speed", "animSpeed", ParamGroup.FLOW_MOTION, "Animation speed multiplier", 0.1f, 3f, 0.1f, 1f),
-        Parameter.NumberParam("Reactivity", "reactivity", ParamGroup.FLOW_MOTION, "Audio reactivity strength", 0f, 2f, 0.1f, 0f)
+        Parameter.SelectParam("Source Function", "sourceFunction", ParamGroup.COMPOSITION,
+            "Mathematical function to dither",
+            listOf("sine-waves", "radial", "mandelbrot", "diagonal", "plasma"), "plasma"),
+        Parameter.SelectParam("Bayer Matrix", "bayerSize", ParamGroup.TEXTURE,
+            "Dither pattern size (2x2, 4x4, 8x8)",
+            listOf("2", "4", "8"), "4"),
+        Parameter.NumberParam("Color Levels", "numColors", ParamGroup.COLOR,
+            "Number of output colors for dithering", 2f, 4f, 1f, 2f),
+        Parameter.NumberParam("Grid Size", "gridSize", ParamGroup.GEOMETRY,
+            "Pixel grid resolution", 32f, 128f, 8f, 64f),
+        Parameter.NumberParam("Contrast", "contrast", ParamGroup.COLOR,
+            "Contrast adjustment before dithering", 0.5f, 3f, 0.1f, 1.2f),
+        Parameter.NumberParam("Anim Speed", "animSpeed", ParamGroup.FLOW_MOTION,
+            "Animation speed multiplier", 0.1f, 3f, 0.1f, 1f),
+        Parameter.NumberParam("Reactivity", "reactivity", ParamGroup.FLOW_MOTION,
+            "Audio reactivity strength", 0f, 2f, 0.1f, 0f)
     )
 
     override fun getDefaultParams(): Map<String, Any> = mapOf(
@@ -37,115 +56,169 @@ class PixelDitherGenerator : Generator {
         "gridSize" to 64f, "contrast" to 1.2f, "animSpeed" to 1f, "reactivity" to 0f
     )
 
-    companion object {
-        private val BAYER2 = arrayOf(intArrayOf(0, 2), intArrayOf(3, 1))
-        private val BAYER4 = arrayOf(
-            intArrayOf(0, 8, 2, 10),
-            intArrayOf(12, 4, 14, 6),
-            intArrayOf(3, 11, 1, 9),
-            intArrayOf(15, 7, 13, 5)
-        )
-        private val BAYER8: Array<IntArray> = run {
-            val m = Array(8) { IntArray(8) }
-            for (y in 0 until 8) {
-                for (x in 0 until 8) {
-                    val b2x = x shr 2; val b2y = y shr 2
-                    val b4x = (x shr 1) and 1; val b4y = (y shr 1) and 1
-                    val b1x = x and 1; val b1y = y and 1
-                    m[y][x] = BAYER2[b2y][b2x] * 16 + BAYER2[b4y][b4x] * 4 + BAYER2[b1y][b1x]
-                }
-            }
-            m
-        }
-    }
-
-    private fun bayer(size: Int): Triple<Array<IntArray>, Int, Float> = when (size) {
-        2 -> Triple(BAYER2, 2, 4f)
-        4 -> Triple(BAYER4, 4, 16f)
-        else -> Triple(BAYER8, 8, 64f)
-    }
-
-    private fun evalSource(fn: String, x: Int, y: Int, sz: Int, time: Float, contrast: Float): Float {
-        val nx = x.toFloat() / sz; val ny = y.toFloat() / sz
-        var v: Float
-        when (fn) {
-            "sine-waves" -> {
-                v = (sin(nx * 6.28f * 3f + time) + sin(ny * 6.28f * 2f + time * 0.7f) + sin((nx + ny) * 6.28f * 1.5f)) / 3f
-                v = v * 0.5f + 0.5f
-            }
-            "radial" -> {
-                val dx = nx - 0.5f; val dy = ny - 0.5f
-                val r = sqrt(dx * dx + dy * dy) * 2f
-                v = (sin(r * 6.28f * 2f + time) + 1f) * 0.5f
-            }
-            "mandelbrot" -> {
-                val targetX = -0.75f; val targetY = 0.1f
-                val cycle = time * 0.15f
-                val zoomT = (sin(cycle) + 1f) * 0.5f
-                val zoom = 0.02f.pow(zoomT)
-                val panX = targetX + sin(cycle * 0.7f) * 0.3f * zoom
-                val panY = targetY + cos(cycle * 0.9f) * 0.3f * zoom
-                val cx = (nx - 0.5f) * 3.5f * zoom + panX
-                val cy = (ny - 0.5f) * 3.5f * zoom + panY
-                var zr = 0f; var zi = 0f; var iter = 0
-                val maxIter = 32 + ((1f - zoom) * 64f).toInt()
-                while (zr * zr + zi * zi < 4f && iter < maxIter) {
-                    val tmp = zr * zr - zi * zi + cx
-                    zi = 2f * zr * zi + cy
-                    zr = tmp
-                    iter++
-                }
-                v = iter.toFloat() / maxIter
-            }
-            "diagonal" -> v = (sin((nx + ny) * 6.28f * 4f + time * 0.5f) + 1f) * 0.5f
-            "plasma" -> {
-                v = (sin(nx * 10f + time) + sin(ny * 10f + time * 0.6f) +
-                     sin((nx + ny) * 7f + time * 0.3f) + sin(sqrt(nx * nx + ny * ny) * 10f)) / 4f
-                v = v * 0.5f + 0.5f
-            }
-            else -> v = nx
-        }
-        v = (v - 0.5f) * contrast + 0.5f
-        return v.coerceIn(0f, 1f)
-    }
-
-    override fun renderCanvas(
-        canvas: Canvas, bitmap: Bitmap, params: Map<String, Any>, seed: Int,
-        palette: Palette, quality: Quality, time: Float
+    override fun bindUniforms(
+        programId: Int,
+        params: Map<String, Any>,
+        seed: Int,
+        palette: Palette,
+        quality: Quality,
+        time: Float,
+        width: Int,
+        height: Int
     ) {
-        val sz = PixelArtUtil.pi(params, "gridSize", 64).coerceIn(16, 128)
-        val sourceFn = PixelArtUtil.ps(params, "sourceFunction", "plasma")
-        val bayerSize = (PixelArtUtil.ps(params, "bayerSize", "4")).toIntOrNull() ?: 4
-        val numColors = PixelArtUtil.pi(params, "numColors", 2).coerceIn(2, 4)
-        val contrast = PixelArtUtil.pf(params, "contrast", 1.2f)
-        val speed = PixelArtUtil.pf(params, "animSpeed", 1f)
-
+        val sz = ((params["gridSize"] as? Number)?.toInt() ?: 64).coerceIn(16, 128)
+        val sourceFn = (params["sourceFunction"] as? String) ?: "plasma"
+        val bayerSize = ((params["bayerSize"] as? String)?.toIntOrNull()) ?: 4
+        val numColors = ((params["numColors"] as? Number)?.toInt() ?: 2).coerceIn(2, 4)
+        val contrast = (params["contrast"] as? Number)?.toFloat() ?: 1.2f
+        val speed = (params["animSpeed"] as? Number)?.toFloat() ?: 1f
         val animTime = time * speed
-        val (matrix, n, maxV) = bayer(bayerSize)
 
-        val colors = PixelArtUtil.paletteRgb(palette)
-        val nc = colors.size
+        val fnId = when (sourceFn) {
+            "sine-waves" -> 0; "radial" -> 1; "mandelbrot" -> 2
+            "diagonal" -> 3; "plasma" -> 4
+            else -> 4
+        }
+        val ncPalette = palette.colors.size.coerceAtMost(5)
 
-        val colorIndices = IntArray(numColors) { i ->
-            val t = if (numColors <= 1) 0f else i.toFloat() / (numColors - 1)
-            min(nc - 1, (t * (nc - 1)).toInt())
+        GLES30.glUniform1i(GLES30.glGetUniformLocation(programId, "uGrid"), sz)
+        GLES30.glUniform1i(GLES30.glGetUniformLocation(programId, "uFnId"), fnId)
+        GLES30.glUniform1i(GLES30.glGetUniformLocation(programId, "uBayerSize"), bayerSize)
+        GLES30.glUniform1i(GLES30.glGetUniformLocation(programId, "uNumColors"), numColors)
+        GLES30.glUniform1i(GLES30.glGetUniformLocation(programId, "uPaletteCount"), ncPalette)
+        GLES30.glUniform1f(GLES30.glGetUniformLocation(programId, "uContrast"), contrast)
+        GLES30.glUniform1f(GLES30.glGetUniformLocation(programId, "uAnimTime"), animTime)
+    }
+
+    override fun fragmentShaderSource(): String = """#version 300 es
+        precision highp float;
+
+        uniform vec2 uResolution;
+        uniform float uTime;
+        uniform vec3 uAudio;
+        ${PaletteUniform.GLSL_HELPERS}
+
+        uniform int   uGrid;
+        uniform int   uFnId;       // 0 sine-waves, 1 radial, 2 mandelbrot, 3 diagonal, 4 plasma
+        uniform int   uBayerSize;  // 2, 4, 8
+        uniform int   uNumColors;  // 2..4
+        uniform int   uPaletteCount;
+        uniform float uContrast;
+        uniform float uAnimTime;
+
+        out vec4 fragColor;
+
+        const float TAU = 6.28318530718;
+
+        // 8x8 Bayer matrix derived from 2x2 building blocks (matches CPU init).
+        // Stored linearly row-major.
+        // We compute on the fly to avoid a 64-entry const array.
+        float bayer2(int x, int y) {
+            // 2x2 Bayer: [[0,2],[3,1]]
+            int v = (y == 0) ? ((x == 0) ? 0 : 2)
+                             : ((x == 0) ? 3 : 1);
+            return float(v);
         }
 
-        val pixels = IntArray(sz * sz)
-        for (y in 0 until sz) {
-            for (x in 0 until sz) {
-                val v = evalSource(sourceFn, x, y, sz, animTime, contrast)
-                val threshold = matrix[y % n][x % n] / maxV
-                val scaled = v * (numColors - 1)
-                val low = scaled.toInt()
-                val high = min(numColors - 1, low + 1)
-                val frac = scaled - low
-                val chosen = if (frac > threshold) high else low
-                val ci = colorIndices[chosen]
-                val c = colors[ci]
-                pixels[y * sz + x] = PixelArtUtil.rgb(c[0], c[1], c[2])
+        float sampleBayer(int x, int y, int n) {
+            if (n == 2) {
+                return bayer2(x & 1, y & 1) / 4.0;
+            } else if (n == 4) {
+                // Bayer4 derived: BAYER2[y>>1][x>>1]*4 + BAYER2[y&1][x&1]
+                int b2x = (x >> 1) & 1; int b2y = (y >> 1) & 1;
+                int b1x = x & 1;        int b1y = y & 1;
+                float v = bayer2(b2x, b2y) * 4.0 + bayer2(b1x, b1y);
+                return v / 16.0;
+            } else {
+                int b2x = (x >> 2) & 1; int b2y = (y >> 2) & 1;
+                int b4x = (x >> 1) & 1; int b4y = (y >> 1) & 1;
+                int b1x = x & 1;        int b1y = y & 1;
+                float v = bayer2(b2x, b2y) * 16.0
+                        + bayer2(b4x, b4y) * 4.0
+                        + bayer2(b1x, b1y);
+                return v / 64.0;
             }
         }
-        PixelArtUtil.blitNearest(canvas, bitmap, pixels, sz)
+
+        float evalSource(int fn, float nx, float ny, float t, float contrast) {
+            float v;
+            if (fn == 0) {
+                // sine-waves
+                v = (sin(nx * TAU * 3.0 + t)
+                   + sin(ny * TAU * 2.0 + t * 0.7)
+                   + sin((nx + ny) * TAU * 1.5)) / 3.0;
+                v = v * 0.5 + 0.5;
+            } else if (fn == 1) {
+                // radial
+                float dx = nx - 0.5; float dy = ny - 0.5;
+                float r = sqrt(dx * dx + dy * dy) * 2.0;
+                v = (sin(r * TAU * 2.0 + t) + 1.0) * 0.5;
+            } else if (fn == 2) {
+                // mandelbrot
+                float targetX = -0.75; float targetY = 0.1;
+                float cycle = t * 0.15;
+                float zoomT = (sin(cycle) + 1.0) * 0.5;
+                float zoom = pow(0.02, zoomT);
+                float panX = targetX + sin(cycle * 0.7) * 0.3 * zoom;
+                float panY = targetY + cos(cycle * 0.9) * 0.3 * zoom;
+                float cx = (nx - 0.5) * 3.5 * zoom + panX;
+                float cy = (ny - 0.5) * 3.5 * zoom + panY;
+                float zr = 0.0; float zi = 0.0;
+                int iter = 0;
+                int maxIter = 32 + int((1.0 - zoom) * 64.0);
+                for (int i = 0; i < 96; i++) {
+                    if (i >= maxIter) break;
+                    if (zr * zr + zi * zi >= 4.0) break;
+                    float tmp = zr * zr - zi * zi + cx;
+                    zi = 2.0 * zr * zi + cy;
+                    zr = tmp;
+                    iter = i + 1;
+                }
+                v = float(iter) / float(maxIter);
+            } else if (fn == 3) {
+                // diagonal
+                v = (sin((nx + ny) * TAU * 4.0 + t * 0.5) + 1.0) * 0.5;
+            } else {
+                // plasma
+                v = (sin(nx * 10.0 + t)
+                   + sin(ny * 10.0 + t * 0.6)
+                   + sin((nx + ny) * 7.0 + t * 0.3)
+                   + sin(sqrt(nx * nx + ny * ny) * 10.0)) / 4.0;
+                v = v * 0.5 + 0.5;
+            }
+            v = (v - 0.5) * contrast + 0.5;
+            return clamp(v, 0.0, 1.0);
+        }
+
+        void main() {
+            // Snap to grid cell (top-left of cell)
+            vec2 cell = floor(gl_FragCoord.xy / uResolution * float(uGrid));
+            int x = int(cell.x);
+            int y = int(cell.y);
+            float nx = float(x) / float(uGrid);
+            float ny = float(y) / float(uGrid);
+
+            float v = evalSource(uFnId, nx, ny, uAnimTime, uContrast);
+            float threshold = sampleBayer(x, y, uBayerSize);
+
+            float scaled = v * float(uNumColors - 1);
+            int low = int(floor(scaled));
+            int high = min(uNumColors - 1, low + 1);
+            float frac = scaled - float(low);
+            int chosen = (frac > threshold) ? high : low;
+
+            // Map chosen [0..uNumColors-1] across palette [0..uPaletteCount-1]
+            int ncP = max(uPaletteCount, 1);
+            float t01 = (uNumColors <= 1) ? 0.0 : float(chosen) / float(uNumColors - 1);
+            int pIdx = int(t01 * float(ncP - 1));
+            pIdx = clamp(pIdx, 0, 4);
+            vec3 col = uPalette[pIdx];
+            fragColor = vec4(col, 1.0);
+        }
+    """
+
+    override fun estimateCost(params: Map<String, Any>, quality: Quality): Float {
+        val fn = (params["sourceFunction"] as? String) ?: "plasma"
+        return if (fn == "mandelbrot") 0.22f else 0.1f
     }
 }

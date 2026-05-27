@@ -2,6 +2,39 @@
 
 All notable changes to Algomodo will be documented in this file.
 
+## [2.2.1] - Android
+
+### Bug Fixes
+- **Voronoi (Fractured, Mosaic, Neighbor Bands, Ridges, Weighted)**: fixed blank render on phone GPUs. The combined uniform arrays exceeded the fragment uniform-vector budget on mid-range mobile devices. Shrunk the shared point cap to fit within phone GPU limits while preserving full cell-count ranges.
+
+### UI
+- **Bottom tabs**: smaller font and abbreviated "Gens" label on phones so all four chips fit on one line without wrapping. Tablets keep the larger font and full "Generators" label.
+
+## [2.2.0] - Android
+
+### GPU Family Ports
+- **Animation** (per-pixel generators): ported to GPU fragment shaders.
+- **Procedural** (4 generators): Displacement, EdgeGlow, Warp, SdfRaymarch — ported to GPU shaders.
+- **Flux** (4 generators): FluxDisplacementMap, FluxDomainRepetition, FluxMetaballs2d, FluxSimplexWarp — ported as hybrid CPU+GPU (heatmap modes on GPU).
+- **Geometry** (2 generators): Moire, Chladni — ported to GPU shaders.
+- **Pixel Art** (per-pixel generators): ported to GPU fragment shaders.
+
+### New Features
+- **Voronoi Cells**: new Pattern parameter with six seed layouts (Random, Jittered Grid, Hex Grid, Square Grid, Phyllotaxis, Rings); new color modes (Contour Rings, Bipolar); crispier rendering with exact palette indexing and `fwidth()`-based anti-aliased borders.
+- **Percolation**: new modes (Bond, Directed) on top of Site/Invasion; new color modes (Depth, Resistance, Boundary); new animation patterns (Growth, Morph).
+- **Electric Field**: new pulsing-charge motion; equipotential mode now ported to GPU shader; "combined" style now layers equipotential heatmap beneath field lines.
+- **Magnetic Field**: new hybrid GPU magnitude and combined styles (Coulomb-summed |B| heatmap).
+- **Palettes**: three new metallic palettes — Golden, Silver, Bronze.
+
+### UI
+- Bottom tabs now use larger bold text in amber-bordered chips for visibility.
+- Maximized canvas palette strip now auto-scrolls to the selected palette (matches minimized view).
+- Presets floating button repositioned to the bottom-right corner.
+- Canvas tooltip clarified: "Tap the canvas once to maximize" / "Tap again to minimize".
+
+### Bug Fixes
+- Auto-retry blank canvas at alternate animation time values.
+
 ## [2.1.0] - Android
 
 ### GPU Shader Pipeline

@@ -53,6 +53,9 @@ import com.artmondo.algomodo.generators.AspectRatio
 import com.artmondo.algomodo.core.registry.GeneratorRegistry
 import com.artmondo.algomodo.ui.components.*
 import com.artmondo.algomodo.ui.dialogs.*
+import com.artmondo.algomodo.ui.theme.AccentAmber
+import androidx.compose.ui.platform.LocalConfiguration
+import androidx.compose.ui.text.font.FontWeight
 import com.artmondo.algomodo.viewmodel.ExportViewModel
 import com.artmondo.algomodo.viewmodel.MainViewModel
 import kotlinx.coroutines.delay
@@ -667,22 +670,45 @@ fun MainScreen(
 
         // ===== BOTTOM SECTION: Tabs + Content (~55% of screen) =====
 
-        // Tab bar
+        // Tab bar — amber-bordered chips. Font size scales down on phones so the
+        // four labels fit on one line; tablets get the larger size for legibility.
+        val isTablet = LocalConfiguration.current.smallestScreenWidthDp >= 600
+        val tabFontSize = if (isTablet) 16.sp else 12.sp
+        val tabChipHPad = if (isTablet) 10.dp else 6.dp
+        val tabChipVPad = if (isTablet) 4.dp else 3.dp
         TabRow(
             selectedTabIndex = pagerState.currentPage,
-            containerColor = MaterialTheme.colorScheme.surface
+            containerColor = MaterialTheme.colorScheme.surface,
+            contentColor = AccentAmber
         ) {
-            Tab(selected = pagerState.currentPage == 0, onClick = { scope.launch { pagerState.scrollToPage(0) } }) {
-                Text("Generators", modifier = Modifier.padding(vertical = 10.dp), fontSize = 12.sp)
-            }
-            Tab(selected = pagerState.currentPage == 1, onClick = { scope.launch { pagerState.scrollToPage(1) } }) {
-                Text("Params", modifier = Modifier.padding(vertical = 10.dp), fontSize = 12.sp)
-            }
-            Tab(selected = pagerState.currentPage == 2, onClick = { scope.launch { pagerState.scrollToPage(2) } }) {
-                Text("Export", modifier = Modifier.padding(vertical = 10.dp), fontSize = 12.sp)
-            }
-            Tab(selected = pagerState.currentPage == 3, onClick = { scope.launch { pagerState.scrollToPage(3) } }) {
-                Text("Settings", modifier = Modifier.padding(vertical = 10.dp), fontSize = 12.sp)
+            val tabLabels = if (isTablet)
+                listOf("Generators", "Params", "Export", "Settings")
+            else
+                listOf("Gens", "Params", "Export", "Settings")
+            tabLabels.forEachIndexed { index, label ->
+                val selected = pagerState.currentPage == index
+                Tab(
+                    selected = selected,
+                    onClick = { scope.launch { pagerState.scrollToPage(index) } },
+                    selectedContentColor = AccentAmber,
+                    unselectedContentColor = AccentAmber.copy(alpha = 0.55f)
+                ) {
+                    Text(
+                        label,
+                        maxLines = 1,
+                        softWrap = false,
+                        modifier = Modifier
+                            .padding(vertical = 8.dp, horizontal = 4.dp)
+                            .border(
+                                width = if (selected) 1.5.dp else 1.dp,
+                                color = if (selected) AccentAmber else AccentAmber.copy(alpha = 0.55f),
+                                shape = RoundedCornerShape(6.dp)
+                            )
+                            .padding(vertical = tabChipVPad, horizontal = tabChipHPad),
+                        fontSize = tabFontSize,
+                        fontWeight = if (selected) FontWeight.Bold else FontWeight.SemiBold
+                    )
+                }
             }
         }
 
@@ -882,7 +908,7 @@ fun MainScreen(
 
                 BoxWithConstraints(
                     modifier = Modifier
-                        .align(Alignment.BottomStart)
+                        .align(Alignment.BottomEnd)
                         .fillMaxWidth()
                         .padding(12.dp)
                 ) {
@@ -892,6 +918,7 @@ fun MainScreen(
 
                     Row(
                         modifier = Modifier
+                            .align(Alignment.CenterEnd)
                             .offset(x = with(androidx.compose.ui.platform.LocalDensity.current) { dragOffsetX.toDp() })
                             .pointerInput(Unit) {
                                 detectDragGestures(
@@ -900,7 +927,7 @@ fun MainScreen(
                                         change.consume()
                                         isDragging = true
                                         dragOffsetX = (dragOffsetX + dragAmount.x)
-                                            .coerceIn(0f, maxDragPx)
+                                            .coerceIn(-maxDragPx, 0f)
                                     }
                                 )
                             }
@@ -1103,7 +1130,11 @@ private fun ActionButtonsRow(
         }
         TooltipBox(
             positionProvider = TooltipDefaults.rememberPlainTooltipPositionProvider(),
-            tooltip = { PlainTooltip { Text("Press play to animate") } },
+            tooltip = {
+                PlainTooltip {
+                    Text(if (translucent) "Tap again to minimize" else "Tap the canvas once to maximize")
+                }
+            },
             state = playTooltipState
         ) {
             CanvasButton(

@@ -80,7 +80,10 @@ object CuratedPalettes {
         Palette("Cyber", listOf("#0A0A2A", "#1B03A3", "#7209B7", "#F72585", "#4CC9F0")),
         Palette("Vapor", listOf("#FF6AD5", "#C774E8", "#AD8CFF", "#8795E8", "#94D0FF")),
         Palette("Lava", listOf("#0C0404", "#4A0E0E", "#B7202E", "#FF5722", "#FFEB3B")),
-        Palette("Tide", listOf("#05445E", "#189AB4", "#75E6DA", "#D4F1F9", "#F5E6CA"))
+        Palette("Tide", listOf("#05445E", "#189AB4", "#75E6DA", "#D4F1F9", "#F5E6CA")),
+        Palette("Golden", listOf("#3D2914", "#8C6A1A", "#C9A227", "#FFD700", "#FFF4C2")),
+        Palette("Silver", listOf("#1C2128", "#4A5360", "#8A95A3", "#C7D0DC", "#F0F4F8")),
+        Palette("Bronze", listOf("#2B1408", "#6B2E0F", "#A04A1F", "#CD7F32", "#E8AC6F"))
     )
 
     // Display-only placeholders for random palette chips

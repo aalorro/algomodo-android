@@ -75,7 +75,7 @@ fun InstructionsDialog(onDismiss: () -> Unit) {
                     "Up to 50 steps. Undo/redo buttons on the canvas bar. Each parameter change, seed change, generator change, and randomization creates a history entry."
                 }
                 HelpSection("Color Palettes") {
-                    "14 curated palettes with 5 colors each, plus a Random palette that generates 5 new random colors each time. Random colors use golden-angle hue spacing for visually diverse combinations.\n\n" +
+                    "22 curated palettes with 5 colors each, plus a Random palette that generates 5 new random colors each time. Random colors use golden-angle hue spacing for visually diverse combinations.\n\n" +
                     "Lock the palette (tap the lock icon) to keep your colors while randomizing other settings. When unlocked, both Surprise Me and Rand will pick a new palette automatically.\n\n" +
                     "Custom palettes: Create up to 5 custom palettes with your own hex colors. Custom palettes appear alongside the curated list and persist across sessions."
                 }

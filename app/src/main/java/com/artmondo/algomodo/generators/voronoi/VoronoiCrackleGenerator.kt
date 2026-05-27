@@ -38,7 +38,7 @@ class VoronoiCrackleGenerator : GpuGenerator {
     override val supportsAnimation = true
 
     override val parameterSchema = listOf(
-        Parameter.NumberParam("Cell Count", "cellCount", ParamGroup.COMPOSITION, "", 5f, 300f, 5f, 80f),
+        Parameter.NumberParam("Cell Count", "cellCount", ParamGroup.COMPOSITION, "", 5f, 250f, 5f, 80f),
         Parameter.NumberParam("Crack Width", "crackWidth", ParamGroup.GEOMETRY, "Thickness of crack lines", 0.5f, 8f, 0.5f, 2f),
         Parameter.SelectParam("Crack Color", "crackColor", ParamGroup.COLOR, "", listOf("black", "white", "palette-first", "palette-last"), "black"),
         Parameter.SelectParam("Fill Mode", "fillMode", ParamGroup.COLOR, "How cell interiors are colored", listOf("flat-dark", "flat-light", "gradient", "palette"), "gradient"),

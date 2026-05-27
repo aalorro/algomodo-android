@@ -238,16 +238,24 @@ private fun StaticCanvas(
                     }
                     PostFXProcessor.apply(bitmap, postFX)
 
-                    // Safety net: if output is nearly all-black, re-render at time=0
-                    // to catch generators with scroll/animation offsets that push
-                    // content off canvas at time=2.0
-                    if (generator.supportsAnimation && isBitmapBlank(bitmap)) {
-                        if (renderGeneration.get() != myGeneration) return@withContext
-                        canvas.drawColor(android.graphics.Color.BLACK)
-                        runInterruptible {
-                            generator.renderCanvas(canvas, bitmap, params, seed, palette, quality, 0f)
+                    // Safety net: if output is nearly all-black, retry at alternate
+                    // animation time values. Catches:
+                    //  - animation offsets that push content off canvas at staticTime
+                    //  - particle/accumulation generators that haven't deposited ink yet
+                    //  - intermittent blank renders that the user has to RELOAD to fix
+                    // We try time=0 then time=0.5 — cheap retries, same params/seed,
+                    // so the user gets visible output without surprise param changes.
+                    if (isBitmapBlank(bitmap)) {
+                        val retryTimes = if (generator.supportsAnimation) floatArrayOf(0f, 0.5f) else floatArrayOf(0.5f)
+                        for (t in retryTimes) {
+                            if (renderGeneration.get() != myGeneration) return@withContext
+                            canvas.drawColor(android.graphics.Color.BLACK)
+                            runInterruptible {
+                                generator.renderCanvas(canvas, bitmap, params, seed, palette, quality, t)
+                            }
+                            PostFXProcessor.apply(bitmap, postFX)
+                            if (!isBitmapBlank(bitmap)) break
                         }
-                        PostFXProcessor.apply(bitmap, postFX)
                     }
                 } catch (e: CancellationException) {
                     throw e  // let coroutine cancellation propagate

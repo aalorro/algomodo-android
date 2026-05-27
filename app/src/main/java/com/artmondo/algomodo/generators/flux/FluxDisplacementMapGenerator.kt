@@ -1,18 +1,24 @@
 package com.artmondo.algomodo.generators.flux
 
-import android.graphics.Bitmap
-import android.graphics.Canvas
-import android.graphics.Color
-import com.artmondo.algomodo.audio.AudioAnalysis
+import android.opengl.GLES30
 import com.artmondo.algomodo.data.palettes.Palette
-import com.artmondo.algomodo.generators.Generator
+import com.artmondo.algomodo.generators.GpuGenerator
 import com.artmondo.algomodo.generators.ParamGroup
 import com.artmondo.algomodo.generators.Parameter
 import com.artmondo.algomodo.generators.Quality
-import com.artmondo.algomodo.generators.procedural.ValueNoise
-import kotlin.math.*
+import com.artmondo.algomodo.rendering.gl.NoiseGlsl
+import com.artmondo.algomodo.rendering.gl.PaletteUniform
 
-class FluxDisplacementMapGenerator : Generator {
+/**
+ * GPU-rendered displacement map. A base pattern (stripes / grid / checkerboard /
+ * circles) is warped by FBM simplex noise used as a UV displacement field.
+ *
+ * Ported from the original CPU implementation; id, parameter schema and
+ * defaults are preserved so existing presets continue to load. Noise visuals
+ * are very close but not bit-identical (Ashima/Gustavson `snoise` vs the
+ * CPU `ValueNoise`).
+ */
+class FluxDisplacementMapGenerator : GpuGenerator {
 
     override val id = "flux-displacement-map"
     override val family = "flux"
@@ -22,10 +28,9 @@ class FluxDisplacementMapGenerator : Generator {
         "used as a UV displacement field \u2014 the noise offsets each pixel\u2019s sample position, bending and " +
         "folding the underlying pattern into organic distortions."
     override val algorithmNotes =
-        "Sharp step-based patterns (floor/fract) instead of sine for crisp edges. " +
-        "Value noise FBM displacement with precomputed weights. " +
-        "Palette LUT cached per frame. Per-row noise Y precomputed outside inner loop. " +
-        "Bilinear upscale from reduced buffer in DRAFT/BALANCED quality."
+        "Pure per-pixel fragment shader on the GPU. Two FBM evaluations produce (du, dv) " +
+        "displacement vector; the displaced sample position is fed through a binary pattern " +
+        "function (stripes/grid/checkerboard/circles) and the 0/1 result indexes the palette."
     override val supportsVector = false
     override val supportsAnimation = true
 
@@ -77,162 +82,132 @@ class FluxDisplacementMapGenerator : Generator {
         "reactivity" to 1.0f
     )
 
-    override fun renderCanvas(
-        canvas: Canvas, bitmap: Bitmap, params: Map<String, Any>,
-        seed: Int, palette: Palette, quality: Quality, time: Float
+    override fun bindUniforms(
+        programId: Int,
+        params: Map<String, Any>,
+        seed: Int,
+        palette: Palette,
+        quality: Quality,
+        time: Float,
+        width: Int,
+        height: Int
     ) {
-        val w = bitmap.width
-        val h = bitmap.height
-        val step = when (quality) { Quality.DRAFT -> 4; Quality.ULTRA -> 1; else -> 2 }
-
-        // ── Extract parameters ──────────────────────────────────────────
         val basePattern = (params["basePattern"] as? String) ?: "stripes"
         val displacementScale = (params["displacementScale"] as? Number)?.toFloat() ?: 0.5f
         val noiseScale = (params["noiseScale"] as? Number)?.toFloat() ?: 2.0f
         val patternScale = (params["patternScale"] as? Number)?.toFloat() ?: 10f
-        val nOct = (params["octaves"] as? Number)?.toInt()?.coerceIn(1, 4) ?: 2
+        val octaves = ((params["octaves"] as? Number)?.toInt() ?: 2).coerceIn(1, 4)
         val speed = (params["speed"] as? Number)?.toFloat() ?: 0.4f
-        val rx = (params["reactivity"] as? Number)?.toFloat() ?: 1.0f
-
-        // ── Audio reactivity ────────────────────────────────────────────
-        val audioAnalysis = params["_audioAnalysis"] as? AudioAnalysis
-        val audioBass = (audioAnalysis?.getBass(time) ?: 0f) * rx
-        val audioHigh = (audioAnalysis?.getHigh(time) ?: 0f) * rx
-
-        val effDisplacement = displacementScale * (1f + audioBass * 2f)
-        val effPatternScale = patternScale * (1f + audioHigh * 0.5f)
-
-        val t = time * speed
+        val reactivity = (params["reactivity"] as? Number)?.toFloat() ?: 1.0f
 
         val patId = when (basePattern) {
             "stripes" -> 0
             "grid" -> 1
             "checkerboard" -> 2
-            else -> 3 // circles
+            else -> 3
         }
 
-        // ── Noise ───────────────────────────────────────────────────────
-        val vn = ValueNoise(seed)
+        val (seedOffX, seedOffY) = NoiseGlsl.seedToOffset(seed)
 
-        // ── Precompute FBM weights ──────────────────────────────────────
-        val maxOct = if (quality == Quality.DRAFT) nOct.coerceAtMost(2) else nOct
-        val fbmAmp = FloatArray(maxOct)
-        val fbmFreq = FloatArray(maxOct)
-        var fbmTotal = 0f
-        run {
-            var amp = 1f
-            var freq = 1f
-            for (o in 0 until maxOct) {
-                fbmAmp[o] = amp
-                fbmFreq[o] = freq
-                fbmTotal += amp
-                freq *= 2f
-                amp *= 0.5f
-            }
-        }
-        val fbmInvTotal = 1f / fbmTotal
-
-        // ── Palette LUT ────────────────────────────────────────────────
-        val lut = palette.buildLut(256)
-
-        // ── Precompute geometry ─────────────────────────────────────────
-        val minDim = min(w, h)
-        val invMinDim = 1f / minDim
-        val noiseInv = noiseScale * invMinDim
-        val dispScaleMinDim = effDisplacement * minDim
-        val patOverMin = effPatternScale * invMinDim
-        val tOffY = t * 0.15f
-
-        // Grid line width: fraction of cell that is a "line" (sharp)
-        val gridLineW = 0.15f
-
-        val cols = ceil(w.toFloat() / step).toInt()
-        val rows = ceil(h.toFloat() / step).toInt()
-        val smallPixels = IntArray(cols * rows)
-
-        // ── Main pixel loop ─────────────────────────────────────────────
-        for (gy in 0 until rows) {
-            val py = gy * step
-            val pyNoiseInv = py * noiseInv + tOffY
-
-            for (gx in 0 until cols) {
-                val px = gx * step
-                val pxNoiseInv = px * noiseInv
-
-                // ── Inline FBM for du, dv ───────────────────────────
-                var du = 0f
-                var dv = 0f
-                for (o in 0 until maxOct) {
-                    val f = fbmFreq[o]
-                    val a = fbmAmp[o]
-                    val nxf = pxNoiseInv * f
-                    val nyf = pyNoiseInv * f
-                    du += vn.noise(nxf, nyf) * a
-                    dv += vn.noise(nxf + 37.7f, nyf + 19.3f) * a
-                }
-                du *= fbmInvTotal
-                dv *= fbmInvTotal
-
-                // Displaced sample coordinates
-                val sampleX = px + du * dispScaleMinDim
-                val sampleY = py + dv * dispScaleMinDim
-
-                // ── Sharp base pattern evaluation ───────────────────
-                val brightness: Float = when (patId) {
-                    0 -> {
-                        // Stripes -- sharp alternating bands via floor mod 2
-                        val band = sampleX * patOverMin
-                        val intBand = floor(band).toInt()
-                        if (intBand and 1 != 0) 1f else 0f
-                    }
-                    1 -> {
-                        // Grid -- sharp line lattice: lines where fract is near 0
-                        val fx = sampleX * patOverMin
-                        val fy = sampleY * patOverMin
-                        val fracX = fx - floor(fx)
-                        val fracY = fy - floor(fy)
-                        val onLineX = fracX < gridLineW || fracX > (1f - gridLineW)
-                        val onLineY = fracY < gridLineW || fracY > (1f - gridLineW)
-                        if (onLineX || onLineY) 1f else 0f
-                    }
-                    2 -> {
-                        // Checkerboard -- already sharp
-                        val cx = floor(sampleX * patOverMin).toInt()
-                        val cy = floor(sampleY * patOverMin).toInt()
-                        if ((cx + cy) and 1 != 0) 1f else 0f
-                    }
-                    else -> {
-                        // Circles -- sharp concentric rings via floor mod 2
-                        val dist = sqrt(sampleX * sampleX + sampleY * sampleY)
-                        val band = dist * patOverMin
-                        val intBand = floor(band).toInt()
-                        if (intBand and 1 != 0) 1f else 0f
-                    }
-                }
-
-                val lutIdx = (brightness * 255f).toInt().coerceIn(0, 255)
-                smallPixels[gy * cols + gx] = lut[lutIdx]
-            }
-        }
-
-        // ── Bilinear upscale if step > 1 ────────────────────────────────
-        if (step > 1) {
-            val smallBmp = Bitmap.createBitmap(cols, rows, Bitmap.Config.ARGB_8888)
-            smallBmp.setPixels(smallPixels, 0, cols, 0, 0, cols, rows)
-            val scaled = Bitmap.createScaledBitmap(smallBmp, w, h, true)
-            val pixels = IntArray(w * h)
-            scaled.getPixels(pixels, 0, w, 0, 0, w, h)
-            bitmap.setPixels(pixels, 0, w, 0, 0, w, h)
-            smallBmp.recycle()
-            scaled.recycle()
-        } else {
-            bitmap.setPixels(smallPixels, 0, w, 0, 0, w, h)
-        }
-        canvas.drawBitmap(bitmap, 0f, 0f, null)
+        GLES30.glUniform1i(GLES30.glGetUniformLocation(programId, "uPatId"), patId)
+        GLES30.glUniform1f(GLES30.glGetUniformLocation(programId, "uDisplacementScale"), displacementScale)
+        GLES30.glUniform1f(GLES30.glGetUniformLocation(programId, "uNoiseScale"), noiseScale)
+        GLES30.glUniform1f(GLES30.glGetUniformLocation(programId, "uPatternScale"), patternScale)
+        GLES30.glUniform1i(GLES30.glGetUniformLocation(programId, "uOctaves"), octaves)
+        GLES30.glUniform1f(GLES30.glGetUniformLocation(programId, "uSpeed"), speed)
+        GLES30.glUniform1f(GLES30.glGetUniformLocation(programId, "uReactivity"), reactivity)
+        GLES30.glUniform2f(GLES30.glGetUniformLocation(programId, "uSeedOffset"), seedOffX, seedOffY)
     }
+
+    override fun fragmentShaderSource(): String = """#version 300 es
+        precision highp float;
+
+        uniform vec2 uResolution;
+        uniform float uTime;
+        uniform vec3 uAudio;
+        ${PaletteUniform.GLSL_HELPERS}
+        ${NoiseGlsl.GLSL_HELPERS}
+
+        uniform int   uPatId;
+        uniform float uDisplacementScale;
+        uniform float uNoiseScale;
+        uniform float uPatternScale;
+        uniform int   uOctaves;
+        uniform float uSpeed;
+        uniform float uReactivity;
+        uniform vec2  uSeedOffset;
+
+        out vec4 fragColor;
+
+        const float GRID_LINE_W = 0.15;
+
+        void main() {
+            float w = uResolution.x;
+            float h = uResolution.y;
+            float minDim = min(w, h);
+            float invMinDim = 1.0 / minDim;
+
+            // Audio reactivity
+            float audioBass = uAudio.x * uReactivity;
+            float audioHigh = uAudio.z * uReactivity;
+            float effDisplacement = uDisplacementScale * (1.0 + audioBass * 2.0);
+            float effPatternScale = uPatternScale * (1.0 + audioHigh * 0.5);
+
+            float t = uTime * uSpeed;
+            float tOffY = t * 0.15;
+
+            float noiseInv = uNoiseScale * invMinDim;
+            float dispScaleMinDim = effDisplacement * minDim;
+            float patOverMin = effPatternScale * invMinDim;
+
+            // Pixel coordinate
+            vec2 frag = gl_FragCoord.xy;
+            float pxN = frag.x * noiseInv + uSeedOffset.x;
+            float pyN = frag.y * noiseInv + tOffY + uSeedOffset.y;
+
+            // FBM for du, dv with phase offset to decorrelate
+            float du = fbm(vec2(pxN, pyN), uOctaves, 2.0, 0.5);
+            float dv = fbm(vec2(pxN + 37.7, pyN + 19.3), uOctaves, 2.0, 0.5);
+
+            // Displaced sample coordinates
+            float sampleX = frag.x + du * dispScaleMinDim;
+            float sampleY = frag.y + dv * dispScaleMinDim;
+
+            float brightness;
+            if (uPatId == 0) {
+                // Stripes
+                float band = sampleX * patOverMin;
+                int intBand = int(floor(band));
+                brightness = float(((intBand % 2) + 2) % 2);
+            } else if (uPatId == 1) {
+                // Grid lines
+                float fx = sampleX * patOverMin;
+                float fy = sampleY * patOverMin;
+                float fracX = fx - floor(fx);
+                float fracY = fy - floor(fy);
+                bool onLineX = (fracX < GRID_LINE_W) || (fracX > (1.0 - GRID_LINE_W));
+                bool onLineY = (fracY < GRID_LINE_W) || (fracY > (1.0 - GRID_LINE_W));
+                brightness = (onLineX || onLineY) ? 1.0 : 0.0;
+            } else if (uPatId == 2) {
+                // Checkerboard
+                int cx = int(floor(sampleX * patOverMin));
+                int cy = int(floor(sampleY * patOverMin));
+                brightness = float((((cx + cy) % 2) + 2) % 2);
+            } else {
+                // Concentric rings
+                float dist = sqrt(sampleX * sampleX + sampleY * sampleY);
+                float band = dist * patOverMin;
+                int intBand = int(floor(band));
+                brightness = float(((intBand % 2) + 2) % 2);
+            }
+
+            vec3 col = palette_color(brightness);
+            fragColor = vec4(col, 1.0);
+        }
+    """
 
     override fun estimateCost(params: Map<String, Any>, quality: Quality): Float {
         val oct = (params["octaves"] as? Number)?.toInt() ?: 2
-        return (oct * 0.12f + 0.1f).coerceIn(0.2f, 0.7f)
+        return (oct * 0.05f + 0.05f).coerceIn(0.1f, 0.3f)
     }
 }
