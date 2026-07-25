@@ -2,6 +2,14 @@
 
 All notable changes to Algomodo will be documented in this file.
 
+## [2.3.0] - Android
+
+### New Features
+- **Forest Fire**: 4 fire-spread patterns (Classic, Inferno, Wind, Smolder) with distinct mechanics — von Neumann vs Moore neighborhoods, ember jumps, directional bias, probabilistic spread, and multi-step burn durations. 6 color modes (Classic, Palette, Heatmap, Infrared, Neon, Ember) with burn-age trail effects.
+
+### Platform
+- Target SDK bumped to Android 16 (API 36) per Google Play policy.
+
 ## [2.2.1] - Android
 
 ### Bug Fixes
