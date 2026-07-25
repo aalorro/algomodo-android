@@ -13,7 +13,7 @@ android {
     defaultConfig {
         applicationId = "com.artmondo.algomodo"
         minSdk = 26
-        targetSdk = 35
+        targetSdk = 36
         versionCode = 24
         versionName = "2.2.1"
 
