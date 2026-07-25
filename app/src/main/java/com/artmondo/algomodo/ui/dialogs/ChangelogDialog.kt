@@ -18,6 +18,13 @@ fun ChangelogDialog(onDismiss: () -> Unit) {
         text = {
             Text(
                 text = """
+v2.3.0 (Android)
+New Features:
+- Forest Fire: 4 fire-spread patterns (Classic / Inferno / Wind / Smolder) with distinct mechanics and multi-step burn durations. 6 color modes (Classic / Palette / Heatmap / Infrared / Neon / Ember) with burn-age trail effects.
+
+Platform:
+- Target SDK bumped to Android 16 (API 36).
+
 v2.2.1 (Android)
 Bug Fixes:
 - Voronoi (Fractured, Mosaic, Neighbor Bands, Ridges, Weighted): fixed blank render on phone GPUs caused by fragment-uniform-vector overflow. Shrunk shared point cap to fit phone GPU budgets without affecting cell counts.
